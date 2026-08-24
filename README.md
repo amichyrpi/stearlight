@@ -1,5 +1,6 @@
 <p align="center">
-    <img src="/assets/stearlight_small.svg">
+    <img src="/assets/stearlight_small_white.svg#gh-dark-mode-only">
+    <img src="/assets/stearlight_small.svg#gh-light-mode-only">
 </p>
 
 [![Build](https://github.com/amichyrpi/H.265-SVRT/actions/workflows/build.yml/badge.svg)](https://github.com/amichyrpi/H.265-SVRT/actions/workflows/build.yml)
