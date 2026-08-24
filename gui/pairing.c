@@ -5,9 +5,8 @@
 #include <SDL.h>
 
 void svrt_pairing_gui_show(svrt_steam_link_pairing *pairing,
-                           volatile sig_atomic_t *quitting) {
-    svrt_ui ui;
-    if (!pairing || svrt_ui_open(&ui)) return;
+                           volatile sig_atomic_t *quitting, svrt_ui *ui) {
+    if (!pairing || !ui) return;
     uint32_t waiting_since = 0;
     while (!*quitting) {
         char code[5] = {0};
@@ -19,13 +18,13 @@ void svrt_pairing_gui_show(svrt_steam_link_pairing *pairing,
         if (pairing_state == SVRT_STEAM_LINK_AUTHORIZING)
             state = SVRT_UI_AUTHORIZING;
         else if (pairing_state == SVRT_STEAM_LINK_PAIRED)
-            state = SVRT_UI_WAITING;
+            state = SVRT_UI_STARTING;
         else if (pairing_state == SVRT_STEAM_LINK_FAILED)
             state = SVRT_UI_FAILED;
         const uint32_t now = SDL_GetTicks();
-        svrt_ui_draw(&ui, state, code, hostname,
+        svrt_ui_draw(ui, state, code, hostname,
                      error[0] ? error : NULL, now);
-        if (state == SVRT_UI_WAITING && !svrt_ui_boot_anim_active(&ui.boot_animation, now)) {
+        if (state == SVRT_UI_STARTING) {
             if (!waiting_since) waiting_since = now;
             if (now - waiting_since >= 1000) break;
         } else waiting_since = 0;
@@ -33,5 +32,4 @@ void svrt_pairing_gui_show(svrt_steam_link_pairing *pairing,
         while (SDL_PollEvent(&event)) if (event.type == SDL_QUIT) *quitting = 1;
         SDL_Delay(16);
     }
-    svrt_ui_close(&ui);
 }

@@ -60,6 +60,7 @@ class SvrtDirectMode final : public vr::IVRDriverDirectModeComponent {
   bool StartEncoder(unsigned width,unsigned height);
   void EncoderThread(); void PacketizerThread(); void CloseEncoder();
   bool OpenVideoSocket();
+  void SendControl(uint32_t code);
   Microsoft::WRL::ComPtr<ID3D11Device> device_; Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
   Microsoft::WRL::ComPtr<ID3D11VideoDevice> video_device_;
   Microsoft::WRL::ComPtr<ID3D11VideoContext> video_context_;

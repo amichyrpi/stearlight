@@ -9,6 +9,8 @@
 
 _Static_assert(sizeof(stearlight_video_header) == STEARLIGHT_VIDEO_HEADER_SIZE,
                "unexpected Stearlight video header size");
+_Static_assert(sizeof(stearlight_control_header) == STEARLIGHT_CONTROL_HEADER_SIZE,
+               "unexpected Stearlight control header size");
 _Static_assert(sizeof(stearlight_pose_packet) == 80,
                "unexpected Stearlight pose packet size");
 
@@ -73,6 +75,38 @@ int stearlight_video_header_decode(stearlight_video_info *host,
         sizeof(wire) + host->payload_size != size)
         return -1;
     return 0;
+}
+
+int stearlight_control_encode(stearlight_control_header *wire,
+                               const stearlight_control_info *host) {
+    if (!wire || !host || !host->session_id || !host->code) return -1;
+    memset(wire, 0, sizeof(*wire));
+    wire->magic = htonl(STEARLIGHT_MAGIC);
+    wire->version = STEARLIGHT_VERSION;
+    wire->type = STEARLIGHT_PACKET_CONTROL;
+    wire->flags = htons(host->flags);
+    wire->session_id = htonl(host->session_id);
+    wire->code = htonl(host->code);
+    wire->timestamp_us = swap64(host->timestamp_us);
+    return 0;
+}
+
+int stearlight_control_decode(stearlight_control_info *host,
+                               const void *datagram, size_t size) {
+    if (!host || !datagram || size != sizeof(stearlight_control_header)) return -1;
+    stearlight_control_header wire;
+    memcpy(&wire, datagram, sizeof(wire));
+    if (ntohl(wire.magic) != STEARLIGHT_MAGIC ||
+        wire.version != STEARLIGHT_VERSION ||
+        wire.type != STEARLIGHT_PACKET_CONTROL) return -1;
+    memset(host, 0, sizeof(*host));
+    host->flags = ntohs(wire.flags);
+    host->session_id = ntohl(wire.session_id);
+    host->code = ntohl(wire.code);
+    host->timestamp_us = swap64(wire.timestamp_us);
+    return host->session_id &&
+           (host->code == STEARLIGHT_CONTROL_SHUTDOWN ||
+            host->code == STEARLIGHT_CONTROL_DISCONNECTED) ? 0 : -1;
 }
 
 int stearlight_pose_encode(stearlight_pose_packet *wire,

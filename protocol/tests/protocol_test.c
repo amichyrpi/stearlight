@@ -26,5 +26,15 @@ int main(void) {
     uint8_t packet[STEARLIGHT_VIDEO_HEADER_SIZE+100]; memcpy(packet,&wire,sizeof(wire));
     stearlight_video_info decoded; assert(!stearlight_video_header_decode(&decoded,packet,sizeof(packet)));
     assert(decoded.session_id==info.session_id&&decoded.timestamp_us==info.timestamp_us&&decoded.payload_size==100);
+    stearlight_control_info control = {.session_id=9,
+        .code=STEARLIGHT_CONTROL_SHUTDOWN, .timestamp_us=987654321};
+    stearlight_control_header control_wire = {0};
+    assert(!stearlight_control_encode(&control_wire, &control));
+    stearlight_control_info control_decoded = {0};
+    assert(!stearlight_control_decode(&control_decoded, &control_wire,
+                                      sizeof(control_wire)));
+    assert(control_decoded.session_id == control.session_id &&
+           control_decoded.code == control.code &&
+           control_decoded.timestamp_us == control.timestamp_us);
     return 0;
 }

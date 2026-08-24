@@ -48,6 +48,7 @@ void SvrtDirectMode::SetReceiverAvailable(bool available){
   const bool was_available=receiver_available_.exchange(available);
   if(available&&!was_available)encoder_failed_=false;
   if(!available){
+    if (running_.load()) SendControl(STEARLIGHT_CONTROL_DISCONNECTED);
     disconnect_requested_=true;
     // Cancel a pipe write immediately when the receiver disappears. Without
     // this, vrserver can wait forever for FFmpeg and make the desktop appear
@@ -58,8 +59,13 @@ void SvrtDirectMode::SetReceiverAvailable(bool available){
 }
 void SvrtDirectMode::Stop(){
   std::unique_lock<std::mutex> lifecycle(lifecycle_mutex_);
+  if (!running_.exchange(false)) {
+    accepting_ = false;
+    return;
+  }
+  SendControl(receiver_available_.load() ? STEARLIGHT_CONTROL_SHUTDOWN
+                                         : STEARLIGHT_CONTROL_DISCONNECTED);
   accepting_=false;
-  if(!running_.exchange(false)){return;}
   // A synchronous WriteFile to FFmpeg's stdin can block indefinitely when the
   // receiver disappears.  Stop the reader first: this breaks that write and
   // lets the SteamVR shutdown thread join the worker promptly.
@@ -293,6 +299,18 @@ bool SvrtDirectMode::OpenVideoSocket(){
   video_socket_=static_cast<uintptr_t>(selected);
   std::random_device random;session_id_=(static_cast<uint32_t>(random())^static_cast<uint32_t>(GetTickCount64()));if(!session_id_)session_id_=1;
   return true;
+}
+void SvrtDirectMode::SendControl(uint32_t code){
+  const uintptr_t value=video_socket_.load();
+  if(value==~uintptr_t{0}||!session_id_)return;
+  stearlight_control_header packet{};
+  stearlight_control_info info{};
+  info.session_id=session_id_;info.code=code;
+  info.timestamp_us=static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+  if(stearlight_control_encode(&packet,&info))return;
+  std::lock_guard<std::mutex> lock(packet_mutex_);
+  const uintptr_t live=video_socket_.load();
+  if(live!=~uintptr_t{0})send(static_cast<SOCKET>(live),reinterpret_cast<const char*>(&packet),sizeof(packet),0);
 }
 static size_t aud_start(const std::vector<uint8_t>&data,size_t from){
   for(size_t i=from;i+5<data.size();++i){size_t nal=0;if(data[i]==0&&data[i+1]==0&&data[i+2]==1)nal=i+3;else if(data[i]==0&&data[i+1]==0&&data[i+2]==0&&data[i+3]==1)nal=i+4;if(nal&&((data[nal]>>1)&0x3f)==35)return i;}return std::string::npos;

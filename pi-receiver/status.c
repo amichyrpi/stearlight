@@ -227,8 +227,7 @@ static void answer_client(svrt_status_server *server, int fd) {
             const int proven = request_from_paired_host(server, &peer);
             if (proven && connect_fields == 5 && device_id &&
                 auth_device_id == device_id && !client_authorized) {
-                atomic_store(&server->authorization_revoked, 1);
-                atomic_store(&server->state, SVRT_RECEIVER_UNAUTHORIZED);
+                svrt_status_server_revoke_authorization(server);
             }
             const int receiver_state = atomic_load(&server->state);
             if (receiver_state != SVRT_RECEIVER_UNAUTHORIZED) {
@@ -495,6 +494,12 @@ void svrt_status_server_set_paired_host(svrt_status_server *server,
 void svrt_status_server_reset_authorization(svrt_status_server *server) {
     if (!server) return;
     atomic_store(&server->authorization_revoked, 0);
+}
+
+void svrt_status_server_revoke_authorization(svrt_status_server *server) {
+    if (!server) return;
+    atomic_store(&server->authorization_revoked, 1);
+    atomic_store(&server->state, SVRT_RECEIVER_UNAUTHORIZED);
 }
 
 int svrt_status_server_authorization_revoked(svrt_status_server *server) {

@@ -77,6 +77,7 @@ void svrt_status_server_set_steam_device_id(svrt_status_server *server,
 void svrt_status_server_set_paired_host(svrt_status_server *server,
                                         const char *address);
 void svrt_status_server_reset_authorization(svrt_status_server *server);
+void svrt_status_server_revoke_authorization(svrt_status_server *server);
 int svrt_status_server_authorization_revoked(svrt_status_server *server);
 void svrt_status_server_stop(svrt_status_server *server);
 

@@ -33,6 +33,7 @@ typedef struct video_frame {
 struct svrt_pipe {
     int socket;
     svrt_pipe_interrupt interrupt;
+    svrt_pipe_idle idle;
     void *opaque;
     AVCodecParameters *parameters;
     video_frame frames[FRAME_SLOTS];
@@ -42,6 +43,9 @@ struct svrt_pipe {
     int discontinuity;
     int decoder_reset;
     uint64_t invalid_packets, recovered_shards, expired_frames;
+    int control_code;
+    int saw_video;
+    uint64_t last_video_us;
 };
 
 static uint64_t monotonic_us(void) {
@@ -115,6 +119,12 @@ static int recover_group(svrt_pipe *pipe, video_frame *frame, unsigned group) {
 }
 
 static void accept_datagram(svrt_pipe *pipe, const uint8_t *packet, size_t size) {
+    stearlight_control_info control;
+    if (!stearlight_control_decode(&control, packet, size) &&
+        pipe->session_id && pipe->session_id == control.session_id) {
+        pipe->control_code = (int)control.code;
+        return;
+    }
     stearlight_video_info info;
     if (stearlight_video_header_decode(&info, packet, size)) { ++pipe->invalid_packets; return; }
     if (pipe->session_id && pipe->session_id != info.session_id) {
@@ -131,6 +141,8 @@ static void accept_datagram(svrt_pipe *pipe, const uint8_t *packet, size_t size)
     }
     pipe->session_id = info.session_id;
     const uint64_t now = monotonic_us();
+    pipe->saw_video = 1;
+    pipe->last_video_us = now;
     if (!pipe->have_next) {
         pipe->next_frame = info.frame_id;
         pipe->next_wait_us = now;
@@ -230,7 +242,8 @@ int svrt_pipe_listen(svrt_pipe **out, const svrt_pipe_config *config,
     *out = NULL;
     svrt_pipe *pipe = calloc(1, sizeof(*pipe));
     if (!pipe) return -1;
-    pipe->socket = -1; pipe->interrupt = config->interrupt; pipe->opaque = config->opaque;
+    pipe->socket = -1; pipe->interrupt = config->interrupt;
+    pipe->idle = config->idle; pipe->opaque = config->opaque;
     char service[16]; snprintf(service, sizeof(service), "%u", config->port ? config->port : 9944);
     struct addrinfo hints = {.ai_family = AF_UNSPEC, .ai_socktype = SOCK_DGRAM,
                              .ai_flags = AI_PASSIVE};
@@ -278,6 +291,13 @@ int svrt_pipe_read(svrt_pipe *pipe, AVPacket *packet) {
             ssize_t size = recv(pipe->socket, datagram, sizeof(datagram), 0);
             if (size > 0) accept_datagram(pipe, datagram, (size_t)size);
         }
+        const uint64_t now = monotonic_us();
+        if (pipe->idle) pipe->idle(pipe->opaque, now / 1000u);
+        if (pipe->control_code) return AVERROR_EXIT;
+        if (pipe->saw_video && now - pipe->last_video_us >= 3000000u) {
+            pipe->control_code = STEARLIGHT_CONTROL_DISCONNECTED;
+            return AVERROR(EPIPE);
+        }
         video_frame *complete = ready_frame(pipe, monotonic_us());
         if (!complete) continue;
         if (av_new_packet(packet, (int)complete->frame_size) < 0) return AVERROR(ENOMEM);
@@ -290,6 +310,7 @@ int svrt_pipe_read(svrt_pipe *pipe, AVPacket *packet) {
 void svrt_pipe_get_stats(const svrt_pipe *pipe,svrt_pipe_stats *stats){if(pipe&&stats)*stats=(svrt_pipe_stats){pipe->invalid_packets,pipe->recovered_shards,pipe->expired_frames};}
 int svrt_pipe_take_discontinuity(svrt_pipe *pipe){if(!pipe)return 0;int changed=pipe->discontinuity;pipe->discontinuity=0;return changed;}
 int svrt_pipe_take_decoder_reset(svrt_pipe *pipe){if(!pipe)return 0;int reset=pipe->decoder_reset;pipe->decoder_reset=0;return reset;}
+int svrt_pipe_take_control(svrt_pipe *pipe){if(!pipe)return 0;int code=pipe->control_code;pipe->control_code=0;return code;}
 
 void svrt_pipe_close(svrt_pipe **pointer) {
     if (!pointer || !*pointer) return;

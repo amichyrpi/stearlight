@@ -24,7 +24,14 @@ enum stearlight_packet_type {
     STEARLIGHT_PACKET_CONTROLLER = 3,
     STEARLIGHT_PACKET_AUDIO = 4,
     STEARLIGHT_PACKET_PING = 5,
-    STEARLIGHT_PACKET_STATS = 6
+    STEARLIGHT_PACKET_STATS = 6,
+    STEARLIGHT_PACKET_CONTROL = 7
+};
+
+#define STEARLIGHT_CONTROL_HEADER_SIZE 24u
+enum stearlight_control_code {
+    STEARLIGHT_CONTROL_SHUTDOWN = 1,
+    STEARLIGHT_CONTROL_DISCONNECTED = 2
 };
 
 enum stearlight_packet_flags {
@@ -64,6 +71,25 @@ typedef struct stearlight_video_info {
     uint16_t payload_size;
 } stearlight_video_info;
 
+#pragma pack(push, 1)
+typedef struct stearlight_control_header {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t type;
+    uint16_t flags;
+    uint32_t session_id;
+    uint32_t code;
+    uint64_t timestamp_us;
+} stearlight_control_header;
+#pragma pack(pop)
+
+typedef struct stearlight_control_info {
+    uint16_t flags;
+    uint32_t session_id;
+    uint32_t code;
+    uint64_t timestamp_us;
+} stearlight_control_info;
+
 #define STEARLIGHT_POSE_VALUE_COUNT 13u
 #pragma pack(push, 1)
 typedef struct stearlight_pose_packet {
@@ -91,6 +117,10 @@ int stearlight_video_header_encode(stearlight_video_header *wire,
                                    const stearlight_video_info *host);
 int stearlight_video_header_decode(stearlight_video_info *host,
                                    const void *datagram, size_t size);
+int stearlight_control_encode(stearlight_control_header *wire,
+                               const stearlight_control_info *host);
+int stearlight_control_decode(stearlight_control_info *host,
+                               const void *datagram, size_t size);
 int stearlight_pose_encode(stearlight_pose_packet *wire,
                            const stearlight_pose_info *host);
 int stearlight_pose_decode(stearlight_pose_info *host,

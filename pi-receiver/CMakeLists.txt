@@ -9,30 +9,54 @@ add_executable(svrt-receiver
   steam_link_pairing.c steam_link_pairing.h)
 target_sources(svrt-receiver PRIVATE
   ../gui/pairing.c ../gui/pairing.h
-  ../gui/ui.c ../gui/ui.h
-  ../gui/ui_anim.c ../gui/ui_anim.h
-  ../gui/ui_boot_anim.c ../gui/ui_boot_anim.h)
+  ../gui/ui.c ../gui/ui.h)
 target_include_directories(svrt-receiver PRIVATE ../gui .)
 target_compile_definitions(svrt-receiver PRIVATE
-  SVRT_GUI_FONT_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/gui/assets/font/system.ttf"
-  SVRT_GUI_STEAMVR_LOGO_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/gui/assets/tex/steamvr-branding.png")
+  SVRT_GUI_FONT_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/D-DINExp-Bold.otf"
+  SVRT_GUI_BOOT_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/boot.mkv"
+  SVRT_GUI_LOOP_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/loop.mkv"
+  SVRT_GUI_STEAM_LOADING_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/steam_loading.mkv"
+  SVRT_GUI_BACKGROUND_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/transition_background.png")
 target_compile_features(svrt-receiver PRIVATE c_std_11)
 find_package(Threads REQUIRED)
 find_package(ALSA REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SVRT_SDL_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
-pkg_check_modules(SVRT_SDL_IMAGE REQUIRED IMPORTED_TARGET SDL2_image)
-target_link_libraries(svrt-receiver PRIVATE svrt::svrt Threads::Threads ALSA::ALSA PkgConfig::SVRT_SDL_TTF PkgConfig::SVRT_SDL_IMAGE ihslib m)
+target_link_libraries(svrt-receiver PRIVATE svrt::svrt Threads::Threads ALSA::ALSA PkgConfig::SVRT_SDL_TTF ihslib m)
 if(SVRT_BUILD_TESTS)
   pkg_check_modules(SVRT_SDL REQUIRED IMPORTED_TARGET sdl2)
+  add_executable(svrt-status-auth-test tests/status_auth_test.c status.c)
+  target_include_directories(svrt-status-auth-test PRIVATE .)
+  target_compile_features(svrt-status-auth-test PRIVATE c_std_11)
+  target_link_libraries(svrt-status-auth-test PRIVATE
+    svrt::svrt Threads::Threads m)
+  add_test(NAME svrt-status-auth-test COMMAND svrt-status-auth-test)
+
   add_executable(svrt-gui-loadtest ../gui/tests/loadtest.c)
   target_include_directories(svrt-gui-loadtest PRIVATE
-    ../gui ${SVRT_SDL_INCLUDE_DIRS} ${SVRT_SDL_TTF_INCLUDE_DIRS}
-    ${SVRT_SDL_IMAGE_INCLUDE_DIRS})
+    ../gui ${SVRT_SDL_INCLUDE_DIRS} ${SVRT_SDL_TTF_INCLUDE_DIRS})
   target_compile_features(svrt-gui-loadtest PRIVATE c_std_11)
   target_link_libraries(svrt-gui-loadtest PRIVATE
-    PkgConfig::SVRT_SDL PkgConfig::SVRT_SDL_TTF PkgConfig::SVRT_SDL_IMAGE m)
+    PkgConfig::SVRT_SDL PkgConfig::SVRT_SDL_TTF m)
   add_test(NAME svrt-gui-loadtest COMMAND svrt-gui-loadtest)
+
+  add_executable(svrt-ui-transition-test
+    ../gui/tests/transition_test.c ../gui/ui.c)
+  target_include_directories(svrt-ui-transition-test PRIVATE
+    ../gui ${SVRT_SDL_INCLUDE_DIRS} ${SVRT_SDL_TTF_INCLUDE_DIRS})
+  target_compile_definitions(svrt-ui-transition-test PRIVATE
+    SVRT_GUI_FONT_PATH="${CMAKE_SOURCE_DIR}/assets/D-DINExp-Bold.otf"
+    SVRT_GUI_BOOT_PATH="${CMAKE_SOURCE_DIR}/assets/boot.mkv"
+    SVRT_GUI_LOOP_PATH="${CMAKE_SOURCE_DIR}/assets/loop.mkv"
+    SVRT_GUI_STEAM_LOADING_PATH="${CMAKE_SOURCE_DIR}/assets/steam_loading.mkv"
+    SVRT_GUI_BACKGROUND_PATH="${CMAKE_SOURCE_DIR}/assets/transition_background.png")
+  target_compile_features(svrt-ui-transition-test PRIVATE c_std_11)
+  target_link_libraries(svrt-ui-transition-test PRIVATE
+    svrt::svrt Threads::Threads PkgConfig::SVRT_SDL
+    PkgConfig::SVRT_SDL_TTF m)
+  add_test(NAME svrt-ui-transition-test COMMAND svrt-ui-transition-test)
+  set_tests_properties(svrt-ui-transition-test PROPERTIES
+    ENVIRONMENT "SDL_VIDEODRIVER=dummy;SDL_AUDIODRIVER=dummy")
 endif()
 install(TARGETS svrt-receiver RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS ihslib LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -46,5 +70,6 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/stearlight.service
   DESTINATION /etc/avahi/services)
 install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/force-5ghz.sh
   DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/svrt)
-install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../gui/assets/
-  DESTINATION ${CMAKE_INSTALL_DATADIR}/svrt/gui/assets)
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../assets/
+  DESTINATION ${CMAKE_INSTALL_DATADIR}/svrt/assets
+  FILES_MATCHING PATTERN "*.mkv" PATTERN "*.otf" PATTERN "transition_background.png")

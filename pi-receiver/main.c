@@ -57,18 +57,15 @@ static void *monitor_receiver(void *opaque) {
     return NULL;
 }
 
-static int authorize_steam_link(int headless, svrt_status_server *status) {
-    svrt_steam_link_pairing pairing;
-    if (svrt_steam_link_pairing_start(&pairing)) {
-        fprintf(stderr, "SVRT: cannot start Steam Link discovery\n");
-        return -1;
-    }
+static int finish_steam_link_pairing(svrt_steam_link_pairing *pairing,
+                                     int headless,
+                                     svrt_status_server *status, svrt_ui *ui) {
     if (headless) {
         svrt_steam_link_state state = SVRT_STEAM_LINK_SEARCHING;
         char error[128] = {0};
         while (!quitting && state != SVRT_STEAM_LINK_PAIRED &&
                state != SVRT_STEAM_LINK_FAILED) {
-            svrt_steam_link_pairing_snapshot(&pairing, &state, NULL, NULL,
+            svrt_steam_link_pairing_snapshot(pairing, &state, NULL, NULL,
                                              error, NULL);
             struct timespec delay = {.tv_sec = 0, .tv_nsec = 50000000};
             nanosleep(&delay, NULL);
@@ -76,13 +73,13 @@ static int authorize_steam_link(int headless, svrt_status_server *status) {
         if (state == SVRT_STEAM_LINK_FAILED)
             fprintf(stderr, "SVRT Steam Link: %s\n", error);
     } else {
-        svrt_pairing_gui_show(&pairing, &quitting);
+        svrt_pairing_gui_show(pairing, &quitting, ui);
     }
-    const int paired = svrt_steam_link_pairing_is_paired(&pairing);
+    const int paired = svrt_steam_link_pairing_is_paired(pairing);
     uint64_t device_id = 0;
-    svrt_steam_link_pairing_snapshot(&pairing, NULL, NULL, NULL, NULL,
+    svrt_steam_link_pairing_snapshot(pairing, NULL, NULL, NULL, NULL,
                                      &device_id);
-    svrt_steam_link_pairing_stop(&pairing);
+    svrt_steam_link_pairing_stop(pairing);
     svrt_status_server_set_steam_device_id(status, device_id);
     if (paired) {
         char address[64] = {0};
@@ -90,6 +87,16 @@ static int authorize_steam_link(int headless, svrt_status_server *status) {
             svrt_status_server_set_paired_host(status, address);
     }
     return paired;
+}
+
+static int authorize_steam_link(int headless, svrt_status_server *status,
+                                svrt_ui *ui) {
+    svrt_steam_link_pairing pairing;
+    if (svrt_steam_link_pairing_start(&pairing)) {
+        fprintf(stderr, "SVRT: cannot start Steam Link discovery\n");
+        return -1;
+    }
+    return finish_steam_link_pairing(&pairing, headless, status, ui);
 }
 
 int main(int argc, char **argv) {
@@ -125,9 +132,19 @@ int main(int argc, char **argv) {
                 status_port);
         return 1;
     }
+    svrt_ui ui;
+    int have_ui = 0;
+    if (!headless) {
+        have_ui = svrt_ui_open(&ui) == 0;
+        if (!have_ui) {
+            fprintf(stderr, "SVRT: GUI unavailable; falling back to headless mode\n");
+            headless = 1;
+        }
+    }
     while (!quitting) {
         svrt_status_server_update(&status, SVRT_RECEIVER_UNAUTHORIZED, NULL);
-        const int authorized = authorize_steam_link(headless, &status);
+        const int authorized = authorize_steam_link(headless, &status,
+                                                     have_ui ? &ui : NULL);
         if (quitting) break;
         if (authorized <= 0) {
             exit_code = 1;
@@ -143,6 +160,7 @@ int main(int argc, char **argv) {
         if (!audio_started)
             fprintf(stderr, "SVRT audio: failed to start receiver\n");
 
+        svrt_ui_state wait_state = SVRT_UI_STARTING;
         while (!quitting &&
                !svrt_status_server_authorization_revoked(&status)) {
             svrt_config cfg = {.port = port,
@@ -151,7 +169,9 @@ int main(int argc, char **argv) {
                                .fullscreen = 1,
                                .headless = headless,
                                .packet_event = svrt_status_server_packet_event,
-                               .packet_event_opaque = &status};
+                               .packet_event_opaque = &status,
+                               .display_window = have_ui ? svrt_ui_window(&ui) : NULL,
+                               .display_renderer = have_ui ? svrt_ui_renderer(&ui) : NULL};
             svrt_status_server_reset_trace(&status);
             if (svrt_open(&running, &cfg)) {
                 svrt_status_server_update(&status, SVRT_RECEIVER_ERROR, NULL);
@@ -161,7 +181,6 @@ int main(int argc, char **argv) {
                 continue;
             }
             exit_code = 0;
-
             svrt_status_server_update(&status, SVRT_RECEIVER_READY, NULL);
             monitor_args monitor = {.context = running, .server = &status};
             pthread_t monitor_thread;
@@ -171,12 +190,69 @@ int main(int argc, char **argv) {
             pthread_t run_thread;
             int running_in_thread = pthread_create(&run_thread, NULL,
                                                    run_receiver, &runner) == 0;
+            svrt_steam_link_pairing authorization_probe;
+            int probe_active = 0, probe_requires_login = 0;
+            uint32_t probe_authorizing_ms = 0;
+            uint32_t next_probe_ms = SDL_GetTicks() + 3000;
             int rc;
             if (running_in_thread) {
                 while (!quitting && !atomic_load(&runner.done) &&
                        !svrt_status_server_authorization_revoked(&status)) {
+                    svrt_stats ui_stats = {0};
+                    svrt_get_stats(running, &ui_stats);
+                    const uint32_t now = SDL_GetTicks();
+                    if (have_ui && ui_stats.decoded_frames == 0)
+                        svrt_ui_draw(&ui, wait_state, NULL, NULL, NULL,
+                                     now);
+
+                    /* SteamVR is not required for authorization monitoring.
+                       While idle, periodically ask Steam Remote Play to
+                       validate this device. Trusted devices complete the
+                       request silently; a revoked device remains in the PIN
+                       state and that same request is promoted to the UI. */
+                    if (ui_stats.decoded_frames == 0) {
+                        if (!probe_active && now >= next_probe_ms) {
+                            if (!svrt_steam_link_pairing_start(
+                                    &authorization_probe)) {
+                                probe_active = 1;
+                                probe_authorizing_ms = 0;
+                            } else {
+                                next_probe_ms = now + 5000;
+                            }
+                        }
+                        if (probe_active) {
+                            svrt_steam_link_state probe_state;
+                            svrt_steam_link_pairing_snapshot(
+                                &authorization_probe, &probe_state, NULL,
+                                NULL, NULL, NULL);
+                            if (probe_state == SVRT_STEAM_LINK_PAIRED) {
+                                svrt_steam_link_pairing_stop(
+                                    &authorization_probe);
+                                probe_active = 0;
+                                next_probe_ms = now + 5000;
+                            } else if (probe_state ==
+                                       SVRT_STEAM_LINK_AUTHORIZING) {
+                                if (!probe_authorizing_ms)
+                                    probe_authorizing_ms = now;
+                                else if (now - probe_authorizing_ms >= 1000) {
+                                    probe_requires_login = 1;
+                                    svrt_stop(running);
+                                }
+                            } else if (probe_state ==
+                                       SVRT_STEAM_LINK_FAILED) {
+                                svrt_steam_link_pairing_stop(
+                                    &authorization_probe);
+                                probe_active = 0;
+                                next_probe_ms = now + 5000;
+                            }
+                        }
+                    } else if (probe_active) {
+                        svrt_steam_link_pairing_stop(&authorization_probe);
+                        probe_active = 0;
+                        next_probe_ms = now + 5000;
+                    }
                     struct timespec delay = {.tv_sec = 0,
-                                             .tv_nsec = 50000000};
+                                             .tv_nsec = 16000000};
                     nanosleep(&delay, NULL);
                 }
                 if (quitting ||
@@ -189,6 +265,8 @@ int main(int argc, char **argv) {
                 rc = -1;
                 exit_code = 1;
             }
+            if (probe_active && !probe_requires_login)
+                svrt_steam_link_pairing_stop(&authorization_probe);
             if (monitoring) {
                 atomic_store(&monitor.stopping, 1);
                 pthread_join(monitor_thread, NULL);
@@ -196,6 +274,36 @@ int main(int argc, char **argv) {
 
             svrt_stats stats = {0};
             svrt_get_stats(running, &stats);
+            const svrt_end_reason end_reason = svrt_get_end_reason(running);
+            if (probe_requires_login) {
+                fprintf(stderr,
+                        "SVRT Steam Link: authorization probe requires a PIN\n");
+                svrt_status_server_update(&status,
+                                          SVRT_RECEIVER_UNAUTHORIZED, &stats);
+                svrt_close(&running);
+                running = NULL;
+                const int paired = finish_steam_link_pairing(
+                    &authorization_probe, headless, &status,
+                    have_ui ? &ui : NULL);
+                if (paired) {
+                    svrt_status_server_reset_authorization(&status);
+                    svrt_status_server_update(&status,
+                                              SVRT_RECEIVER_STARTING, NULL);
+                    wait_state = SVRT_UI_STARTING;
+                    exit_code = 0;
+                } else {
+                    svrt_status_server_revoke_authorization(&status);
+                }
+                continue;
+            }
+            if (end_reason == SVRT_END_DISCONNECTED) {
+                /* Steam Link explicitly detached this headset.  Do not wait
+                   for a future SteamVR driver poll to discover that the
+                   grant is gone: return to the PIN flow immediately. */
+                fprintf(stderr,
+                        "SVRT Steam Link: headset disconnected; requesting authorization again\n");
+                svrt_status_server_revoke_authorization(&status);
+            }
             const int revoked =
                 svrt_status_server_authorization_revoked(&status);
             if (revoked || quitting) {
@@ -215,6 +323,18 @@ int main(int argc, char **argv) {
                     (unsigned long long)stats.dropped_frames);
             svrt_close(&running);
             running = NULL;
+            if (!quitting && !revoked) wait_state = SVRT_UI_SEARCHING;
+            if (have_ui && !quitting && !revoked) {
+                /* Neither shutdown nor disconnect has a status screen.  Prime
+                   the idle animation immediately between video sessions. */
+                const uint32_t loop_start = SDL_GetTicks();
+                while (!quitting && SDL_GetTicks() - loop_start < 500) {
+                    const uint32_t now = SDL_GetTicks();
+                    svrt_ui_draw(&ui, SVRT_UI_SEARCHING, NULL, NULL, NULL, now);
+                    struct timespec delay = {.tv_sec = 0, .tv_nsec = 16000000};
+                    nanosleep(&delay, NULL);
+                }
+            }
             if (!quitting && !revoked) {
                 struct timespec retry = {.tv_sec = rc ? 2 : 0,
                                          .tv_nsec = rc ? 0 : 250000000};
@@ -230,5 +350,6 @@ int main(int argc, char **argv) {
         }
     }
     svrt_status_server_stop(&status);
+    if (have_ui) svrt_ui_close(&ui);
     return exit_code;
 }

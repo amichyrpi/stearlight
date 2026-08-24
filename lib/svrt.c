@@ -1,5 +1,6 @@
 #include <svrt.h>
 #include <pipe.h>
+#include <stearlight_protocol.h>
 #include "drm_presenter.h"
 #include <errno.h>
 #include <libavcodec/avcodec.h>
@@ -18,7 +19,7 @@
 enum { SVRT_EXTRA_SLOTS = 128 };
 
 struct svrt_context {
-    svrt_config cfg; atomic_int stopping;
+    svrt_config cfg; atomic_int stopping; svrt_end_reason end_reason;
     svrt_pipe *pipe;
     AVCodecContext *decoder; AVBufferRef *hw_device; AVFrame *frame; AVPacket *packet;
     svrt_pipe *extra_pipe;
@@ -29,6 +30,7 @@ struct svrt_context {
     pthread_t present_thread; pthread_mutex_t present_mutex; pthread_cond_t present_cond;
     AVFrame *present_main,*present_extra; uint64_t present_pts_us; atomic_int present_started;
     SDL_Window *window; SDL_Renderer *renderer; SDL_Texture *texture;
+    int owns_display;
     svrt_drm *drm;
     struct {
         atomic_uint_fast64_t access_units, decoded_frames, presented_frames;
@@ -63,21 +65,28 @@ static int open_video(svrt_context *c,const AVCodecParameters *parameters){
     c->frame=av_frame_alloc();c->packet=av_packet_alloc();if(!c->frame||!c->packet){set_error(c,"FFmpeg allocation failed");return -1;}fprintf(stderr,"SVRT: decoder=%s\n",codec->name);return 0;
 }
 static int open_display(svrt_context *c){
-    SDL_setenv("SDL_VIDEODRIVER","kmsdrm",0);SDL_SetHint(SDL_HINT_RENDER_VSYNC,"0");if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){set_error(c,"SDL_Init: %s",SDL_GetError());return -1;}
-    disable_local_input();
-    fprintf(stderr,"SVRT: SDL video=%s displays=%d\n",SDL_GetCurrentVideoDriver(),SDL_GetNumVideoDisplays());
-    uint32_t flags=SDL_WINDOW_SHOWN|SDL_WINDOW_BORDERLESS;if(c->cfg.fullscreen)flags|=SDL_WINDOW_FULLSCREEN_DESKTOP;c->window=SDL_CreateWindow("SVRT HEVC",SDL_WINDOWPOS_UNDEFINED,SDL_WINDOWPOS_UNDEFINED,640,480,flags);if(!c->window){set_error(c,"SDL_CreateWindow: %s",SDL_GetError());return -1;}
+    if (c->cfg.display_window) {
+        c->window = c->cfg.display_window;
+        c->renderer = c->cfg.display_renderer;
+    } else {
+        SDL_setenv("SDL_VIDEODRIVER","kmsdrm",0);SDL_SetHint(SDL_HINT_RENDER_VSYNC,"0");if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS)){set_error(c,"SDL_Init: %s",SDL_GetError());return -1;}
+        disable_local_input();
+        fprintf(stderr,"SVRT: SDL video=%s displays=%d\n",SDL_GetCurrentVideoDriver(),SDL_GetNumVideoDisplays());
+        uint32_t flags=SDL_WINDOW_SHOWN|SDL_WINDOW_BORDERLESS;if(c->cfg.fullscreen)flags|=SDL_WINDOW_FULLSCREEN_DESKTOP;c->window=SDL_CreateWindow("SVRT HEVC",SDL_WINDOWPOS_UNDEFINED,SDL_WINDOWPOS_UNDEFINED,640,480,flags);if(!c->window){set_error(c,"SDL_CreateWindow: %s",SDL_GetError());return -1;}
+    }
     /* Direct KMS video uses overlay planes. Paint the SDL-owned primary plane
        black once so square video leaves black borders instead of revealing
        boot or login-console text underneath. */
-    SDL_Surface *background=SDL_GetWindowSurface(c->window);
-    if(background){SDL_FillRect(background,NULL,SDL_MapRGB(background->format,0,0,0));SDL_UpdateWindowSurface(c->window);}
+    if (!c->cfg.display_window) {
+        SDL_Surface *background=SDL_GetWindowSurface(c->window);
+        if(background){SDL_FillRect(background,NULL,SDL_MapRGB(background->format,0,0,0));SDL_UpdateWindowSurface(c->window);}
+    }
     int drm_rc=svrt_drm_open(&c->drm,c->window,c->error,sizeof(c->error));if(drm_rc&&c->cfg.require_zero_copy)return -1;
-    if(!c->drm){c->renderer=SDL_CreateRenderer(c->window,-1,SDL_RENDERER_ACCELERATED);if(!c->renderer){set_error(c,"SDL_CreateRenderer: %s",SDL_GetError());return -1;}c->error[0]='\0';}
+    if(!c->drm&&!c->renderer){c->renderer=SDL_CreateRenderer(c->window,-1,SDL_RENDERER_ACCELERATED);if(!c->renderer){set_error(c,"SDL_CreateRenderer: %s",SDL_GetError());return -1;}c->error[0]='\0';}
     return 0;
 }
 static int interrupted(void *opaque){return atomic_load(&((svrt_context*)opaque)->stopping);}
-int svrt_open(svrt_context **out,const svrt_config *cfg){if(!out)return -1;*out=NULL;svrt_context *c=calloc(1,sizeof(*c));if(!c)return -1;if(cfg)c->cfg=*cfg;else c->cfg=(svrt_config){.port=9944,.require_hardware=1,.require_zero_copy=1,.fullscreen=1};if(!c->cfg.port)c->cfg.port=9944;if(!c->cfg.extra_port)c->cfg.extra_port=(uint16_t)(c->cfg.port+3);pthread_mutex_init(&c->extra_mutex,NULL);pthread_cond_init(&c->extra_cond,NULL);pthread_mutex_init(&c->present_mutex,NULL);pthread_cond_init(&c->present_cond,NULL);if(!c->cfg.headless&&open_display(c)){fprintf(stderr,"SVRT: %s\n",c->error);svrt_close(&c);return -1;}*out=c;return 0;}
+int svrt_open(svrt_context **out,const svrt_config *cfg){if(!out)return -1;*out=NULL;svrt_context *c=calloc(1,sizeof(*c));if(!c)return -1;if(cfg)c->cfg=*cfg;else c->cfg=(svrt_config){.port=9944,.require_hardware=1,.require_zero_copy=1,.fullscreen=1};if(!c->cfg.port)c->cfg.port=9944;if(!c->cfg.extra_port)c->cfg.extra_port=(uint16_t)(c->cfg.port+3);pthread_mutex_init(&c->extra_mutex,NULL);pthread_cond_init(&c->extra_cond,NULL);pthread_mutex_init(&c->present_mutex,NULL);pthread_cond_init(&c->present_cond,NULL);if(!c->cfg.headless&&open_display(c)){fprintf(stderr,"SVRT: %s\n",c->error);svrt_close(&c);return -1;}if(!c->cfg.headless&&!c->cfg.display_window)c->owns_display=1;*out=c;return 0;}
 static int software_present(svrt_context *c,AVFrame *f){uint32_t fmt;if(f->format==AV_PIX_FMT_YUV420P)fmt=SDL_PIXELFORMAT_IYUV;else if(f->format==AV_PIX_FMT_NV12)fmt=SDL_PIXELFORMAT_NV12;else{set_error(c,"unsupported software pixel format %s",av_get_pix_fmt_name(f->format));return -1;}if(c->texture){Uint32 texture_fmt=0;int texture_w=0,texture_h=0;if(SDL_QueryTexture(c->texture,&texture_fmt,NULL,&texture_w,&texture_h)){set_error(c,"SDL_QueryTexture: %s",SDL_GetError());return -1;}if(texture_fmt!=fmt||texture_w!=f->width||texture_h!=f->height){SDL_DestroyTexture(c->texture);c->texture=NULL;}}if(!c->texture)c->texture=SDL_CreateTexture(c->renderer,fmt,SDL_TEXTUREACCESS_STREAMING,f->width,f->height);if(!c->texture){set_error(c,"SDL_CreateTexture: %s",SDL_GetError());return -1;}int rc=f->format==AV_PIX_FMT_YUV420P?SDL_UpdateYUVTexture(c->texture,NULL,f->data[0],f->linesize[0],f->data[1],f->linesize[1],f->data[2],f->linesize[2]):SDL_UpdateNVTexture(c->texture,NULL,f->data[0],f->linesize[0],f->data[1],f->linesize[1]);if(rc||SDL_RenderClear(c->renderer)||SDL_RenderCopy(c->renderer,c->texture,NULL,NULL)){set_error(c,"SDL render: %s",SDL_GetError());return -1;}SDL_RenderPresent(c->renderer);return 0;}
 static int64_t frame_id(const AVFrame *frame,AVRational time_base,uint64_t fallback){
     int64_t pts=frame->best_effort_timestamp;
@@ -208,7 +217,10 @@ static int decode(svrt_context *c,AVRational time_base,uint64_t packet_pts_us,in
 }
 int svrt_run(svrt_context *c){
     if(!c)return -1;
-    svrt_pipe_config pc={.bind_address=c->cfg.bind_address,.port=c->cfg.port,.interrupt=interrupted,.opaque=c};
+    svrt_pipe_config pc={.bind_address=c->cfg.bind_address,.port=c->cfg.port,
+                         .interrupt=interrupted,
+                         .idle=(svrt_pipe_idle)c->cfg.ui_idle,
+                         .opaque=c->cfg.ui_idle_opaque ? c->cfg.ui_idle_opaque : c};
     fprintf(stderr,"SVRT: listening for Stearlight HEVC/FEC on UDP %u\n",c->cfg.port);
     int rc=svrt_pipe_listen(&c->pipe,&pc,c->error,sizeof(c->error));
     if(!rc)rc=open_video(c,svrt_pipe_video_parameters(c->pipe));
@@ -216,7 +228,7 @@ int svrt_run(svrt_context *c){
         AVRational time_base=svrt_pipe_time_base(c->pipe);c->decoder->pkt_timebase=time_base;
         while(!atomic_load(&c->stopping)){
             SDL_Event e;while(!c->cfg.headless&&SDL_PollEvent(&e))if(e.type==SDL_QUIT)atomic_store(&c->stopping,1);
-            rc=svrt_pipe_read(c->pipe,c->packet);if(rc<0)break;if(svrt_pipe_take_decoder_reset(c->pipe)){avcodec_flush_buffers(c->decoder);fprintf(stderr,"SVRT: new video session; decoder reset at keyframe\n");}else if(svrt_pipe_take_discontinuity(c->pipe))fprintf(stderr,"SVRT: video continuity restored at keyframe\n");
+            rc=svrt_pipe_read(c->pipe,c->packet);if(rc<0){int control=svrt_pipe_take_control(c->pipe);if(control==STEARLIGHT_CONTROL_SHUTDOWN)c->end_reason=SVRT_END_SHUTDOWN;else if(control==STEARLIGHT_CONTROL_DISCONNECTED)c->end_reason=SVRT_END_DISCONNECTED;break;}if(svrt_pipe_take_decoder_reset(c->pipe)){avcodec_flush_buffers(c->decoder);fprintf(stderr,"SVRT: new video session; decoder reset at keyframe\n");}else if(svrt_pipe_take_discontinuity(c->pipe))fprintf(stderr,"SVRT: video continuity restored at keyframe\n");
             atomic_fetch_add(&c->stats.access_units,1);atomic_fetch_add(&c->stats.bytes_received,(uint64_t)c->packet->size);
             uint64_t pts_us=c->packet->pts==AV_NOPTS_VALUE?UINT64_MAX:(uint64_t)av_rescale_q(c->packet->pts,time_base,AV_TIME_BASE_Q);
             if(pts_us!=UINT64_MAX){atomic_store(&c->stats.last_pts_us,pts_us);packet_event(c,SVRT_PACKET_RECEIVED,pts_us);}
@@ -225,10 +237,13 @@ int svrt_run(svrt_context *c){
         if(!atomic_load(&c->stopping)&&rc>=0&&decode(c,time_base,UINT64_MAX,1))rc=-1;
     }
     atomic_store(&c->stopping,1);
-    if(rc<0&&!atomic_load(&c->stats.decoded_frames)&&!c->error[0])set_error(c,"video stream ended: %d",rc);
+    if(rc<0&&!atomic_load(&c->stats.decoded_frames)&&!c->error[0]&&
+       c->end_reason==SVRT_END_ERROR)
+        set_error(c,"video stream ended: %d",rc);
     return c->error[0]?-1:0;
 }
 void svrt_stop(svrt_context *c){if(c)atomic_store(&c->stopping,1);}
 void svrt_get_stats(const svrt_context *c,svrt_stats *out){if(c&&out){svrt_pipe_stats network={0};svrt_pipe_get_stats(c->pipe,&network);*out=(svrt_stats){.access_units=atomic_load(&c->stats.access_units),.decoded_frames=atomic_load(&c->stats.decoded_frames),.presented_frames=atomic_load(&c->stats.presented_frames),.dropped_frames=atomic_load(&c->stats.dropped_frames),.bytes_received=atomic_load(&c->stats.bytes_received),.last_pts_us=atomic_load(&c->stats.last_pts_us),.invalid_packets=network.invalid_packets,.fec_recovered_shards=network.recovered_shards,.network_dropped_frames=network.expired_frames};}}
 const char *svrt_last_error(const svrt_context *c){return c?c->error:"invalid context";}
-void svrt_close(svrt_context **ptr){if(!ptr||!*ptr)return;svrt_context *c=*ptr;*ptr=NULL;atomic_store(&c->stopping,1);svrt_pipe_close(&c->pipe);svrt_pipe_close(&c->extra_pipe);svrt_drm_close(&c->drm);if(c->texture)SDL_DestroyTexture(c->texture);if(c->renderer)SDL_DestroyRenderer(c->renderer);if(c->window)SDL_DestroyWindow(c->window);SDL_Quit();av_packet_free(&c->packet);av_frame_free(&c->frame);avcodec_free_context(&c->decoder);av_buffer_unref(&c->hw_device);av_packet_free(&c->extra_packet);av_frame_free(&c->extra_decode_frame);for(unsigned i=0;i<SVRT_EXTRA_SLOTS;i++)av_frame_free(&c->extra_slots[i]);av_frame_free(&c->present_main);av_frame_free(&c->present_extra);avcodec_free_context(&c->extra_decoder);pthread_cond_destroy(&c->extra_cond);pthread_mutex_destroy(&c->extra_mutex);pthread_cond_destroy(&c->present_cond);pthread_mutex_destroy(&c->present_mutex);free(c);}
+svrt_end_reason svrt_get_end_reason(const svrt_context *c){return c?c->end_reason:SVRT_END_ERROR;}
+void svrt_close(svrt_context **ptr){if(!ptr||!*ptr)return;svrt_context *c=*ptr;*ptr=NULL;atomic_store(&c->stopping,1);svrt_pipe_close(&c->pipe);svrt_pipe_close(&c->extra_pipe);svrt_drm_close(&c->drm);if(c->texture)SDL_DestroyTexture(c->texture);if(c->owns_display&&c->renderer)SDL_DestroyRenderer(c->renderer);if(c->owns_display&&c->window)SDL_DestroyWindow(c->window);if(c->owns_display)SDL_Quit();av_packet_free(&c->packet);av_frame_free(&c->frame);avcodec_free_context(&c->decoder);av_buffer_unref(&c->hw_device);av_packet_free(&c->extra_packet);av_frame_free(&c->extra_decode_frame);for(unsigned i=0;i<SVRT_EXTRA_SLOTS;i++)av_frame_free(&c->extra_slots[i]);av_frame_free(&c->present_main);av_frame_free(&c->present_extra);avcodec_free_context(&c->extra_decoder);pthread_cond_destroy(&c->extra_cond);pthread_mutex_destroy(&c->extra_mutex);pthread_cond_destroy(&c->present_cond);pthread_mutex_destroy(&c->present_mutex);free(c);}

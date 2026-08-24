@@ -4,6 +4,7 @@ config BR2_PACKAGE_SVRT
     depends on BR2_PACKAGE_RPI_FFMPEG
     depends on BR2_PACKAGE_LIBDRM
     depends on BR2_PACKAGE_SDL2_KMSDRM
+    depends on BR2_PACKAGE_SDL2_TTF
     help
       SteamVR HEVC hardware decoder and KMSDRM receiver.
 

@@ -8,6 +8,15 @@ extern "C" {
 #endif
 
 typedef struct svrt_context svrt_context;
+typedef struct SDL_Window SDL_Window;
+typedef struct SDL_Renderer SDL_Renderer;
+
+typedef void (*svrt_ui_idle_cb)(void *opaque, uint32_t now_ms);
+typedef enum svrt_end_reason {
+    SVRT_END_ERROR = 0,
+    SVRT_END_DISCONNECTED = 1,
+    SVRT_END_SHUTDOWN = 2
+} svrt_end_reason;
 
 typedef enum svrt_packet_event {
     SVRT_PACKET_RECEIVED = 1,
@@ -27,6 +36,12 @@ typedef struct svrt_config {
     int headless;                  /* decode/measure without opening a display */
     svrt_packet_event_cb packet_event; /* optional latency instrumentation */
     void *packet_event_opaque;
+    /* Optional display owned by the receiver UI. When supplied, svrt keeps
+       the window/renderer alive and only owns the decoder and KMS planes. */
+    SDL_Window *display_window;
+    SDL_Renderer *display_renderer;
+    svrt_ui_idle_cb ui_idle;
+    void *ui_idle_opaque;
 } svrt_config;
 
 typedef struct svrt_stats {
@@ -45,6 +60,7 @@ typedef struct svrt_stats {
 int svrt_open(svrt_context **out, const svrt_config *config);
 /* Accept one sender and run until disconnect, quit event, or error. */
 int svrt_run(svrt_context *ctx);
+svrt_end_reason svrt_get_end_reason(const svrt_context *ctx);
 void svrt_stop(svrt_context *ctx);
 void svrt_get_stats(const svrt_context *ctx, svrt_stats *out);
 const char *svrt_last_error(const svrt_context *ctx);
