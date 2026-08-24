@@ -4,6 +4,7 @@
 #include "audio.h"
 #include "pairing.h"
 #include "steam_link_pairing.h"
+#include "steam_client.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -99,6 +100,22 @@ static int authorize_steam_link(int headless, svrt_status_server *status,
     return finish_steam_link_pairing(&pairing, headless, status, ui);
 }
 
+static void open_steam_page(svrt_steam_client *client,
+                            svrt_ui_action action) {
+    const char *uri = NULL;
+    switch (action) {
+        case SVRT_UI_ACTION_HOME: uri = "steam://open/main"; break;
+        case SVRT_UI_ACTION_LIBRARY: uri = "steam://open/games"; break;
+        case SVRT_UI_ACTION_SHOP: uri = "steam://store"; break;
+        case SVRT_UI_ACTION_FRIENDS: uri = "steam://open/friends"; break;
+        case SVRT_UI_ACTION_DOWNLOADS: uri = "steam://open/downloads"; break;
+        case SVRT_UI_ACTION_SETTINGS: uri = "steam://open/settings"; break;
+        case SVRT_UI_ACTION_PROFILE: uri = "steam://open/account"; break;
+        default: break;
+    }
+    if (uri) svrt_steam_client_open_uri(client, uri);
+}
+
 int main(int argc, char **argv) {
     int headless = 0;
     uint16_t port = 9944;
@@ -133,6 +150,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     svrt_ui ui;
+    svrt_steam_client steam_client;
+    int steam_client_started = 0;
     int have_ui = 0;
     if (!headless) {
         have_ui = svrt_ui_open(&ui) == 0;
@@ -141,8 +160,41 @@ int main(int argc, char **argv) {
             headless = 1;
         }
     }
+    if (have_ui) {
+        svrt_steam_client_start(&steam_client, svrt_ui_renderer(&ui));
+        steam_client_started = 1;
+    }
+    const char *start_streaming = getenv("SVRT_START_IN_STREAMING_MODE");
+    int streaming_mode = headless ||
+                         (start_streaming && start_streaming[0] &&
+                          strcmp(start_streaming, "0"));
+    if (have_ui) svrt_ui_set_streaming_mode(&ui, streaming_mode);
     while (!quitting) {
         svrt_status_server_update(&status, SVRT_RECEIVER_UNAUTHORIZED, NULL);
+        /* Standalone Steam is the receiver's home mode.  Steam Link pairing
+           and the video socket are entered only from the connection tile. */
+        while (have_ui && !quitting && !streaming_mode) {
+            const uint32_t now = SDL_GetTicks();
+            svrt_steam_client_update(&steam_client,
+                                     svrt_ui_renderer(&ui), now);
+            svrt_ui_set_client_frame(
+                &ui, svrt_steam_client_frame(&steam_client));
+            svrt_ui_draw(&ui, SVRT_UI_HOME, NULL, NULL,
+                         svrt_steam_client_detail(&steam_client), now);
+            const svrt_ui_action action = svrt_ui_take_action(&ui);
+            const int connection_requested =
+                svrt_ui_take_connection_request(&ui);
+            if (action == SVRT_UI_ACTION_CONNECTION ||
+                connection_requested) {
+                streaming_mode = 1;
+                svrt_ui_set_streaming_mode(&ui, 1);
+                fprintf(stderr, "SVRT: connection tile selected\n");
+            } else
+                open_steam_page(&steam_client, action);
+            struct timespec delay = {.tv_sec = 0, .tv_nsec = 16000000};
+            nanosleep(&delay, NULL);
+        }
+        if (quitting) break;
         const int authorized = authorize_steam_link(headless, &status,
                                                      have_ui ? &ui : NULL);
         if (quitting) break;
@@ -160,7 +212,8 @@ int main(int argc, char **argv) {
         if (!audio_started)
             fprintf(stderr, "SVRT audio: failed to start receiver\n");
 
-        svrt_ui_state wait_state = SVRT_UI_STARTING;
+        svrt_ui_state wait_state = SVRT_UI_HOME;
+        if (have_ui) svrt_ui_set_streaming_mode(&ui, streaming_mode);
         while (!quitting &&
                !svrt_status_server_authorization_revoked(&status)) {
             svrt_config cfg = {.port = port,
@@ -201,9 +254,30 @@ int main(int argc, char **argv) {
                     svrt_stats ui_stats = {0};
                     svrt_get_stats(running, &ui_stats);
                     const uint32_t now = SDL_GetTicks();
-                    if (have_ui && ui_stats.decoded_frames == 0)
-                        svrt_ui_draw(&ui, wait_state, NULL, NULL, NULL,
-                                     now);
+                    if (have_ui) {
+                        const svrt_ui_action action = svrt_ui_take_action(&ui);
+                        const int connection_requested =
+                            svrt_ui_take_connection_request(&ui);
+                        if (action == SVRT_UI_ACTION_CONNECTION ||
+                            connection_requested) {
+                            streaming_mode = !streaming_mode;
+                            svrt_ui_set_streaming_mode(&ui, streaming_mode);
+                            fprintf(stderr, "SVRT: switched to %s mode\n",
+                                    streaming_mode ? "streaming" : "Steam");
+                        } else
+                            open_steam_page(&steam_client, action);
+                        if (!streaming_mode || ui_stats.decoded_frames == 0) {
+                            svrt_steam_client_update(&steam_client,
+                                                     svrt_ui_renderer(&ui), now);
+                            svrt_ui_set_client_frame(
+                                &ui, svrt_steam_client_frame(&steam_client));
+                            svrt_ui_draw(
+                                &ui,
+                                streaming_mode ? wait_state : SVRT_UI_HOME,
+                                NULL, NULL,
+                                svrt_steam_client_detail(&steam_client), now);
+                        }
+                    }
 
                     /* SteamVR is not required for authorization monitoring.
                        While idle, periodically ask Steam Remote Play to
@@ -350,6 +424,7 @@ int main(int argc, char **argv) {
         }
     }
     svrt_status_server_stop(&status);
+    if (steam_client_started) svrt_steam_client_stop(&steam_client);
     if (have_ui) svrt_ui_close(&ui);
     return exit_code;
 }

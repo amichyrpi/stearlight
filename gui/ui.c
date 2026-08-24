@@ -5,8 +5,11 @@
 #include <libavutil/hwcontext.h>
 #include <libavutil/mathematics.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <glob.h>
 
 #define SVRT_PANEL_WIDTH 1024
 #define SVRT_PANEL_HEIGHT 640
@@ -37,15 +40,136 @@ struct svrt_ui_video {
     const char *path;
 };
 
+static svrt_ui_video *video_open(const char *path);
+
 static void disable_local_input(void) {
     static const Uint32 events[] = {
-        SDL_KEYDOWN, SDL_KEYUP, SDL_TEXTEDITING, SDL_TEXTINPUT,
-        SDL_KEYMAPCHANGED, SDL_MOUSEMOTION, SDL_MOUSEBUTTONDOWN,
+        SDL_KEYUP, SDL_TEXTEDITING, SDL_TEXTINPUT,
+        SDL_KEYMAPCHANGED, SDL_MOUSEMOTION,
         SDL_MOUSEBUTTONUP, SDL_MOUSEWHEEL, SDL_FINGERDOWN, SDL_FINGERUP,
         SDL_FINGERMOTION};
     SDL_ShowCursor(SDL_DISABLE);
     for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); ++i)
         SDL_EventState(events[i], SDL_IGNORE);
+}
+
+static void poll_ui_actions(svrt_ui *ui) {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F9)
+            ui->connection_requested = 1;
+        if (event.type == SDL_MOUSEBUTTONDOWN) {
+            int width = 0, height = 0;
+            SDL_GetRendererOutputSize(ui->renderer, &width, &height);
+            float x = event.button.x, y = event.button.y;
+#if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
+            const float scene_width = width * 0.5f *
+                                      SVRT_DEBUG_LEFT_EYE_UI_SCALE;
+            const float scene_height = height *
+                                       SVRT_DEBUG_LEFT_EYE_UI_SCALE;
+            x = (x - (width - scene_width) * 0.5f) /
+                SVRT_DEBUG_LEFT_EYE_UI_SCALE;
+            y = (y - (height - scene_height) * 0.5f) /
+                SVRT_DEBUG_LEFT_EYE_UI_SCALE;
+#endif
+            const int eye_width = width / 2;
+            const int sidebar_w = (int)(eye_width * 0.065f);
+            const int sidebar_h = (int)(height * 0.48f);
+            const SDL_Rect sidebar = {
+                (int)(eye_width * 0.055f),
+                (height - sidebar_h) / 2 - height / 20,
+                sidebar_w, sidebar_h};
+            if (x >= sidebar.x && x < sidebar.x + sidebar.w &&
+                y >= sidebar.y && y < sidebar.y + sidebar.h) {
+                int item = (int)((y - sidebar.y) * 6 / sidebar.h);
+                if (item < 0) item = 0;
+                if (item > 5) item = 5;
+                ui->selected_page = item;
+                ui->pending_action = (svrt_ui_action)(SVRT_UI_ACTION_HOME + item);
+            }
+            const int bar_h = (int)(height * 0.072f);
+            const int bar_w = (int)(eye_width * 0.48f);
+            const int bar_y = (int)(height * 0.745f);
+            const SDL_Rect steam = {(eye_width - bar_w) / 2 - bar_h - 8,
+                                    bar_y, bar_h, bar_h};
+            const SDL_Rect bar = {steam.x + steam.w + 8, bar_y,
+                                  bar_w, bar_h};
+            const SDL_Rect connection = {bar.x + 8, bar.y + 7,
+                                         bar.h - 14, bar.h - 14};
+            const SDL_Rect avatar = {bar.x + bar.w - bar.h + 7, bar.y + 7,
+                                     bar.h - 14, bar.h - 14};
+            if (x >= connection.x && x < connection.x + connection.w &&
+                y >= connection.y && y < connection.y + connection.h) {
+                ui->connection_requested = 1;
+                ui->pending_action = SVRT_UI_ACTION_CONNECTION;
+            } else if (x >= steam.x && x < steam.x + steam.w &&
+                       y >= steam.y && y < steam.y + steam.h) {
+                ui->selected_page = 0;
+                ui->pending_action = SVRT_UI_ACTION_HOME;
+            } else if (x >= avatar.x && x < avatar.x + avatar.w &&
+                       y >= avatar.y && y < avatar.y + avatar.h) {
+                ui->pending_action = SVRT_UI_ACTION_PROFILE;
+            }
+        }
+    }
+}
+
+static int read_integer_file(const char *path, int *value) {
+    FILE *file = fopen(path, "r");
+    if (!file) return 0;
+    const int valid = fscanf(file, "%d", value) == 1;
+    fclose(file);
+    return valid;
+}
+
+static int wifi_connected(void) {
+    static uint32_t next_check_ms;
+    static int cached;
+    const uint32_t now_ms = SDL_GetTicks();
+    if (now_ms < next_check_ms) return cached;
+    next_check_ms = now_ms + 2000;
+    FILE *file = fopen("/sys/class/net/wlan0/operstate", "r");
+    if (!file) return cached = 0;
+    char state[16] = {0};
+    const int connected = fgets(state, sizeof(state), file) &&
+                          !strncmp(state, "up", 2);
+    fclose(file);
+    return cached = connected;
+}
+
+static int system_battery_percent(void) {
+    static uint32_t next_check_ms;
+    static int cached = -1;
+    const uint32_t now_ms = SDL_GetTicks();
+    if (now_ms < next_check_ms) return cached;
+    next_check_ms = now_ms + 5000;
+    glob_t matches = {0};
+    int percent = -1;
+    if (!glob("/sys/class/power_supply/*/capacity", 0, NULL, &matches)) {
+        for (size_t i = 0; i < matches.gl_pathc; ++i) {
+            if (read_integer_file(matches.gl_pathv[i], &percent)) break;
+        }
+        globfree(&matches);
+    }
+    cached = percent >= 0 && percent <= 100 ? percent : -1;
+    return cached;
+}
+
+static void update_steam_avatar(svrt_ui *ui) {
+    if (!ui || ui->avatar) return;
+    const uint32_t now_ms = SDL_GetTicks();
+    if (now_ms < ui->next_avatar_scan_ms) return;
+    ui->next_avatar_scan_ms = now_ms + 5000;
+    glob_t matches = {0};
+    if (glob("/var/lib/svrt-receiver/.local/share/Steam/config/avatarcache/*",
+             0, NULL, &matches))
+        return;
+    for (size_t i = 0; i < matches.gl_pathc && !ui->avatar; ++i) {
+        snprintf(ui->avatar_path, sizeof(ui->avatar_path), "%s",
+                 matches.gl_pathv[i]);
+        ui->avatar = video_open(ui->avatar_path);
+    }
+    globfree(&matches);
 }
 
 static void video_close(svrt_ui_video **video) {
@@ -295,6 +419,142 @@ static void draw_text(SDL_Renderer *renderer, TTF_Font *font, const char *value,
     SDL_FreeSurface(surface);
 }
 
+static void fill_rounded_rect(SDL_Renderer *renderer, const SDL_Rect *rect,
+                              int radius, SDL_Color color) {
+    if (!renderer || !rect || rect->w <= 0 || rect->h <= 0) return;
+    if (radius < 0) radius = 0;
+    if (radius > rect->w / 2) radius = rect->w / 2;
+    if (radius > rect->h / 2) radius = rect->h / 2;
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    SDL_Rect middle = {rect->x + radius, rect->y,
+                       rect->w - radius * 2, rect->h};
+    SDL_Rect center = {rect->x, rect->y + radius,
+                       rect->w, rect->h - radius * 2};
+    SDL_RenderFillRect(renderer, &middle);
+    SDL_RenderFillRect(renderer, &center);
+    for (int y = 0; y < radius; ++y) {
+        const float dy = radius - y - 0.5f;
+        const int inset = radius - (int)sqrtf(radius * radius - dy * dy);
+        SDL_RenderDrawLine(renderer, rect->x + inset, rect->y + y,
+                          rect->x + rect->w - inset - 1, rect->y + y);
+        SDL_RenderDrawLine(renderer, rect->x + inset,
+                          rect->y + rect->h - y - 1,
+                          rect->x + rect->w - inset - 1,
+                          rect->y + rect->h - y - 1);
+    }
+}
+
+static void draw_round_texture(SDL_Renderer *renderer, SDL_Texture *texture,
+                               const SDL_Rect *rect) {
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    if (!renderer || !texture || !rect) return;
+    enum { segments = 24 };
+    SDL_Vertex vertices[segments + 1];
+    int indices[segments * 3];
+    const SDL_Color white = {255, 255, 255, 255};
+    vertices[0] = (SDL_Vertex){
+        {rect->x + rect->w * 0.5f, rect->y + rect->h * 0.5f},
+        white, {0.5f, 0.5f}};
+    for (int i = 0; i < segments; ++i) {
+        const float angle = i * 2.0f * SVRT_PI / segments;
+        const float x = cosf(angle), y = sinf(angle);
+        vertices[i + 1] = (SDL_Vertex){
+            {rect->x + rect->w * (0.5f + x * 0.5f),
+             rect->y + rect->h * (0.5f + y * 0.5f)},
+            white, {0.5f + x * 0.5f, 0.5f + y * 0.5f}};
+        indices[i * 3] = 0;
+        indices[i * 3 + 1] = i + 1;
+        indices[i * 3 + 2] = (i + 1) % segments + 1;
+    }
+    SDL_RenderGeometry(renderer, texture, vertices, segments + 1,
+                       indices, segments * 3);
+#else
+    SDL_RenderCopy(renderer, texture, NULL, rect);
+#endif
+}
+
+static void draw_dashboard_chrome_eye(svrt_ui *ui, int eye_x,
+                                       int eye_width, int height) {
+    const SDL_Color surface = {22, 27, 35, 245};
+    const SDL_Color selected = {17, 126, 188, 255};
+    const SDL_Color muted = {166, 176, 188, 255};
+    const int sidebar_w = (int)(eye_width * 0.065f);
+    const int sidebar_h = (int)(height * 0.48f);
+    SDL_Rect sidebar = {eye_x + (int)(eye_width * 0.055f),
+                        (height - sidebar_h) / 2 - height / 20,
+                        sidebar_w, sidebar_h};
+    fill_rounded_rect(ui->renderer, &sidebar, sidebar_w / 5, surface);
+    const int item_step = (sidebar.h - 14) / 6;
+    SDL_Rect side_selected = {sidebar.x + 5,
+                              sidebar.y + 7 + ui->selected_page * item_step,
+                              sidebar.w - 10, sidebar.w - 10};
+    fill_rounded_rect(ui->renderer, &side_selected, 8, selected);
+    static const char *items[] = {"H", "L", "S", "F", "D", "G"};
+    for (int item = 0; item < 6; ++item)
+        draw_text(ui->renderer, ui->small_font, items[item],
+                  sidebar.x + sidebar.w / 2,
+                  sidebar.y + 11 + item * item_step,
+                  item ? muted.a : 255);
+
+    const int bar_h = (int)(height * 0.072f);
+    const int bar_w = (int)(eye_width * 0.48f);
+    /* The debug single-eye view is uniformly zoomed after this scene is
+       composed. Keep the dashboard low without letting that crop its edge. */
+    const int bar_y = (int)(height * 0.745f);
+    SDL_Rect steam = {eye_x + (eye_width - bar_w) / 2 - bar_h - 8,
+                      bar_y, bar_h, bar_h};
+    SDL_Rect bar = {steam.x + steam.w + 8, bar_y, bar_w, bar_h};
+    fill_rounded_rect(ui->renderer, &steam, 10, surface);
+    fill_rounded_rect(ui->renderer, &bar, 10, surface);
+    SDL_Rect steam_selected = {steam.x + 5, steam.y + steam.h - 6,
+                               steam.w - 10, 3};
+    fill_rounded_rect(ui->renderer, &steam_selected, 2, selected);
+    draw_text(ui->renderer, ui->small_font, "S",
+              steam.x + steam.w / 2, steam.y + 8, 255);
+
+    SDL_Rect connection = {bar.x + 8, bar.y + 7,
+                           bar.h - 14, bar.h - 14};
+    fill_rounded_rect(ui->renderer, &connection, 8,
+                      ui->streaming_mode ? selected :
+                      (SDL_Color){31, 38, 48, 255});
+    draw_text(ui->renderer, ui->small_font, "C",
+              connection.x + connection.w / 2, connection.y + 3, 255);
+
+    char clock_text[16] = {0};
+    time_t now = time(NULL);
+    struct tm local;
+    if (localtime_r(&now, &local)) strftime(clock_text, sizeof(clock_text),
+                                             "%H:%M", &local);
+    draw_text(ui->renderer, ui->small_font, clock_text,
+              bar.x + bar.w - bar.h * 2,
+              bar.y + 7, 255);
+    draw_text(ui->renderer, ui->small_font,
+              wifi_connected() ? "WiFi" : "Offline",
+              bar.x + bar.w - bar.h * 3,
+              bar.y + bar.h / 2, muted.a);
+    const int battery = system_battery_percent();
+    if (battery >= 0) {
+        char battery_text[8];
+        snprintf(battery_text, sizeof(battery_text), "%d%%", battery);
+        draw_text(ui->renderer, ui->small_font, battery_text,
+                  bar.x + bar.w - bar.h * 3,
+                  bar.y + 4, muted.a);
+    }
+    SDL_Rect avatar = {bar.x + bar.w - bar.h + 7, bar.y + 7,
+                       bar.h - 14, bar.h - 14};
+    fill_rounded_rect(ui->renderer, &avatar, avatar.w / 2,
+                      (SDL_Color){50, 62, 77, 255});
+    update_steam_avatar(ui);
+    if (ui->avatar && !ui->avatar->texture)
+        video_decode_next(ui->avatar, ui->renderer);
+    if (ui->avatar && ui->avatar->texture)
+        draw_round_texture(ui->renderer, ui->avatar->texture, &avatar);
+    else
+        draw_text(ui->renderer, ui->small_font, "U",
+                  avatar.x + avatar.w / 2, avatar.y + 2, 255);
+}
+
 static void fit_rect(SDL_Rect *out, int x, int y, int width, int height,
                      int source_width, int source_height, int margin) {
     int available_width = width - margin * 2, available_height = height - margin * 2;
@@ -408,6 +668,17 @@ static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
         draw_loading_content(ui, state, code, detail, elapsed_ms, alpha);
     } else if (state == SVRT_UI_FAILED) {
         draw_loading_content(ui, state, code, detail, elapsed_ms, alpha);
+    } else if (state == SVRT_UI_HOME) {
+        if (ui->client_frame) {
+            SDL_Rect destination = {0, 0, SVRT_PANEL_WIDTH, SVRT_PANEL_HEIGHT};
+            SDL_RenderCopy(ui->renderer, ui->client_frame, NULL, &destination);
+        } else {
+            draw_text(ui->renderer, ui->font, "Steam ARM64",
+                      SVRT_PANEL_WIDTH / 2, SVRT_PANEL_HEIGHT / 2 - 42, 255);
+            draw_text(ui->renderer, ui->small_font,
+                      detail ? detail : "Starting Big Picture",
+                      SVRT_PANEL_WIDTH / 2, SVRT_PANEL_HEIGHT / 2 + 12, 210);
+        }
     }
     SDL_SetRenderTarget(ui->renderer, NULL);
 }
@@ -566,7 +837,8 @@ static void draw_environment(svrt_ui *ui) {
     SDL_GetRendererOutputSize(ui->renderer, &width, &height);
     if (ui->background && !ui->background->texture)
         video_decode_next(ui->background, ui->renderer);
-    for (int eye = 0; eye < 2; ++eye) {
+    const int eye_count = SVRT_ENABLE_DEBUG_LEFT_EYE_UI ? 1 : 2;
+    for (int eye = 0; eye < eye_count; ++eye) {
         const int eye_x = eye * (width / 2);
         const int eye_width = eye ? width - width / 2 : width / 2;
         SDL_Rect eye_clip = {eye_x, 0, eye_width, height};
@@ -602,9 +874,9 @@ static void draw_curved_panel_eye(svrt_ui *ui, int eye_x, int eye_width,
     const float focal = scene_focal_length(height);
     const float eye_offset = eye ? SVRT_EYE_SEPARATION_METERS * 0.5f :
                                    -SVRT_EYE_SEPARATION_METERS * 0.5f;
-    const float radius = 3.5f, distance = 2.25f;
-    const float arc = 36.0f * SVRT_PI / 180.0f;
-    const float panel_height = 1.32f;
+    const float radius = 3.5f, distance = 2.15f;
+    const float arc = 44.0f * SVRT_PI / 180.0f;
+    const float panel_height = 1.50f;
     for (int column = 0; column <= slices; ++column) {
         const float u = (float)column / slices;
         const float angle = (u - 0.5f) * arc;
@@ -645,11 +917,44 @@ static void draw_curved_panel_eye(svrt_ui *ui, int eye_x, int eye_width,
 static void draw_scene(svrt_ui *ui) {
     int width = 0, height = 0;
     SDL_GetRendererOutputSize(ui->renderer, &width, &height);
+#if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
+    int rendering_left_eye_scene = 0;
+    if (ui->left_eye_scene &&
+        !SDL_SetRenderTarget(ui->renderer, ui->left_eye_scene)) {
+        rendering_left_eye_scene = 1;
+        SDL_SetRenderDrawColor(ui->renderer, 0, 0, 0, 255);
+        SDL_RenderClear(ui->renderer);
+    }
+#endif
     draw_environment(ui);
-    for (int eye = 0; eye < 2; ++eye)
+    const int eye_count = SVRT_ENABLE_DEBUG_LEFT_EYE_UI ? 1 : 2;
+    for (int eye = 0; eye < eye_count; ++eye)
         draw_curved_panel_eye(ui, eye * (width / 2),
                               eye ? width - width / 2 : width / 2,
                               height, eye);
+    if (ui->state == SVRT_UI_HOME)
+        for (int eye = 0; eye < eye_count; ++eye)
+            draw_dashboard_chrome_eye(ui, eye * (width / 2),
+                                      eye ? width - width / 2 : width / 2,
+                                      height);
+#if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
+    if (rendering_left_eye_scene) {
+        SDL_SetRenderTarget(ui->renderer, NULL);
+        const SDL_Rect source = {0, 0, width / 2, height};
+        const int zoomed_width = (int)lroundf(
+            source.w * SVRT_DEBUG_LEFT_EYE_UI_SCALE);
+        const int zoomed_height = (int)lroundf(
+            source.h * SVRT_DEBUG_LEFT_EYE_UI_SCALE);
+        const SDL_Rect destination = {
+            (width - zoomed_width) / 2,
+            (height - zoomed_height) / 2,
+            zoomed_width,
+            zoomed_height,
+        };
+        SDL_RenderCopy(ui->renderer, ui->left_eye_scene, &source,
+                       &destination);
+    }
+#endif
 }
 
 int svrt_ui_open(svrt_ui *ui) {
@@ -672,14 +977,27 @@ int svrt_ui_open(svrt_ui *ui) {
         ui->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
         SVRT_PANEL_WIDTH, SVRT_PANEL_HEIGHT) : NULL;
     if (ui->panel) SDL_SetTextureBlendMode(ui->panel, SDL_BLENDMODE_BLEND);
+#if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
+    int output_width = 0, output_height = 0;
+    if (ui->renderer)
+        SDL_GetRendererOutputSize(ui->renderer, &output_width, &output_height);
+    ui->left_eye_scene = ui->renderer ? SDL_CreateTexture(
+        ui->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
+        output_width, output_height) : NULL;
+#endif
     ui->font = TTF_OpenFont(SVRT_GUI_FONT_PATH, 42);
     ui->code_font = TTF_OpenFont(SVRT_GUI_FONT_PATH, 120);
+    ui->small_font = TTF_OpenFont(SVRT_GUI_FONT_PATH, 24);
     /* Only one animation decoder should be active at a time.  The Pi's
        stateless HEVC block has limited capture contexts; opening boot, loop,
        and Steam loading decoders together makes them starve each other. */
     ui->boot = video_open(SVRT_GUI_BOOT_PATH);
     ui->background = video_open(SVRT_GUI_BACKGROUND_PATH);
     if (!ui->renderer || !ui->panel || !ui->font || !ui->code_font ||
+        !ui->small_font ||
+#if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
+        !ui->left_eye_scene ||
+#endif
         !ui->boot || !ui->background) {
         svrt_ui_close(ui); return -1;
     }
@@ -693,8 +1011,11 @@ void svrt_ui_close(svrt_ui *ui) {
     if (!ui) return;
     video_close(&ui->boot); video_close(&ui->loop);
     video_close(&ui->steam_loading); video_close(&ui->background);
+    video_close(&ui->avatar);
     if (ui->code_font) TTF_CloseFont(ui->code_font);
+    if (ui->small_font) TTF_CloseFont(ui->small_font);
     if (ui->font) TTF_CloseFont(ui->font);
+    if (ui->left_eye_scene) SDL_DestroyTexture(ui->left_eye_scene);
     if (ui->panel) SDL_DestroyTexture(ui->panel);
     if (ui->renderer) SDL_DestroyRenderer(ui->renderer);
     if (ui->window) SDL_DestroyWindow(ui->window);
@@ -706,6 +1027,7 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
                   const char *hostname, const char *detail, uint32_t now_ms) {
     (void)hostname;
     if (!ui || !ui->renderer) return;
+    poll_ui_actions(ui);
     if (state != ui->state) {
         ui->state = state; ui->state_started_ms = now_ms;
         if (state == SVRT_UI_SEARCHING) {
@@ -754,3 +1076,26 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
 
 SDL_Window *svrt_ui_window(svrt_ui *ui) { return ui ? ui->window : NULL; }
 SDL_Renderer *svrt_ui_renderer(svrt_ui *ui) { return ui ? ui->renderer : NULL; }
+void svrt_ui_set_client_frame(svrt_ui *ui, SDL_Texture *frame) {
+    if (ui) ui->client_frame = frame;
+}
+
+void svrt_ui_set_streaming_mode(svrt_ui *ui, int enabled) {
+    if (ui) ui->streaming_mode = enabled != 0;
+}
+
+int svrt_ui_take_connection_request(svrt_ui *ui) {
+    if (!ui) return 0;
+    poll_ui_actions(ui);
+    const int requested = ui->connection_requested;
+    ui->connection_requested = 0;
+    return requested;
+}
+
+svrt_ui_action svrt_ui_take_action(svrt_ui *ui) {
+    if (!ui) return SVRT_UI_ACTION_NONE;
+    poll_ui_actions(ui);
+    const svrt_ui_action action = ui->pending_action;
+    ui->pending_action = SVRT_UI_ACTION_NONE;
+    return action;
+}

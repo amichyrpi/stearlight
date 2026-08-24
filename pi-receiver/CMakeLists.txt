@@ -6,6 +6,7 @@ add_executable(svrt-receiver
   main.c
   status.c status.h
   audio.c audio.h
+  steam_client.c steam_client.h
   steam_link_pairing.c steam_link_pairing.h)
 target_sources(svrt-receiver PRIVATE
   ../gui/pairing.c ../gui/pairing.h
@@ -20,9 +21,10 @@ target_compile_definitions(svrt-receiver PRIVATE
 target_compile_features(svrt-receiver PRIVATE c_std_11)
 find_package(Threads REQUIRED)
 find_package(ALSA REQUIRED)
+find_package(X11 REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SVRT_SDL_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
-target_link_libraries(svrt-receiver PRIVATE svrt::svrt Threads::Threads ALSA::ALSA PkgConfig::SVRT_SDL_TTF ihslib m)
+target_link_libraries(svrt-receiver PRIVATE svrt::svrt Threads::Threads ALSA::ALSA X11::X11 PkgConfig::SVRT_SDL_TTF ihslib m)
 if(SVRT_BUILD_TESTS)
   pkg_check_modules(SVRT_SDL REQUIRED IMPORTED_TARGET sdl2)
   add_executable(svrt-status-auth-test tests/status_auth_test.c status.c)
@@ -69,6 +71,9 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/svrt-receiver.service
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/stearlight.service
   DESTINATION /etc/avahi/services)
 install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/force-5ghz.sh
+  DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/svrt)
+install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/install-steam-arm64-pi.sh
+                 ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/launch-steam-arm64-pi.sh
   DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/svrt)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../assets/
   DESTINATION ${CMAKE_INSTALL_DATADIR}/svrt/assets

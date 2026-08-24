@@ -117,13 +117,24 @@ Optionally, to install the program:
 
 ```sh
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin svrt-receiver
-sudo usermod -aG video,render svrt-receiver
+sudo usermod -aG input,video,render svrt-receiver
 sudo cmake --install .
+sudo /usr/local/libexec/svrt/install-steam-arm64-pi.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now svrt-receiver.service
 ```
 
-The service runs as the `svrt-receiver` user with membership in the `video` and `render` groups, which grants access to the DRM devices for `SDL_VIDEODRIVER=kmsdrm` without root.
+The service runs as the `svrt-receiver` user with membership in the `input`,
+`video`, and `render` groups. This grants controller and DRM access without
+running the receiver as root. The Steam installer installs Valve's native
+ARM64 beta client and runtime under `/var/lib/svrt-receiver`, then applies the
+ARMv8.0 compatibility files required by Raspberry Pi 4 CPUs.
+
+The graphical receiver starts in standalone Steam Big Picture mode. Select the
+connection tile in the lower bar to enter Steam Link/SteamVR streaming mode;
+`F9` provides the same toggle for development testing. Headless deployments, or
+systems that must retain the old automatic streaming startup, can set
+`SVRT_START_IN_STREAMING_MODE=1` in the systemd service environment.
 
 ### SteamVR driver setup
 

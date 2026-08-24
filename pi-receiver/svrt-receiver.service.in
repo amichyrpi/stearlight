@@ -10,6 +10,7 @@ User=svrt-receiver
 Group=svrt-receiver
 SupplementaryGroups=video render
 Environment=SDL_VIDEODRIVER=kmsdrm
+Environment=HOME=/var/lib/svrt-receiver
 StateDirectory=svrt-receiver
 ExecStartPre=+/bin/sh -c "printf '\\033[2J\\033[H\\033[?25l' > /dev/tty1"
 ExecStartPre=+@CMAKE_INSTALL_FULL_LIBEXECDIR@/svrt/force-5ghz.sh
