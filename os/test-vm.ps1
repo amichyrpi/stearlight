@@ -3,6 +3,7 @@ param(
     [string]$ImagePath = (Join-Path $PSScriptRoot '..\out\stearlight-vm\stearlight-os-vm-x86_64.vdi'),
     [string]$Name = 'Stearlight-OS-Test',
     [int]$BootSeconds = 45,
+    [switch]$MeasureFps,
     [switch]$KeepRunning
 )
 
@@ -12,6 +13,7 @@ $image = (Resolve-Path -LiteralPath $ImagePath).Path
 $output = Split-Path -Parent $image
 $screenshot = Join-Path $output 'stearlight-vm.png'
 $qemuScreenshot = Join-Path $output 'stearlight-vm.ppm'
+$fpsScreenshot = Join-Path $output 'stearlight-vm-fps.ppm'
 $serialLog = Join-Path $output 'stearlight-vm-serial.log'
 $expectedWidth = 2880
 $expectedHeight = 1600
@@ -56,7 +58,8 @@ function Wait-SerialReady {
 function Invoke-QemuMonitor {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
-        [Parameter(Mandatory = $true)][string]$Command
+        [Parameter(Mandatory = $true)][string]$Command,
+        [int]$DelayMilliseconds = 400
     )
 
     $client = New-Object System.Net.Sockets.TcpClient
@@ -73,7 +76,9 @@ function Invoke-QemuMonitor {
         } catch [System.IO.IOException] { }
         $bytes = [Text.Encoding]::ASCII.GetBytes("$Command`n")
         $stream.Write($bytes, 0, $bytes.Length)
-        Start-Sleep -Milliseconds 400
+        if ($DelayMilliseconds -gt 0) {
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }
         $response = New-Object System.Text.StringBuilder
         try {
             while ($stream.DataAvailable) {
@@ -85,6 +90,104 @@ function Invoke-QemuMonitor {
         return $response.ToString()
     } finally {
         if ($client) { $client.Dispose() }
+    }
+}
+
+function Read-PpmFingerprint {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
+                                   [IO.FileAccess]::Read,
+                                   [IO.FileShare]::ReadWrite)
+    } catch {
+        return $null
+    }
+    try {
+        if ((Read-PpmToken -Stream $stream) -ne 'P6') { return $null }
+        $width = 0; $height = 0; $maxValue = 0
+        if (-not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$width) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$height) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$maxValue) -or
+            $width -ne $expectedWidth -or $height -ne $expectedHeight -or
+            $maxValue -ne 255) { return $null }
+        $pixelBytes = [int64]$width * [int64]$height * 3
+        if ($stream.Length -lt $pixelBytes) { return $null }
+        $pixelOffset = $stream.Length - $pixelBytes
+        $sample = New-Object 'System.Collections.Generic.List[byte]'
+        $pixel = New-Object byte[] 3
+        # Sample a regular lattice across both eyes.  It is enough to detect
+        # successive animation frames without hashing the complete 14 MB dump.
+        for ($y = 160; $y -lt $height; $y += 160) {
+            for ($x = 80; $x -lt $width; $x += 160) {
+                [void]$stream.Seek($pixelOffset + (([int64]$y * $width + $x) * 3),
+                                   [IO.SeekOrigin]::Begin)
+                if ($stream.Read($pixel, 0, 3) -eq 3) {
+                    [void]$sample.AddRange($pixel)
+                }
+            }
+        }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return [BitConverter]::ToString($sha.ComputeHash($sample.ToArray())).Replace('-', '')
+        }
+        finally { $sha.Dispose() }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Wait-QemuUiInitialized {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [int]$TimeoutSeconds = 45
+    )
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ((Read-SerialLog -Path $Path) -match 'SVRT UI INITIALIZED') { return $true }
+        if ($Process.HasExited) { return $false }
+        Start-Sleep -Milliseconds 100
+    }
+    return $false
+}
+
+function Measure-QemuBootFps {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if (-not (Wait-QemuUiInitialized -Path $Path -Process $Process)) {
+        throw 'QEMU UI did not initialize before the FPS measurement.'
+    }
+    Remove-Item -LiteralPath $fpsScreenshot -Force -ErrorAction SilentlyContinue
+    $sampleCount = 0
+    $changedCount = 0
+    $lastFingerprint = $null
+    $deadline = [DateTime]::UtcNow.AddSeconds(4)
+    while ([DateTime]::UtcNow -lt $deadline -and -not $Process.HasExited) {
+        try {
+            $response = Invoke-QemuMonitor -Port $Port `
+                -Command "screendump $fpsScreenshot" -DelayMilliseconds 25
+            if (-not (Test-Path -LiteralPath $fpsScreenshot) -and $sampleCount -eq 0) {
+                Write-Host "QEMU FPS screendump response: $response"
+            }
+        } catch { if ($sampleCount -eq 0) { Write-Host "QEMU FPS screendump error: $($_.Exception.Message)" } }
+        $fingerprint = Read-PpmFingerprint -Path $fpsScreenshot
+        if ($fingerprint) {
+            $sampleCount++
+            if ($lastFingerprint -and $fingerprint -ne $lastFingerprint)
+                { $changedCount++ }
+            $lastFingerprint = $fingerprint
+        }
+        Start-Sleep -Milliseconds 75
+    }
+    Write-Host "Boot animation frame samples: $sampleCount, changes: $changedCount"
+    if ($sampleCount -lt 15 -or $changedCount -lt 12) {
+        throw 'QEMU boot animation did not produce enough distinct frames.'
     }
 }
 
@@ -213,6 +316,90 @@ if (-not [IO.File]::Exists($vbox)) {
     Copy-Item -LiteralPath $qemuVarsSource -Destination $qemuVars -Force
     Remove-Item -LiteralPath $serialLog -Force -ErrorAction SilentlyContinue
 
+    # QEMU's GTK backend keeps the non-client (title-bar/border) height from
+    # its default 4:3 window when zoom-to-fit is enabled.  That leaves a large
+    # empty strip above/below the 16:9 stereo framebuffer.  Resize the outer
+    # window from its current width while preserving the guest aspect ratio;
+    # the guest framebuffer itself remains 2880x1600.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class StearlightQemuWindow {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Rect {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool GetWindowRect(IntPtr hWnd, out Rect rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool GetClientRect(IntPtr hWnd, out Rect rect);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetWindowPos(
+        IntPtr hWnd,
+        IntPtr hWndInsertAfter,
+        int x,
+        int y,
+        int cx,
+        int cy,
+        uint flags);
+}
+'@
+
+    function Set-QemuWindowAspect {
+        param(
+            [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process,
+            [Parameter(Mandatory = $true)][int]$FramebufferWidth,
+            [Parameter(Mandatory = $true)][int]$FramebufferHeight,
+            [int]$TimeoutMilliseconds = 10000
+        )
+
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            try { $Process.Refresh() } catch { return $false }
+            $rawHandle = $Process.MainWindowHandle
+            if ($rawHandle -and $rawHandle -ne 0) {
+                $handle = [IntPtr]$rawHandle
+                $outer = New-Object StearlightQemuWindow+Rect
+                $client = New-Object StearlightQemuWindow+Rect
+                if ([StearlightQemuWindow]::GetWindowRect($handle, [ref]$outer) -and
+                    [StearlightQemuWindow]::GetClientRect($handle, [ref]$client)) {
+                    $outerWidth = $outer.Right - $outer.Left
+                    $outerHeight = $outer.Bottom - $outer.Top
+                    $clientWidth = $client.Right - $client.Left
+                    $clientHeight = $client.Bottom - $client.Top
+                    if ($outerWidth -gt 0 -and $clientWidth -gt 0 -and
+                        $clientHeight -gt 0) {
+                        $nonClientHeight = $outerHeight - $clientHeight
+                        $targetClientHeight = [Math]::Max(1, [int][Math]::Round(
+                            $clientWidth * $FramebufferHeight / [double]$FramebufferWidth))
+                        $targetOuterHeight = $targetClientHeight + $nonClientHeight
+                        if ([Math]::Abs($targetOuterHeight - $outerHeight) -gt 1) {
+                            $flags = [uint32]0x0004 -bor [uint32]0x0010 # SWP_NOZORDER | SWP_NOACTIVATE
+                            if (-not [StearlightQemuWindow]::SetWindowPos(
+                                    $handle, [IntPtr]::Zero, $outer.Left, $outer.Top,
+                                    $outerWidth, $targetOuterHeight, $flags)) {
+                                Write-Warning 'Could not resize the QEMU GTK window.'
+                                return $false
+                            }
+                        }
+                        Write-Host "QEMU window fit: $outerWidth`x$targetOuterHeight outer ($clientWidth`x$targetClientHeight guest area)"
+                        return $true
+                    }
+                }
+            }
+            Start-Sleep -Milliseconds 200
+        }
+        Write-Warning 'QEMU window was not available for aspect-ratio fitting.'
+        return $false
+    }
+
     $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $portProbe.Start()
     $monitorPort = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
@@ -221,14 +408,25 @@ if (-not [IO.File]::Exists($vbox)) {
     $qemuArgs = @(
         '-machine', 'q35',
         '-m', '4096',
-        '-smp', '2',
+        '-smp', '4',
+        # Prefer Windows Hypervisor Platform when it is enabled.  The second
+        # accelerator keeps the test portable on machines where Hyper-V/WHPX
+        # is unavailable, while multi-threaded TCG remains the fallback.
+        '-accel', 'whpx',
         '-accel', 'tcg,thread=multi',
+        '-cpu', 'max',
         '-drive', "if=pflash,format=raw,readonly=on,file=$qemuCodeLocal",
         '-drive', "if=pflash,format=raw,file=$qemuVars",
         '-drive', "file=$image,format=vdi,if=virtio",
         '-vga', 'none',
+        # Keep the VGA model because the VM's firmware and Xorg modeline are
+        # validated against it; WHPX/GTK OpenGL below accelerates the host
+        # presentation without changing the guest scanout device.
         '-device', "VGA,edid=on,xres=$expectedWidth,yres=$expectedHeight,refresh_rate=$expectedRefresh,vgamem_mb=64",
-        '-display', 'sdl,gl=off',
+        # Keep the guest scanout at 2880x1600, but let GTK scale it into a
+        # normal desktop window instead of opening a 2880-pixel-wide host
+        # window.  zoom-to-fit preserves the stereo aspect ratio.
+        '-display', 'gtk,gl=on,zoom-to-fit=on,show-menubar=off,window-close=on',
         '-serial', "file:$serialLog",
         '-monitor', "tcp:127.0.0.1:$monitorPort,server=on,wait=off",
         '-no-reboot',
@@ -239,10 +437,21 @@ if (-not [IO.File]::Exists($vbox)) {
     try {
         $qemuProcess = Start-Process -FilePath $qemu -ArgumentList $qemuArgs `
             -WorkingDirectory $output -PassThru
+        [void](Set-QemuWindowAspect -Process $qemuProcess `
+            -FramebufferWidth $expectedWidth -FramebufferHeight $expectedHeight)
         Write-Host "QEMU started (PID $($qemuProcess.Id)); waiting for the ${expectedWidth}x${expectedHeight}@${expectedRefresh}Hz UI..."
+        if ($MeasureFps) {
+            Measure-QemuBootFps -Port $monitorPort -Process $qemuProcess `
+                -Path $serialLog
+        }
         [void](Wait-SerialReady -Path $serialLog -Process $qemuProcess `
             -TimeoutSeconds $BootSeconds)
         Write-Host "QEMU receiver/UI readiness passed. Serial log: $serialLog"
+
+        # The guest mode switch can recreate the GTK drawing area.  Apply the
+        # same correction once more after the exact display mode is ready.
+        [void](Set-QemuWindowAspect -Process $qemuProcess `
+            -FramebufferWidth $expectedWidth -FramebufferHeight $expectedHeight)
 
         # The first boot frame is decoded lazily.  Allow the 4.6 s boot movie
         # (and TCG's initial FFmpeg setup) to reach a visible frame before

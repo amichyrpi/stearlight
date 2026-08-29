@@ -40,6 +40,21 @@ struct svrt_ui_video {
     const char *path;
 };
 
+static void trace_render_present(svrt_ui *ui, const char *phase) {
+    if (!ui || !ui->trace_ui_fps || !phase) return;
+    const uint32_t now_ms = SDL_GetTicks();
+    if (!ui->trace_window_start_ms)
+        ui->trace_window_start_ms = now_ms;
+    ++ui->trace_frame_count;
+    const uint32_t elapsed_ms = now_ms - ui->trace_window_start_ms;
+    if (elapsed_ms < 1000) return;
+    fprintf(stderr, "SVRT UI FPS phase=%s frames=%u elapsed=%u fps=%.2f\n",
+            phase, ui->trace_frame_count, elapsed_ms,
+            ui->trace_frame_count * 1000.0 / elapsed_ms);
+    ui->trace_window_start_ms = now_ms;
+    ui->trace_frame_count = 0;
+}
+
 static svrt_ui_video *video_open(const char *path);
 
 static void disable_local_input(void) {
@@ -56,8 +71,20 @@ static void disable_local_input(void) {
 static void poll_ui_actions(svrt_ui *ui) {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_F9)
-            ui->connection_requested = 1;
+        if (event.type == SDL_KEYDOWN) {
+            if (event.key.keysym.sym == SDLK_F9)
+                ui->connection_requested = 1;
+            if (ui->state == SVRT_UI_WELCOME &&
+                (event.key.keysym.sym == SDLK_RETURN ||
+                 event.key.keysym.sym == SDLK_KP_ENTER ||
+                 event.key.keysym.sym == SDLK_SPACE))
+                ui->pending_action = SVRT_UI_ACTION_WELCOME_CONTINUE;
+        }
+        if (event.type == SDL_CONTROLLERBUTTONDOWN &&
+            ui->state == SVRT_UI_WELCOME &&
+            (event.cbutton.button == SDL_CONTROLLER_BUTTON_A ||
+             event.cbutton.button == SDL_CONTROLLER_BUTTON_START))
+            ui->pending_action = SVRT_UI_ACTION_WELCOME_CONTINUE;
         if (event.type == SDL_MOUSEBUTTONDOWN) {
             int width = 0, height = 0;
             SDL_GetRendererOutputSize(ui->renderer, &width, &height);
@@ -72,6 +99,10 @@ static void poll_ui_actions(svrt_ui *ui) {
             y = (y - (height - scene_height) * 0.5f) /
                 SVRT_DEBUG_LEFT_EYE_UI_SCALE;
 #endif
+            if (ui->state == SVRT_UI_WELCOME) {
+                ui->pending_action = SVRT_UI_ACTION_WELCOME_CONTINUE;
+                continue;
+            }
             const int eye_width = width / 2;
             const int sidebar_w = (int)(eye_width * 0.065f);
             const int sidebar_h = (int)(height * 0.48f);
@@ -629,6 +660,31 @@ static void draw_loading_content(svrt_ui *ui, svrt_ui_state state,
     }
 }
 
+static void draw_welcome_content(svrt_ui *ui) {
+    const SDL_Color muted = {190, 198, 210, 230};
+    const SDL_Color accent = {48, 151, 238, 255};
+    const int title_y = 132;
+    draw_text(ui->renderer, ui->font, "Welcome to Stearlight OS",
+              SVRT_PANEL_WIDTH / 2, title_y, 255);
+    draw_text(ui->renderer, ui->small_font,
+              "Your SteamOS-style VR shell is ready.",
+              SVRT_PANEL_WIDTH / 2, title_y + 76, muted.a);
+    draw_text(ui->renderer, ui->small_font,
+              "Steam will guide language, account, and network setup.",
+              SVRT_PANEL_WIDTH / 2, title_y + 116, muted.a);
+    draw_text(ui->renderer, ui->small_font,
+              "You can change these choices later in Steam Settings.",
+              SVRT_PANEL_WIDTH / 2, title_y + 150, muted.a);
+
+    SDL_Rect button = {SVRT_PANEL_WIDTH / 2 - 176, 410, 352, 72};
+    fill_rounded_rect(ui->renderer, &button, 14, accent);
+    draw_text(ui->renderer, ui->font, "Start Steam setup",
+              SVRT_PANEL_WIDTH / 2, button.y + 12, 255);
+    draw_text(ui->renderer, ui->small_font,
+              "Press A, Enter, or click to continue",
+              SVRT_PANEL_WIDTH / 2, button.y + 92, muted.a);
+}
+
 static void draw_video_per_eye(svrt_ui *ui, svrt_ui_video *video,
                                uint32_t elapsed_ms, int source_width,
                                int source_height, int margin, int loop,
@@ -653,7 +709,8 @@ static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
                                const char code[5], const char *detail,
                                uint32_t elapsed_ms, uint8_t alpha) {
     if (!ui->panel || SDL_SetRenderTarget(ui->renderer, ui->panel)) return;
-    const int loading_state = state == SVRT_UI_AUTHORIZING ||
+    const int loading_state = state == SVRT_UI_WELCOME ||
+                              state == SVRT_UI_AUTHORIZING ||
                               state == SVRT_UI_STARTING ||
                               state == SVRT_UI_FAILED ||
                               (SVRT_UI_MINIMAL_STEAMOS &&
@@ -665,7 +722,9 @@ static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
     else
         SDL_SetRenderDrawColor(ui->renderer, 5, 7, 10, 255);
     SDL_RenderClear(ui->renderer);
-    if (state == SVRT_UI_SEARCHING) {
+    if (state == SVRT_UI_WELCOME) {
+        draw_welcome_content(ui);
+    } else if (state == SVRT_UI_SEARCHING) {
         if (!ui->loop) ui->loop = video_open(SVRT_GUI_LOOP_PATH);
         if (ui->loop)
             draw_panel_video(ui, ui->loop, elapsed_ms, 1440, 1600, 0, 1);
@@ -1023,6 +1082,8 @@ static int configure_display_mode(SDL_Window *window) {
 
 int svrt_ui_open(svrt_ui *ui) {
     memset(ui, 0, sizeof(*ui));
+    const char *trace_fps = getenv("SVRT_TRACE_UI_FPS");
+    ui->trace_ui_fps = trace_fps && trace_fps[0] && strcmp(trace_fps, "0");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         fprintf(stderr, "SVRT UI: SDL video initialization failed: %s\n",
                 SDL_GetError());
@@ -1151,7 +1212,8 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
             video_close(&ui->steam_loading);
             video_rewind(ui->loop);
         }
-        if (state == SVRT_UI_AUTHORIZING || state == SVRT_UI_STARTING ||
+        if (state == SVRT_UI_WELCOME || state == SVRT_UI_AUTHORIZING ||
+            state == SVRT_UI_STARTING ||
             state == SVRT_UI_FAILED) {
             ui->loop_first_frame_ms = 0;
             video_close(&ui->loop);
@@ -1176,6 +1238,7 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
                            0, 0,
                            SVRT_BOOT_SCALE, SVRT_UI_HORIZONTAL_ASPECT);
         SDL_RenderPresent(ui->renderer);
+        trace_render_present(ui, "boot");
         return;
     } else {
         if (ui->boot) video_close(&ui->boot);
@@ -1190,6 +1253,7 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
     SDL_RenderClear(ui->renderer);
     draw_scene(ui);
     SDL_RenderPresent(ui->renderer);
+    trace_render_present(ui, "scene");
 }
 
 SDL_Window *svrt_ui_window(svrt_ui *ui) { return ui ? ui->window : NULL; }

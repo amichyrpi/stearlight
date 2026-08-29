@@ -1,11 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$ProfileName,
     [string]$WslDistribution
 )
 
 $ErrorActionPreference = 'Stop'
-& (Join-Path $PSScriptRoot 'capture-wifi.ps1') -ProfileName $ProfileName
 
 $linuxScript = if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
     # Passing a native Windows path through wsl.exe can cause its backslashes

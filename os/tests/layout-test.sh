@@ -23,7 +23,6 @@ test -d "${base}/vm-overlay"
 grep -q '^FROM.*alpine:' "${base}/Dockerfile"
 grep -q 'SVRT_STEARLIGHT_OS=ON' "${base}/Dockerfile"
 grep -q 'COPY os/overlay/' "${base}/Dockerfile"
-grep -q 'COPY os/generated/' "${base}/Dockerfile"
 grep -q 'COPY os/boot/' "${base}/Dockerfile"
 grep -q 'linux/arm64' "${base}/build.sh"
 grep -q '3127680' "${base}/scripts/download-steam-compat.sh"
@@ -59,6 +58,35 @@ grep -q 'Dockerfile.vm' "${base}/build-vm.ps1"
 grep -q 'build-vm.ps1' "${base}/VM.md"
 grep -q 'Read-PpmToken' "${base}/test-vm.ps1"
 grep -q 'stearlight-vm.ppm' "${base}/test-vm.ps1"
+grep -q 'zoom-to-fit=on' "${base}/test-vm.ps1"
+grep -q 'gtk,gl=on' "${base}/test-vm.ps1"
+grep -q "'-accel', 'whpx'" "${base}/test-vm.ps1"
+grep -q "'-accel', 'tcg,thread=multi'" "${base}/test-vm.ps1"
+grep -q 'Set-QemuWindowAspect' "${base}/test-vm.ps1"
+grep -q 'targetClientHeight' "${base}/test-vm.ps1"
+grep -q 'Measure-QemuBootFps' "${base}/test-vm.ps1"
+grep -q 'Boot animation frame samples' "${base}/test-vm.ps1"
+grep -q 'sleep_ui_frame' "${repo}/pi-receiver/main.c"
+grep -q 'SVRT_TRACE_UI_FPS' "${repo}/gui/ui.c"
+grep -q 'pace_pairing_frame' "${repo}/gui/pairing.c"
+grep -q 'SVRT_UI_WELCOME' "${repo}/gui/ui.h"
+grep -q 'SVRT WELCOME REQUIRED' "${repo}/pi-receiver/main.c"
+grep -q 'SVRT_WELCOME_MARKER' "${repo}/pi-receiver/main.c"
+
+# The appliance has no password-based remote shell and never copies host Wi-Fi
+# credentials into an image.  Network setup is performed by the first-boot UI
+# and Steam settings instead.
+test ! -e "${base}/capture-wifi.ps1"
+if test -e "${base}/generated"; then
+  test -z "$(find "${base}/generated" -mindepth 1 -print -quit)"
+fi
+test ! -e "${base}/overlay/etc/init.d/stearlight-wifi"
+test ! -e "${base}/overlay/usr/local/libexec/stearlight/provision-wifi"
+! grep -q 'openssh' "${base}/Dockerfile"
+! grep -q 'chpasswd' "${base}/Dockerfile"
+! grep -q 'wifi\.env' "${base}/Dockerfile"
+! grep -q 'openssh' "${base}/Dockerfile.vm"
+! grep -q 'chpasswd' "${base}/Dockerfile.vm"
 
 if git -C "${repo}" ls-files --error-unmatch os/generated/wifi.env \
     >/dev/null 2>&1; then
@@ -70,8 +98,6 @@ for script in \
   "${base}/build.sh" "${base}/apply-quiet-eeprom.sh" \
   "${base}/scripts/install-steam-arm64.sh" \
   "${base}/scripts/download-steam-compat.sh" \
-  "${base}/overlay/usr/local/libexec/stearlight/provision-wifi" \
-  "${base}/overlay/etc/init.d/stearlight-wifi" \
   "${base}/overlay/usr/local/libexec/stearlight/session" \
   "${base}/overlay/home/stearlight/.local/share/Steam/launch-steam.sh" \
   "${base}/vm-overlay/etc/init.d/stearlight-vm-session" \

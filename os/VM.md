@@ -21,7 +21,13 @@ Build and run an automated screenshot test from PowerShell:
 
 Outputs are written to `out/stearlight-vm/` unless an explicit output directory
 is supplied. With VirtualBox installed the test captures a framebuffer; without
-it, `test-vm.ps1` starts QEMU with an SDL window, waits for the exact display
-marker, and captures QEMU's P6 framebuffer dump (`stearlight-vm.ppm`). The test
-rejects the wrong dimensions, a black framebuffer, or a display/runtime error.
+it, `test-vm.ps1` starts QEMU with WHPX (falling back to multi-threaded TCG),
+GTK/OpenGL presentation, and a `zoom-to-fit` window. It corrects the outer
+window height for the 2880x1600 aspect ratio (the guest remains 2880x1600 while
+the host window fits a standard monitor), waits for the exact display marker,
+and captures QEMU's P6 framebuffer dump (`stearlight-vm.ppm`).
+Use `-MeasureFps` to sample the boot movie while diagnosing host rendering
+performance.
+The test rejects the wrong dimensions, a black framebuffer, or a display/runtime
+error.
 Pass `-KeepRunning` to leave the QEMU window running.

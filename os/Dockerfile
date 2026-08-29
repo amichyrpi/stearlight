@@ -37,10 +37,10 @@ RUN printf '%s\n' \
       > /etc/apk/repositories \
     && apk add --no-cache \
       alpine-base alsa-lib avahi bash bubblewrap ca-certificates chrony dbus dhcpcd \
-      doas e2fsprogs-extra ffmpeg gamescope iwd linux-rpi \
+      e2fsprogs-extra ffmpeg gamescope iwd linux-rpi \
       linux-firmware-cypress mesa-dri-gallium \
       mesa-egl mesa-gbm mesa-gles mesa-vulkan-broadcom mbedtls3 monado openrc \
-      openssh pipewire pipewire-alsa pipewire-pulse protobuf-c raspberrypi-bootloader \
+      pipewire pipewire-alsa pipewire-pulse protobuf-c raspberrypi-bootloader \
       sdl2 sdl2_ttf shadow su-exec util-linux-misc wireplumber xauth xvfb \
       xwayland
 RUN for group in audio input render video wheel; do \
@@ -54,21 +54,18 @@ RUN for group in audio input render video wheel; do \
     && addgroup stearlight tty \
     && addgroup stearlight video \
     && addgroup stearlight wheel \
-    && printf 'stearlight:stearlight\n' | chpasswd \
-    && printf 'root:stearlight\n' | chpasswd \
     && mkdir -p /home/stearlight/.local/share /opt/stearlight/steam-runtime \
+                /var/lib/stearlight \
                 /run/openrc \
     && touch /run/openrc/softlevel
 COPY --from=receiver-build /staging/ /
 COPY --from=steam-runtime / /opt/stearlight/steam-runtime/
 COPY --from=steam-runtime --chown=1000:1000 /home/stearlight/ /home/stearlight/
 COPY os/overlay/ /
-COPY os/generated/ /etc/stearlight/
-RUN chown -R stearlight:stearlight /home/stearlight \
+RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
+    && chmod 0700 /var/lib/stearlight \
     && chmod 0755 /etc/init.d/stearlight-session \
-                  /etc/init.d/stearlight-wifi \
                   /usr/local/libexec/stearlight/session \
-                  /usr/local/libexec/stearlight/provision-wifi \
                   /home/stearlight/.local/share/Steam/launch-steam.sh \
     && rc-update add devfs sysinit \
     && rc-update add dmesg sysinit \
@@ -83,13 +80,8 @@ RUN chown -R stearlight:stearlight /home/stearlight \
     && rc-update add dhcpcd default \
     && rc-update add iwd default \
     && rc-update add local default \
-    && rc-update add sshd default \
-    && rc-update add stearlight-wifi default \
     && rc-update add stearlight-session default \
     && chmod 0755 /etc/local.d/stearlight-performance.start \
-    && if [ -f /etc/stearlight/wifi.env ]; then \
-         chmod 0600 /etc/stearlight/wifi.env; \
-       fi \
     && if [ -d /etc/stearlight/steam-tools/fex ]; then \
          mkdir -p /home/stearlight/.local/share/Steam/steamapps/common; \
          cp -a /etc/stearlight/steam-tools/fex \

@@ -48,6 +48,7 @@ typedef enum svrt_ui_state {
     SVRT_UI_AUTHORIZING,
     SVRT_UI_STARTING,
     SVRT_UI_FAILED,
+    SVRT_UI_WELCOME,
     SVRT_UI_HOME
 } svrt_ui_state;
 
@@ -60,7 +61,8 @@ typedef enum svrt_ui_action {
     SVRT_UI_ACTION_DOWNLOADS,
     SVRT_UI_ACTION_SETTINGS,
     SVRT_UI_ACTION_PROFILE,
-    SVRT_UI_ACTION_CONNECTION
+    SVRT_UI_ACTION_CONNECTION,
+    SVRT_UI_ACTION_WELCOME_CONTINUE
 } svrt_ui_action;
 
 typedef struct svrt_ui_video svrt_ui_video;
@@ -91,6 +93,11 @@ typedef struct svrt_ui {
     /* Monotonic UI trace points.  They are intentionally public so the Pi
        transition test and the receiver log can verify ordering/timing. */
     uint32_t loop_first_frame_ms;
+    /* Optional one-line-per-second render-rate trace for hardware/VM
+       profiling. It is disabled unless SVRT_TRACE_UI_FPS is set. */
+    uint32_t trace_window_start_ms;
+    uint32_t trace_frame_count;
+    int trace_ui_fps;
     int owns_sdl;
 } svrt_ui;
 

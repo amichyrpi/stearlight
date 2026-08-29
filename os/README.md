@@ -15,10 +15,8 @@ an appliance image, not an in-place conversion of Raspberry Pi OS.
   `steam_loading.mkv` for Steam/connection transitions.
 - Silent firmware/kernel configuration, no desktop and no console on the HMD.
 - No local login prompt: the supervised Stearlight UI takes tty1 immediately.
-- SSH as `stearlight@ROOT`, password `stearlight`, with passwordless `doas`.
-
-The password is intentionally the requested development default. Change it
-before putting a headset on an untrusted network.
+- No password-based SSH service or bundled host credentials. The image has no
+  remote login path enabled by default.
 
 ## Build
 
@@ -30,8 +28,8 @@ baked into the image to avoid doing that work during the first headset boot.
 bash ./os/build.sh
 ```
 
-On Windows, the local wrapper first exports the currently connected Wi-Fi
-profile without printing its password, then invokes the WSL2 builder:
+On Windows, the local wrapper invokes the WSL2 builder without importing host
+credentials:
 
 ```powershell
 .\os\build-local.ps1
@@ -68,13 +66,14 @@ different Valve branch. Never commit those credentials. GitHub Actions reads
 them from the optional `STEARLIGHT_STEAM_USERNAME` and
 `STEARLIGHT_STEAM_PASSWORD` repository secrets.
 
-## Local Wi-Fi provisioning
+## First boot welcome
 
-`capture-wifi.ps1` exports the selected Windows WLAN profile into the ignored
-`os/generated/wifi.env` file using base64-safe values. The file is mode
-0600 in the image. On first boot, the `stearlight-wifi` OpenRC service gives it
-to IWD, deletes the clear provisioning file after a successful connection, and
-lets IWD retain its protected auto-connect profile.
+The first graphical boot shows the Stearlight welcome panel after the startup
+movie. Press A, Enter, Space, or click to continue. This records a protected
+completion marker under `/var/lib/stearlight` and then hands language, account,
+and network setup to the Steam client and its Settings pages. No Wi-Fi profile
+or password is copied from the build host. `iwd` and `dhcpcd` remain enabled so
+Steam can configure the connection interactively.
 
 ## Hide the Pi 4 EEPROM diagnostic screen
 
@@ -113,8 +112,11 @@ OpenXR quad/cylinder layer.
 The x86_64 VM uses the same Alpine receiver build and a small EFI image; it is a
 fast check for boot, service startup, and UI composition. It does not
 emulate the Pi 4 GPU, firmware, headset timing, or ARM64 Steam runtime.
-`test-vm.ps1` uses VirtualBox when available and falls back to QEMU with an SDL
-window and serial smoke test.
+`test-vm.ps1` uses VirtualBox when available and falls back to QEMU with WHPX
+(or multi-threaded TCG), GTK/OpenGL, a `zoom-to-fit` window, an aspect-ratio
+correction for the title-bar height, and a serial smoke test. The guest
+framebuffer remains 2880x1600 while the host window is scaled to fit a standard
+monitor. Add `-MeasureFps` to verify boot animation frame changes.
 
 ```powershell
 .\os\build-vm.ps1
