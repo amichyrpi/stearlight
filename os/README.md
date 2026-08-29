@@ -110,9 +110,11 @@ OpenXR quad/cylinder layer.
 
 ## VM smoke test
 
-The x86_64 VM uses the same Alpine receiver build and a small VirtualBox image;
-it is a fast check for boot, service startup, and UI composition. It does not
+The x86_64 VM uses the same Alpine receiver build and a small EFI image; it is a
+fast check for boot, service startup, and UI composition. It does not
 emulate the Pi 4 GPU, firmware, headset timing, or ARM64 Steam runtime.
+`test-vm.ps1` uses VirtualBox when available and falls back to QEMU with an SDL
+window and serial smoke test.
 
 ```powershell
 .\os\build-vm.ps1

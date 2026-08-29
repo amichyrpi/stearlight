@@ -8,8 +8,11 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outRoot = Join-Path $repo 'out'
 $resolvedOutput = [IO.Path]::GetFullPath($OutputDirectory)
 $expectedPrefix = [IO.Path]::GetFullPath($outRoot) + [IO.Path]::DirectorySeparatorChar
-if (-not $resolvedOutput.StartsWith($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Output directory must remain inside $outRoot"
+$insideRepoOutput = $resolvedOutput.StartsWith(
+    $expectedPrefix, [StringComparison]::OrdinalIgnoreCase)
+$onBuildDrive = [IO.Path]::GetPathRoot($resolvedOutput) -ieq 'F:\'
+if (-not $insideRepoOutput -and -not $onBuildDrive) {
+    throw "Output directory must remain inside $outRoot or be on the dedicated F: build drive."
 }
 if ([IO.Directory]::Exists($resolvedOutput)) {
     [IO.Directory]::Delete($resolvedOutput, $true)

@@ -8,11 +8,80 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $vbox = 'C:\Program Files\Oracle\VirtualBox\VBoxManage.exe'
-if (-not [IO.File]::Exists($vbox)) { throw 'VirtualBox 7.x is required.' }
 $image = (Resolve-Path -LiteralPath $ImagePath).Path
 $output = Split-Path -Parent $image
 $screenshot = Join-Path $output 'stearlight-vm.png'
 $serialLog = Join-Path $output 'stearlight-vm-serial.log'
+
+# QEMU is the supported fallback on machines without VirtualBox.  Keep all
+# firmware, logs and temporary state beside the VM image so a test never uses
+# the system drive for VM data.
+if (-not [IO.File]::Exists($vbox)) {
+    $qemu = 'C:\Program Files\qemu\qemu-system-x86_64.exe'
+    $qemuCode = 'C:\Program Files\qemu\share\edk2-x86_64-code.fd'
+    $qemuVarsSource = 'C:\Program Files\qemu\share\edk2-i386-vars.fd'
+    if (-not [IO.File]::Exists($qemu)) {
+        throw 'Neither VirtualBox 7.x nor QEMU was found. Install QEMU to run the VM test.'
+    }
+    if (-not [IO.File]::Exists($qemuCode) -or -not [IO.File]::Exists($qemuVarsSource)) {
+        throw 'QEMU EFI firmware files are missing.'
+    }
+
+    [IO.Directory]::CreateDirectory($output) | Out-Null
+    $qemuCodeLocal = Join-Path $output 'edk2-code.fd'
+    $qemuVars = Join-Path $output 'edk2-vars.fd'
+    Copy-Item -LiteralPath $qemuCode -Destination $qemuCodeLocal -Force
+    Copy-Item -LiteralPath $qemuVarsSource -Destination $qemuVars -Force
+    Remove-Item -LiteralPath $serialLog -Force -ErrorAction SilentlyContinue
+
+    $qemuArgs = @(
+        '-machine', 'q35',
+        '-m', '4096',
+        '-smp', '2',
+        '-accel', 'tcg,thread=multi',
+        '-drive', "if=pflash,format=raw,readonly=on,file=$qemuCodeLocal",
+        '-drive', "if=pflash,format=raw,file=$qemuVars",
+        '-drive', "file=$image,format=vdi,if=virtio",
+        '-display', 'sdl',
+        '-serial', "file:$serialLog",
+        '-monitor', 'none',
+        '-no-reboot',
+        '-snapshot'
+    )
+    $qemuProcess = Start-Process -FilePath $qemu -ArgumentList $qemuArgs -PassThru
+    Write-Host "QEMU started (PID $($qemuProcess.Id)); waiting $BootSeconds seconds..."
+    $deadline = [DateTime]::UtcNow.AddSeconds($BootSeconds)
+    $serial = ''
+    $booted = $false
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($qemuProcess.HasExited) { break }
+        if (Test-Path -LiteralPath $serialLog) {
+            try { $serial = Get-Content -LiteralPath $serialLog -Raw -ErrorAction SilentlyContinue } catch { }
+            if ($serial -match '(?i)(X\.Org X Server|SVRT UI|svrt-receiver)') {
+                $booted = $true
+                break
+            }
+        }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $booted) {
+        $exitCode = if ($qemuProcess.HasExited) { $qemuProcess.ExitCode } else { 'timeout' }
+        if (-not $qemuProcess.HasExited) {
+            Stop-Process -Id $qemuProcess.Id -Force -ErrorAction SilentlyContinue
+        }
+        throw "VM did not reach the Stearlight session (code $exitCode). Serial log: $serialLog`n$serial"
+    }
+    Write-Host "QEMU serial smoke test passed. Serial log: $serialLog"
+
+    if (-not $KeepRunning) {
+        Stop-Process -Id $qemuProcess.Id -Force -ErrorAction SilentlyContinue
+        Write-Host 'QEMU stopped.'
+    } else {
+        Write-Host "QEMU remains running (PID $($qemuProcess.Id))."
+    }
+    return
+}
+
 $vmRoot = Join-Path $output 'virtualbox'
 $machineFolder = Join-Path $vmRoot $Name
 $testDisk = Join-Path $machineFolder 'stearlight-test.vdi'
