@@ -12,8 +12,8 @@ ARM64 Steam runtime.
 Build and run an automated screenshot test from PowerShell:
 
 ```powershell
-.\os\vm\build-vm.ps1
-.\os\vm\test-vm.ps1 -BootSeconds 45
+.\os\build-vm.ps1
+.\os\test-vm.ps1 -BootSeconds 45
 ```
 
 Outputs are written to `out/stearlight-vm/`. The test creates a VM named

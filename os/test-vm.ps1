@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ImagePath = (Join-Path $PSScriptRoot '..\..\out\stearlight-vm\stearlight-os-vm-x86_64.vdi'),
+    [string]$ImagePath = (Join-Path $PSScriptRoot '..\out\stearlight-vm\stearlight-os-vm-x86_64.vdi'),
     [string]$Name = 'Stearlight-OS-Test',
     [int]$BootSeconds = 45,
     [switch]$KeepRunning

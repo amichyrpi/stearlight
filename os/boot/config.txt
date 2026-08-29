@@ -1,9 +1,14 @@
-# Raspberry Pi 4 boot configuration. The firmware and kernel are supplied by
-# Arch Linux ARM's Pi archive; this file is deliberately copied last so the
-# display path is deterministic in the Fedora bootc image.
 arm_64bit=1
 disable_splash=1
-enable_uart=0
 disable_overscan=1
-dtoverlay=vc4-kms-v3d-pi4
+boot_delay=0
+dtoverlay=vc4-kms-v3d
 max_framebuffers=2
+gpu_mem=256
+hdmi_enable_4kp60=1
+
+[pi4]
+kernel=vmlinuz-rpi
+initramfs initramfs-rpi followkernel
+
+[all]

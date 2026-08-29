@@ -33,7 +33,7 @@ RUN for group in audio input render tty video wheel; do \
     && printf 'stearlight:stearlight\n' | chpasswd \
     && printf 'root:stearlight\n' | chpasswd
 COPY --from=receiver-build /staging/ /
-COPY os/vm/overlay/ /
+COPY os/vm-overlay/ /
 RUN chown -R stearlight:stearlight /home/stearlight \
     && chmod 0755 /etc/init.d/stearlight-vm-session \
                   /usr/local/libexec/stearlight/vm-session \
@@ -54,8 +54,8 @@ RUN chown -R stearlight:stearlight /home/stearlight \
 FROM alpine:${ALPINE_TAG} AS image-build
 RUN apk add --no-cache dosfstools e2fsprogs genimage grub-efi mtools qemu-img
 COPY --from=rootfs / /work/rootfs/
-COPY os/vm/genimage.cfg /work/genimage.cfg
-COPY os/vm/grub.cfg /work/grub.cfg
+COPY os/genimage-vm.cfg /work/genimage.cfg
+COPY os/grub-vm.cfg /work/grub.cfg
 RUN mkdir -p /work/input/efi/EFI/BOOT /work/output /work/tmp \
     && grub-mkstandalone -O x86_64-efi \
          -o /work/input/efi/EFI/BOOT/BOOTX64.EFI \

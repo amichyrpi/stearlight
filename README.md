@@ -29,7 +29,7 @@ Builds and driver are available on the [Releases](https://github.com/amichyrpi/H
 
 The custom Alpine aarch64 image, silent Raspberry Pi boot configuration,
 native Gamescope/Monado stack, isolated Steam glibc runtime, and 1440x1600 per
-eye shell are documented in [os/alpine/README.md](os/alpine/README.md). The
+eye shell are documented in [os/README.md](os/README.md). The
 builder creates an image file only; it never flashes or alters a connected Pi.
 
 ### Compiling on Raspberry Pi

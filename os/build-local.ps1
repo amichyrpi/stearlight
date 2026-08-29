@@ -45,7 +45,7 @@ if (-not $docker) { throw 'Docker Desktop with buildx is required.' }
 & $docker.Source buildx version | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Docker buildx is not available.' }
 
-$repoDirectory = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$repoDirectory = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outputRoot = Join-Path $repoDirectory 'out\stearlight-os'
 $imageDirectory = Join-Path $outputRoot 'image'
 $safePrefix = [IO.Path]::GetFullPath($outputRoot) + [IO.Path]::DirectorySeparatorChar

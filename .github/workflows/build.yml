@@ -81,7 +81,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Validate OS scripts
-        run: bash os/alpine/tests/layout-test.sh
+        run: bash os/tests/layout-test.sh
 
       - name: Build dated flash image
         env:
@@ -93,7 +93,7 @@ jobs:
           set -euo pipefail
           export STEARLIGHT_BUILD_DATE="$(date -u +%Y%m%d)"
           export STEARLIGHT_OUTPUT_DIR="$PWD/out/stearlight-os"
-          bash os/alpine/build.sh
+          bash os/build.sh
 
       - uses: actions/upload-artifact@v4
         with:

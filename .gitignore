@@ -7,8 +7,8 @@ squashfs-root/
 
 buildpi/
 out/
-os/alpine/generated/*
-!os/alpine/generated/.gitkeep
+os/generated/*
+!os/generated/.gitkeep
 
 .gradle/
 .cxx/

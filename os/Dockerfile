@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxss1 libxtst6 mesa-vulkan-drivers unzip xz-utils xvfb \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 -s /bin/bash stearlight
-COPY --chmod=0755 os/alpine/scripts/install-steam-arm64.sh /usr/local/bin/
+COPY --chmod=0755 os/scripts/install-steam-arm64.sh /usr/local/bin/
 USER stearlight
 RUN if [ "$STEARLIGHT_BAKE_STEAM" = 1 ]; then install-steam-arm64.sh; fi
 USER root
@@ -62,8 +62,8 @@ RUN for group in audio input render video wheel; do \
 COPY --from=receiver-build /staging/ /
 COPY --from=steam-runtime / /opt/stearlight/steam-runtime/
 COPY --from=steam-runtime --chown=1000:1000 /home/stearlight/ /home/stearlight/
-COPY os/alpine/overlay/ /
-COPY os/alpine/generated/ /etc/stearlight/
+COPY os/overlay/ /
+COPY os/generated/ /etc/stearlight/
 RUN chown -R stearlight:stearlight /home/stearlight \
     && chmod 0755 /etc/init.d/stearlight-session \
                   /etc/init.d/stearlight-wifi \
@@ -110,8 +110,8 @@ FROM --platform=$BUILDPLATFORM alpine:${ALPINE_TAG} AS image-build
 ARG STEARLIGHT_BUILD_DATE
 RUN apk add --no-cache dosfstools e2fsprogs genimage mtools
 COPY --from=rootfs / /work/rootfs/
-COPY os/alpine/boot/ /work/boot-config/
-COPY os/alpine/genimage.cfg /work/genimage.cfg
+COPY os/boot/ /work/boot-config/
+COPY os/genimage.cfg /work/genimage.cfg
 RUN mkdir -p /work/input/boot /work/output /work/tmp \
     && cp -a /work/rootfs/boot/. /work/input/boot/ \
     && cp /work/boot-config/config.txt /work/input/boot/config.txt \

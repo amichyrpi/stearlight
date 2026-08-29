@@ -3,49 +3,40 @@ set -euo pipefail
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "${script_dir}/.." && pwd)
-output_dir=${STEARLIGHT_ARMADA_OUTPUT_DIR:-"${repo_dir}/out/stearlight-armada"}
-image_tag=${STEARLIGHT_ARMADA_IMAGE_TAG:-stearlight-armada:dev}
-version=${STEARLIGHT_ARMADA_VERSION:-"$(date -u +%Y%m%d).$(git -C "${repo_dir}" rev-parse --short HEAD)"}
+output_dir=${STEARLIGHT_OUTPUT_DIR:-"${repo_dir}/out/stearlight-os"}
+image_tag=${STEARLIGHT_IMAGE_TAG:-stearlight-os-rootfs:dev}
+bake_steam=${STEARLIGHT_BAKE_STEAM:-1}
+build_date=${STEARLIGHT_BUILD_DATE:-$(date -u +%Y%m%d)}
 
-command -v docker >/dev/null || { echo 'Docker is required' >&2; exit 1; }
+command -v docker >/dev/null 2>&1 || {
+  echo "Docker with buildx is required (Docker Desktop with WSL2 is supported)." >&2
+  exit 1
+}
 docker buildx version >/dev/null
+
 mkdir -p "${output_dir}"
 output_dir=$(CDPATH= cd -- "${output_dir}" && pwd)
-rm -rf "${output_dir}/image" "${output_dir}/qcow2"
-mkdir -p "${output_dir}/image" "${output_dir}/qcow2"
+case "${output_dir}" in
+  /|"${repo_dir}"|"${repo_dir}/os"|"${script_dir}"|"${repo_dir}/build"|"${repo_dir}/out")
+    echo "Refusing unsafe output directory: ${output_dir}" >&2
+    exit 1
+    ;;
+esac
+rm -rf "${output_dir}/image"
+mkdir -p "${output_dir}/image"
 
-docker buildx build --platform linux/arm64 --load \
-  --build-arg "ARMADA_VERSION=${version}" \
-  --tag "${image_tag}" \
-  --file "${script_dir}/Containerfile" "${repo_dir}"
-
-bib_image=${BOOTC_IMAGE_BUILDER:-quay.io/centos-bootc/bootc-image-builder:latest}
-cat > "${output_dir}/disk.toml" <<'EOF'
-[[customizations.filesystem]]
-mountpoint = "/"
-minsize = "8 GiB"
-EOF
-
-docker run --rm --privileged \
-  -v "${output_dir}/disk.toml:/config.toml:ro" \
-  -v "${output_dir}/image:/output" \
-  "${bib_image}" --type raw --target-arch arm64 \
-  --rootfs btrfs --use-librepo=True \
-  --config /config.toml "${image_tag}"
-
-docker run --rm --privileged \
-  -v "${output_dir}/disk.toml:/config.toml:ro" \
-  -v "${output_dir}/qcow2:/output" \
-  "${bib_image}" --type qcow2 --target-arch arm64 \
-  --rootfs btrfs --use-librepo=True \
-  --config /config.toml "${image_tag}"
-
-raw_image=$(find "${output_dir}/image" -type f \( -name '*.raw' -o -name 'disk.raw' \) -print -quit)
-if [[ -z "${raw_image}" ]]; then
-  echo "bootc-image-builder did not produce a raw image under ${output_dir}/image" >&2
-  exit 1
+if [[ -n ${STEAM_USERNAME:-} ]]; then
+  echo "Downloading FEX and Proton from Steam with the supplied account..."
+  bash "${script_dir}/scripts/download-steam-compat.sh" \
+    "${script_dir}/generated/steam-tools"
 fi
-artifact_date=$(date -u +%Y%m%d)
-artifact="${output_dir}/stearlight-os-${artifact_date}rp4.img.gz"
-gzip -c "${raw_image}" > "${artifact}"
-echo "Built Fedora bootc Pi 4 image: ${artifact}"
+
+echo "Building the aarch64 Alpine root filesystem..."
+docker buildx build --platform linux/arm64 \
+  --build-arg "STEARLIGHT_BAKE_STEAM=${bake_steam}" \
+  --build-arg "STEARLIGHT_BUILD_DATE=${build_date}" \
+  --target image --tag "${image_tag}" \
+  --output "type=local,dest=${output_dir}/image" \
+  --file "${script_dir}/Dockerfile" "${repo_dir}"
+echo "Built ${output_dir}/image/stearlight-os-${build_date}rp4.img.gz"
+echo "The image is not flashed automatically. Verify the target device before writing it."
