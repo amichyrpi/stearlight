@@ -19,9 +19,9 @@ FROM alpine:${ALPINE_TAG} AS rootfs
 RUN apk add --no-cache \
       alpine-base alsa-lib avahi bash dbus dhcpcd e2fsprogs eudev ffmpeg \
       linux-virt mesa-dri-gallium mesa-egl mesa-gbm mesa-gles \
-      mbedtls3 openrc openssh protobuf-c sdl2 sdl2_ttf shadow su-exec \
-      util-linux-misc xauth xf86-input-libinput xf86-video-vmware \
-      xorg-server xvfb
+      gamescope mbedtls3 openrc openssh protobuf-c sdl2 sdl2_ttf shadow \
+      su-exec util-linux-misc xauth xf86-input-libinput \
+      xf86-video-vmware xorg-server xrandr xwayland xvfb
 RUN for group in audio input render tty video wheel; do \
       grep -q "^${group}:" /etc/group || addgroup -S "${group}"; \
     done \

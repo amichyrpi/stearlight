@@ -142,6 +142,8 @@ int main(int argc, char **argv) {
     signal(SIGINT, stop);
     signal(SIGTERM, stop);
 
+    fprintf(stderr, "SVRT RECEIVER STARTING\n");
+
     int exit_code = 0;
     svrt_status_server status;
     if (svrt_status_server_start(&status, status_port)) {
@@ -158,11 +160,18 @@ int main(int argc, char **argv) {
         if (!have_ui) {
             fprintf(stderr, "SVRT: GUI unavailable; falling back to headless mode\n");
             headless = 1;
+        } else {
+            fprintf(stderr, "SVRT UI INITIALIZED\n");
         }
     }
-    if (have_ui) {
+    const char *receiver_only_env = getenv("SVRT_VM_RECEIVER_ONLY");
+    const int receiver_only = receiver_only_env && receiver_only_env[0] &&
+                               strcmp(receiver_only_env, "0");
+    if (have_ui && !receiver_only) {
         svrt_steam_client_start(&steam_client, svrt_ui_renderer(&ui));
         steam_client_started = 1;
+    } else if (have_ui) {
+        fprintf(stderr, "SVRT VM RECEIVER-ONLY: Steam client disabled\n");
     }
     const char *start_streaming = getenv("SVRT_START_IN_STREAMING_MODE");
     int streaming_mode = headless ||
@@ -175,12 +184,16 @@ int main(int argc, char **argv) {
            and the video socket are entered only from the connection tile. */
         while (have_ui && !quitting && !streaming_mode) {
             const uint32_t now = SDL_GetTicks();
-            svrt_steam_client_update(&steam_client,
-                                     svrt_ui_renderer(&ui), now);
-            svrt_ui_set_client_frame(
-                &ui, svrt_steam_client_frame(&steam_client));
+            if (steam_client_started) {
+                svrt_steam_client_update(&steam_client,
+                                         svrt_ui_renderer(&ui), now);
+                svrt_ui_set_client_frame(
+                    &ui, svrt_steam_client_frame(&steam_client));
+            }
             svrt_ui_draw(&ui, SVRT_UI_HOME, NULL, NULL,
-                         svrt_steam_client_detail(&steam_client), now);
+                         steam_client_started ?
+                             svrt_steam_client_detail(&steam_client) :
+                             "VM receiver-only UI", now);
             const svrt_ui_action action = svrt_ui_take_action(&ui);
             const int connection_requested =
                 svrt_ui_take_connection_request(&ui);
@@ -189,9 +202,10 @@ int main(int argc, char **argv) {
                 streaming_mode = 1;
                 svrt_ui_set_streaming_mode(&ui, 1);
                 fprintf(stderr, "SVRT: connection tile selected\n");
-            } else
+            } else if (steam_client_started)
                 open_steam_page(&steam_client, action);
-            struct timespec delay = {.tv_sec = 0, .tv_nsec = 16000000};
+            struct timespec delay = {.tv_sec = 0,
+                                     .tv_nsec = SVRT_UI_FRAME_INTERVAL_NS};
             nanosleep(&delay, NULL);
         }
         if (quitting) break;
@@ -264,9 +278,10 @@ int main(int argc, char **argv) {
                             svrt_ui_set_streaming_mode(&ui, streaming_mode);
                             fprintf(stderr, "SVRT: switched to %s mode\n",
                                     streaming_mode ? "streaming" : "Steam");
-                        } else
+                        } else if (steam_client_started)
                             open_steam_page(&steam_client, action);
-                        if (!streaming_mode || ui_stats.decoded_frames == 0) {
+                        if (steam_client_started &&
+                            (!streaming_mode || ui_stats.decoded_frames == 0)) {
                             svrt_steam_client_update(&steam_client,
                                                      svrt_ui_renderer(&ui), now);
                             svrt_ui_set_client_frame(
@@ -326,7 +341,7 @@ int main(int argc, char **argv) {
                         next_probe_ms = now + 5000;
                     }
                     struct timespec delay = {.tv_sec = 0,
-                                             .tv_nsec = 16000000};
+                                             .tv_nsec = SVRT_UI_FRAME_INTERVAL_NS};
                     nanosleep(&delay, NULL);
                 }
                 if (quitting ||
@@ -405,7 +420,8 @@ int main(int argc, char **argv) {
                 while (!quitting && SDL_GetTicks() - loop_start < 500) {
                     const uint32_t now = SDL_GetTicks();
                     svrt_ui_draw(&ui, SVRT_UI_SEARCHING, NULL, NULL, NULL, now);
-                    struct timespec delay = {.tv_sec = 0, .tv_nsec = 16000000};
+                    struct timespec delay = {.tv_sec = 0,
+                                             .tv_nsec = SVRT_UI_FRAME_INTERVAL_NS};
                     nanosleep(&delay, NULL);
                 }
             }

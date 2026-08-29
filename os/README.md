@@ -9,7 +9,7 @@ an appliance image, not an in-place conversion of Raspberry Pi OS.
 - Native aarch64 Mesa/V3DV, Gamescope, PipeWire/WirePlumber, and Monado/OpenXR.
 - A Debian glibc runtime isolated with Bubblewrap for the Steam ARM64 beta.
 - Steam Gamepad UI inside Gamescope, captured by the Stearlight stereo shell.
-- A 2880x1600 side-by-side scanout (1440x1600 per eye), pure black world, and
+- A 2880x1600 side-by-side scanout at 60 Hz (1440x1600 per eye), pure black world, and
   one smaller curved floating Steam surface.
 - `assets/os/os_boot.mp4` as the first userspace splash and
   `steam_loading.mkv` for Steam/connection transitions.

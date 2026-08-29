@@ -38,14 +38,27 @@ grep -q 'STEARLIGHT_EYE_WIDTH="1440"' \
   "${base}/overlay/etc/conf.d/stearlight"
 grep -q 'STEARLIGHT_EYE_HEIGHT="1600"' \
   "${base}/overlay/etc/conf.d/stearlight"
+grep -q 'STEARLIGHT_REFRESH_HZ="60"' \
+  "${base}/overlay/etc/conf.d/stearlight"
+grep -q 'SVRT_DISPLAY_WIDTH=2880' "${repo}/pi-receiver/CMakeLists.txt"
+grep -q 'SVRT_DISPLAY_HEIGHT=1600' "${repo}/pi-receiver/CMakeLists.txt"
+grep -q 'SVRT_DISPLAY_REFRESH_HZ=60' "${repo}/pi-receiver/CMakeLists.txt"
+grep -q 'SVRT_ENFORCE_DISPLAY_MODE=1' "${repo}/pi-receiver/CMakeLists.txt"
 grep -q 'disable_splash=1' "${base}/boot/config.txt"
 grep -q 'logo.nologo' "${base}/boot/cmdline.txt"
 grep -q 'console=tty12' "${base}/boot/cmdline.txt"
 grep -q 'os/vm-overlay/' "${base}/Dockerfile.vm"
+grep -q 'gamescope' "${base}/Dockerfile.vm"
+grep -q 'Virtual 2880 1600' \
+  "${base}/vm-overlay/etc/X11/xorg.conf.d/20-stearlight-vm.conf"
+grep -q 'STEARLIGHT VM DISPLAY READY 2880x1600 @ 60Hz' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
 grep -q 'os/genimage-vm.cfg' "${base}/Dockerfile.vm"
 grep -q 'os/grub-vm.cfg' "${base}/Dockerfile.vm"
 grep -q 'Dockerfile.vm' "${base}/build-vm.ps1"
 grep -q 'build-vm.ps1' "${base}/VM.md"
+grep -q 'Read-PpmToken' "${base}/test-vm.ps1"
+grep -q 'stearlight-vm.ppm' "${base}/test-vm.ps1"
 
 if git -C "${repo}" ls-files --error-unmatch os/generated/wifi.env \
     >/dev/null 2>&1; then

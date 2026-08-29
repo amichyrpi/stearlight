@@ -25,6 +25,24 @@
 #define SVRT_UI_MINIMAL_STEAMOS 0
 #endif
 
+/* The headset scanout is a side-by-side stereo surface.  Keep the geometry
+ * in one place so the renderer, the VM display and the Pi KMS session agree
+ * on the per-eye size and refresh target. */
+#ifndef SVRT_DISPLAY_WIDTH
+#define SVRT_DISPLAY_WIDTH 2880
+#endif
+#ifndef SVRT_DISPLAY_HEIGHT
+#define SVRT_DISPLAY_HEIGHT 1600
+#endif
+#ifndef SVRT_DISPLAY_REFRESH_HZ
+#define SVRT_DISPLAY_REFRESH_HZ 60
+#endif
+#ifndef SVRT_ENFORCE_DISPLAY_MODE
+#define SVRT_ENFORCE_DISPLAY_MODE 0
+#endif
+#define SVRT_UI_FRAME_INTERVAL_NS \
+    (1000000000L / SVRT_DISPLAY_REFRESH_HZ)
+
 typedef enum svrt_ui_state {
     SVRT_UI_SEARCHING,
     SVRT_UI_AUTHORIZING,

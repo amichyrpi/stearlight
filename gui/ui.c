@@ -970,6 +970,57 @@ static void draw_scene(svrt_ui *ui) {
 #endif
 }
 
+static int configure_display_mode(SDL_Window *window) {
+#if SVRT_ENFORCE_DISPLAY_MODE
+    if (!window) return -1;
+    int display = SDL_GetWindowDisplayIndex(window);
+    if (display < 0) display = 0;
+
+    SDL_DisplayMode selected = {0};
+    const int mode_count = SDL_GetNumDisplayModes(display);
+    for (int index = 0; index < mode_count; ++index) {
+        SDL_DisplayMode candidate = {0};
+        if (SDL_GetDisplayMode(display, index, &candidate)) continue;
+        if (candidate.w == SVRT_DISPLAY_WIDTH &&
+            candidate.h == SVRT_DISPLAY_HEIGHT &&
+            candidate.refresh_rate == SVRT_DISPLAY_REFRESH_HZ) {
+            selected = candidate;
+            break;
+        }
+    }
+    if (!selected.w || !selected.h) {
+        /* X11 virtual displays do not always advertise the modeline through
+         * SDL even when the Xorg server is running at the requested virtual
+         * size.  Keep the desktop scanout in that case; the output-size
+         * validation below still rejects a wrong framebuffer size. */
+        fprintf(stderr,
+                "SVRT UI: %dx%d@%dHz is not enumerated; using the Xorg desktop mode\n",
+                SVRT_DISPLAY_WIDTH, SVRT_DISPLAY_HEIGHT,
+                SVRT_DISPLAY_REFRESH_HZ);
+        if (SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN_DESKTOP)) {
+            fprintf(stderr, "SVRT UI: cannot enter the desktop fullscreen mode: %s\n",
+                    SDL_GetError());
+            return -1;
+        }
+        return 0;
+    }
+    if (SDL_SetWindowDisplayMode(window, &selected)) {
+        fprintf(stderr, "SVRT UI: cannot select %dx%d@%dHz: %s\n",
+                selected.w, selected.h, selected.refresh_rate,
+                SDL_GetError());
+        return -1;
+    }
+    if (SDL_SetWindowFullscreen(window, SDL_WINDOW_FULLSCREEN)) {
+        fprintf(stderr, "SVRT UI: cannot enter the required fullscreen mode: %s\n",
+                SDL_GetError());
+        return -1;
+    }
+#else
+    (void)window;
+#endif
+    return 0;
+}
+
 int svrt_ui_open(svrt_ui *ui) {
     memset(ui, 0, sizeof(*ui));
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
@@ -984,8 +1035,20 @@ int svrt_ui_open(svrt_ui *ui) {
         SDL_Quit(); memset(ui, 0, sizeof(*ui)); return -1;
     }
     disable_local_input();
+    const int requested_width = SVRT_ENFORCE_DISPLAY_MODE ?
+                                SVRT_DISPLAY_WIDTH : 1280;
+    const int requested_height = SVRT_ENFORCE_DISPLAY_MODE ?
+                                 SVRT_DISPLAY_HEIGHT : 720;
+    const Uint32 window_flags = SVRT_ENFORCE_DISPLAY_MODE ?
+                                 SDL_WINDOW_BORDERLESS :
+                                 SDL_WINDOW_FULLSCREEN_DESKTOP;
     ui->window = SDL_CreateWindow("SVRT", SDL_WINDOWPOS_UNDEFINED,
-        SDL_WINDOWPOS_UNDEFINED, 1280, 720, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        SDL_WINDOWPOS_UNDEFINED, requested_width, requested_height,
+        window_flags);
+    if (ui->window && configure_display_mode(ui->window)) {
+        SDL_DestroyWindow(ui->window);
+        ui->window = NULL;
+    }
     ui->renderer = ui->window ? SDL_CreateRenderer(ui->window, -1,
                                                     SDL_RENDERER_ACCELERATED) : NULL;
     /* The timing test runs with SDL's dummy/offscreen backend.  It has no
@@ -994,14 +1057,37 @@ int svrt_ui_open(svrt_ui *ui) {
     if (ui->window && !ui->renderer)
         ui->renderer = SDL_CreateRenderer(ui->window, -1,
                                           SDL_RENDERER_SOFTWARE);
+    int output_width = 0, output_height = 0;
+    SDL_DisplayMode output_mode = {0};
+    if (ui->renderer)
+        SDL_GetRendererOutputSize(ui->renderer, &output_width, &output_height);
+    if (ui->window)
+        SDL_GetWindowDisplayMode(ui->window, &output_mode);
+    int output_refresh = output_mode.refresh_rate;
+    if (!output_refresh && ui->window) {
+        const int display = SDL_GetWindowDisplayIndex(ui->window);
+        SDL_DisplayMode current_mode = {0};
+        if (display >= 0 && !SDL_GetCurrentDisplayMode(display, &current_mode))
+            output_refresh = current_mode.refresh_rate;
+    }
+#if SVRT_ENFORCE_DISPLAY_MODE
+    if (output_width != SVRT_DISPLAY_WIDTH ||
+        output_height != SVRT_DISPLAY_HEIGHT ||
+        (output_refresh && output_refresh != SVRT_DISPLAY_REFRESH_HZ)) {
+        fprintf(stderr,
+                "SVRT UI: active mode is %dx%d@%dHz; required %dx%d@%dHz\n",
+                output_width, output_height, output_refresh,
+                SVRT_DISPLAY_WIDTH, SVRT_DISPLAY_HEIGHT,
+                SVRT_DISPLAY_REFRESH_HZ);
+        svrt_ui_close(ui);
+        return -1;
+    }
+#endif
     ui->panel = ui->renderer ? SDL_CreateTexture(
         ui->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
         SVRT_PANEL_WIDTH, SVRT_PANEL_HEIGHT) : NULL;
     if (ui->panel) SDL_SetTextureBlendMode(ui->panel, SDL_BLENDMODE_BLEND);
 #if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
-    int output_width = 0, output_height = 0;
-    if (ui->renderer)
-        SDL_GetRendererOutputSize(ui->renderer, &output_width, &output_height);
     ui->left_eye_scene = ui->renderer ? SDL_CreateTexture(
         ui->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET,
         output_width, output_height) : NULL;
@@ -1027,6 +1113,10 @@ int svrt_ui_open(svrt_ui *ui) {
         fprintf(stderr, "SVRT UI: window setup failed: %s\n", SDL_GetError());
         svrt_ui_close(ui); return -1;
     }
+    fprintf(stderr, "SVRT UI READY %dx%d @ %dHz (target %dx%d @ %dHz)\n",
+            output_width, output_height, output_refresh,
+            SVRT_DISPLAY_WIDTH, SVRT_DISPLAY_HEIGHT,
+            SVRT_DISPLAY_REFRESH_HZ);
     ui->state = SVRT_UI_SEARCHING;
     ui->state_started_ms = SDL_GetTicks();
     ui->boot_started_ms = ui->state_started_ms;

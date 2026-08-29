@@ -9,6 +9,7 @@ export SVRT_STEAM_HOME=/home/stearlight
 export SVRT_STEAM_USER=stearlight
 export SVRT_USE_GAMESCOPE=0
 export SVRT_START_IN_STREAMING_MODE=0
+export SVRT_VM_RECEIVER_ONLY=1
 
 Xorg :0 -ac -keeptty -noreset -nolisten tcp vt1 \
   >>/dev/ttyS0 2>&1 &
@@ -27,5 +28,7 @@ while [ ! -S /tmp/.X11-unix/X0 ] && [ "$attempt" -lt 100 ]; do
 done
 [ -S /tmp/.X11-unix/X0 ] || exit 1
 
+printf '%s\n' 'STEARLIGHT VM DISPLAY READY 2880x1600 @ 60Hz' >>/dev/ttyS0
+DISPLAY=:0 xrandr --current >>/dev/ttyS0 2>&1 || true
 exec su-exec stearlight /usr/bin/svrt-receiver \
   2>>/dev/ttyS0
