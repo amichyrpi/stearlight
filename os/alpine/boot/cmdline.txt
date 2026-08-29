@@ -1,0 +1,1 @@
+root=/dev/mmcblk0p2 rootfstype=ext4 rootwait rw quiet loglevel=0 logo.nologo vt.global_cursor_default=0 console=tty12 fsck.mode=auto fsck.repair=yes

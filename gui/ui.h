@@ -12,8 +12,18 @@
  * The flat boot movie and decoded SteamVR stream are deliberately unaffected.
  * Set to 0 to restore the normal stereo loading and loop scenes.
  */
+#ifndef SVRT_ENABLE_DEBUG_LEFT_EYE_UI
 #define SVRT_ENABLE_DEBUG_LEFT_EYE_UI 1
+#endif
+#ifndef SVRT_DEBUG_LEFT_EYE_UI_SCALE
 #define SVRT_DEBUG_LEFT_EYE_UI_SCALE 1.25f
+#endif
+
+/* The appliance image renders only the world-locked Steam surface.  The
+ * normal receiver keeps its SteamVR-style environment and controls. */
+#ifndef SVRT_UI_MINIMAL_STEAMOS
+#define SVRT_UI_MINIMAL_STEAMOS 0
+#endif
 
 typedef enum svrt_ui_state {
     SVRT_UI_SEARCHING,

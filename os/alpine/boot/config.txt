@@ -1,0 +1,14 @@
+arm_64bit=1
+disable_splash=1
+disable_overscan=1
+boot_delay=0
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+gpu_mem=256
+hdmi_enable_4kp60=1
+
+[pi4]
+kernel=vmlinuz-rpi
+initramfs initramfs-rpi followkernel
+
+[all]

@@ -1,0 +1,8 @@
+# Stearlight OS is an appliance: OpenRC starts the graphical shell and SSH is
+# the recovery path. Never expose a password getty on the headset display.
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/sbin/openrc shutdown

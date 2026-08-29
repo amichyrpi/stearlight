@@ -357,6 +357,10 @@ static void video_draw(svrt_ui_video *v, SDL_Renderer *renderer,
             }
         } else if (rc == 1) {
             v->ended = 1;
+        } else if (rc < 0 && !loop) {
+            fprintf(stderr, "SVRT UI: video decode failed for %s; skipping it\n",
+                    v->path ? v->path : "unknown asset");
+            v->ended = 1;
         } else if (rc == 0 && !v->playback_started) {
             /* Do not count decoder/device initialization time against the
                animation.  Otherwise the first draw can try to catch up
@@ -612,7 +616,9 @@ static void draw_loading_content(svrt_ui *ui, svrt_ui_state state,
     const char *text = state == SVRT_UI_AUTHORIZING ?
                            "Enter this pin in Steam" :
                        state == SVRT_UI_STARTING ?
-                           "Starting SteamVR stream" :
+                           (SVRT_UI_MINIMAL_STEAMOS ?
+                                (detail ? detail : "Starting Steam") :
+                                "Starting SteamVR stream") :
                            (detail ? detail : "Steam Link pairing failed");
     draw_text(ui->renderer, ui->font, text, SVRT_PANEL_WIDTH / 2, y, alpha);
 
@@ -649,7 +655,9 @@ static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
     if (!ui->panel || SDL_SetRenderTarget(ui->renderer, ui->panel)) return;
     const int loading_state = state == SVRT_UI_AUTHORIZING ||
                               state == SVRT_UI_STARTING ||
-                              state == SVRT_UI_FAILED;
+                              state == SVRT_UI_FAILED ||
+                              (SVRT_UI_MINIMAL_STEAMOS &&
+                               state == SVRT_UI_HOME && !ui->client_frame);
     /* steam_loading.mkv has an opaque black background.  Match it while the
        animation is visible so its scaled frame never appears as a rectangle. */
     if (loading_state)
@@ -672,6 +680,9 @@ static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
         if (ui->client_frame) {
             SDL_Rect destination = {0, 0, SVRT_PANEL_WIDTH, SVRT_PANEL_HEIGHT};
             SDL_RenderCopy(ui->renderer, ui->client_frame, NULL, &destination);
+        } else if (SVRT_UI_MINIMAL_STEAMOS) {
+            draw_loading_content(ui, SVRT_UI_STARTING, NULL, detail,
+                                 elapsed_ms, alpha);
         } else {
             draw_text(ui->renderer, ui->font, "Steam ARM64",
                       SVRT_PANEL_WIDTH / 2, SVRT_PANEL_HEIGHT / 2 - 42, 255);
@@ -875,8 +886,9 @@ static void draw_curved_panel_eye(svrt_ui *ui, int eye_x, int eye_width,
     const float eye_offset = eye ? SVRT_EYE_SEPARATION_METERS * 0.5f :
                                    -SVRT_EYE_SEPARATION_METERS * 0.5f;
     const float radius = 3.5f, distance = 2.15f;
-    const float arc = 44.0f * SVRT_PI / 180.0f;
-    const float panel_height = 1.50f;
+    const float arc = (SVRT_UI_MINIMAL_STEAMOS ? 40.0f : 44.0f) *
+                      SVRT_PI / 180.0f;
+    const float panel_height = SVRT_UI_MINIMAL_STEAMOS ? 1.34f : 1.50f;
     for (int column = 0; column <= slices; ++column) {
         const float u = (float)column / slices;
         const float angle = (u - 0.5f) * arc;
@@ -926,13 +938,14 @@ static void draw_scene(svrt_ui *ui) {
         SDL_RenderClear(ui->renderer);
     }
 #endif
-    draw_environment(ui);
+    if (!SVRT_UI_MINIMAL_STEAMOS)
+        draw_environment(ui);
     const int eye_count = SVRT_ENABLE_DEBUG_LEFT_EYE_UI ? 1 : 2;
     for (int eye = 0; eye < eye_count; ++eye)
         draw_curved_panel_eye(ui, eye * (width / 2),
                               eye ? width - width / 2 : width / 2,
                               height, eye);
-    if (ui->state == SVRT_UI_HOME)
+    if (ui->state == SVRT_UI_HOME && !SVRT_UI_MINIMAL_STEAMOS)
         for (int eye = 0; eye < eye_count; ++eye)
             draw_dashboard_chrome_eye(ui, eye * (width / 2),
                                       eye ? width - width / 2 : width / 2,
@@ -959,9 +972,17 @@ static void draw_scene(svrt_ui *ui) {
 
 int svrt_ui_open(svrt_ui *ui) {
     memset(ui, 0, sizeof(*ui));
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) return -1;
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+        fprintf(stderr, "SVRT UI: SDL video initialization failed: %s\n",
+                SDL_GetError());
+        return -1;
+    }
     ui->owns_sdl = 1;
-    if (TTF_Init()) { SDL_Quit(); memset(ui, 0, sizeof(*ui)); return -1; }
+    if (TTF_Init()) {
+        fprintf(stderr, "SVRT UI: font initialization failed: %s\n",
+                TTF_GetError());
+        SDL_Quit(); memset(ui, 0, sizeof(*ui)); return -1;
+    }
     disable_local_input();
     ui->window = SDL_CreateWindow("SVRT", SDL_WINDOWPOS_UNDEFINED,
         SDL_WINDOWPOS_UNDEFINED, 1280, 720, SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -992,13 +1013,18 @@ int svrt_ui_open(svrt_ui *ui) {
        stateless HEVC block has limited capture contexts; opening boot, loop,
        and Steam loading decoders together makes them starve each other. */
     ui->boot = video_open(SVRT_GUI_BOOT_PATH);
-    ui->background = video_open(SVRT_GUI_BACKGROUND_PATH);
+    if (!ui->boot)
+        fprintf(stderr, "SVRT UI: boot animation unavailable at %s; continuing\n",
+                SVRT_GUI_BOOT_PATH);
+    if (!SVRT_UI_MINIMAL_STEAMOS)
+        ui->background = video_open(SVRT_GUI_BACKGROUND_PATH);
     if (!ui->renderer || !ui->panel || !ui->font || !ui->code_font ||
         !ui->small_font ||
 #if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
         !ui->left_eye_scene ||
 #endif
-        !ui->boot || !ui->background) {
+        (!SVRT_UI_MINIMAL_STEAMOS && !ui->background)) {
+        fprintf(stderr, "SVRT UI: window setup failed: %s\n", SDL_GetError());
         svrt_ui_close(ui); return -1;
     }
     ui->state = SVRT_UI_SEARCHING;
@@ -1055,7 +1081,9 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
         SDL_SetRenderTarget(ui->renderer, NULL);
         SDL_SetRenderDrawColor(ui->renderer, 0, 0, 0, 255);
         SDL_RenderClear(ui->renderer);
-        draw_video_per_eye(ui, ui->boot, boot_elapsed, 1440, 1600, 0, 0,
+        draw_video_per_eye(ui, ui->boot, boot_elapsed,
+                           ui->boot->codec->width, ui->boot->codec->height,
+                           0, 0,
                            SVRT_BOOT_SCALE, SVRT_UI_HORIZONTAL_ASPECT);
         SDL_RenderPresent(ui->renderer);
         return;

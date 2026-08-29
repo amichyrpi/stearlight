@@ -1,0 +1,36 @@
+name: Stearlight Armada OS
+
+on:
+  push:
+    paths:
+      - 'os/**'
+      - '.gitmodules'
+      - '.github/workflows/armada.yml'
+  pull_request:
+    paths:
+      - 'os/**'
+      - '.gitmodules'
+      - '.github/workflows/armada.yml'
+
+jobs:
+  layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Validate Armada source pin and target layout
+        run: bash os/tests/layout-test.sh
+
+  image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: layout
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build bootc image
+        run: bash os/build.sh

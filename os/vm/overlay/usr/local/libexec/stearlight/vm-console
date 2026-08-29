@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+export XDG_RUNTIME_DIR=/run/user/1000
+export XDG_SESSION_TYPE=x11
+export XDG_CURRENT_DESKTOP=Stearlight
+export DISPLAY=:0
+export SVRT_STEAM_HOME=/home/stearlight
+export SVRT_STEAM_USER=stearlight
+export SVRT_USE_GAMESCOPE=0
+export SVRT_START_IN_STREAMING_MODE=0
+
+Xorg :0 -ac -keeptty -noreset -nolisten tcp vt1 \
+  >>/dev/ttyS0 2>&1 &
+xorg_pid=$!
+trap 'kill "$xorg_pid" 2>/dev/null || true' EXIT INT TERM
+
+attempt=0
+while [ ! -S /tmp/.X11-unix/X0 ] && [ "$attempt" -lt 100 ]; do
+  kill -0 "$xorg_pid" 2>/dev/null || {
+    printf '%s\n' 'Xorg exited before creating display :0' \
+      >>/dev/ttyS0
+    exit 1
+  }
+  attempt=$((attempt + 1))
+  sleep 0.1
+done
+[ -S /tmp/.X11-unix/X0 ] || exit 1
+
+exec su-exec stearlight /usr/bin/svrt-receiver \
+  2>>/dev/ttyS0

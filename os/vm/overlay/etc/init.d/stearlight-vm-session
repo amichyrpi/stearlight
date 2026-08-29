@@ -1,0 +1,22 @@
+#!/sbin/openrc-run
+
+description="Stearlight VirtualBox display session"
+command="/usr/local/libexec/stearlight/vm-session"
+supervisor="supervise-daemon"
+pidfile="/run/stearlight-vm-session.pid"
+output_log="/var/log/stearlight-vm-session.log"
+error_log="/var/log/stearlight-vm-session.log"
+respawn_delay=2
+respawn_max=0
+
+depend() {
+    need localmount dbus
+    use net
+}
+
+start_pre() {
+    checkpath --directory --mode 0755 /run/user
+    checkpath --directory --mode 0700 --owner stearlight:stearlight /run/user/1000
+    checkpath --file --mode 0644 /var/log/stearlight-vm-session.log
+    checkpath --file --mode 0644 --owner stearlight:stearlight /var/log/stearlight-ui.log
+}

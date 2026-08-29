@@ -1,0 +1,5 @@
+#!/bin/sh
+for governor in /sys/devices/system/cpu/cpufreq/policy*/scaling_governor; do
+  [ -w "$governor" ] && printf '%s\n' performance > "$governor"
+done
+exit 0

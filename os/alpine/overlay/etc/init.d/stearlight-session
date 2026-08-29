@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+
+description="Stearlight stereo Steam shell"
+command="/usr/local/libexec/stearlight/session"
+supervisor="supervise-daemon"
+pidfile="/run/stearlight-session.pid"
+output_log="/var/log/stearlight-session.log"
+error_log="/var/log/stearlight-session.log"
+respawn_delay=2
+respawn_max=0
+
+depend() {
+    need localmount dbus
+    use net pipewire
+    before getty
+}
+
+start_pre() {
+    checkpath --directory --mode 0700 --owner stearlight:stearlight /run/user/1000
+    checkpath --file --mode 0644 /var/log/stearlight-session.log
+    checkpath --file --mode 0644 --owner stearlight:stearlight /var/log/stearlight-ui.log
+    setterm --blank 0 --powersave off --powerdown 0 > /dev/tty1 2>/dev/null || true
+}

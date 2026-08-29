@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec openvt -c 1 -f -s -w -- /usr/local/libexec/stearlight/vm-console

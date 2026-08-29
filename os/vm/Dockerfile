@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1.7
+ARG ALPINE_TAG=edge
+
+FROM alpine:${ALPINE_TAG} AS receiver-build
+RUN apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
+    libdrm-dev libx11-dev mbedtls3-dev ninja openssl-dev pkgconf \
+    protobuf-c-dev sdl2-dev sdl2_ttf-dev
+WORKDIR /src
+COPY . .
+RUN cmake -S . -B /build -G Ninja \
+      -DSVRT_BUILD_DRIVER=OFF -DSVRT_BUILD_UTILITY=OFF \
+      -DSVRT_BUILD_TESTS=OFF -DSVRT_BUILD_VENDORED_SDL=OFF \
+      -DSVRT_STEARLIGHT_OS=ON -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/usr \
+    && cmake --build /build --parallel \
+    && DESTDIR=/staging cmake --install /build
+
+FROM alpine:${ALPINE_TAG} AS rootfs
+RUN apk add --no-cache \
+      alpine-base alsa-lib avahi bash dbus dhcpcd e2fsprogs eudev ffmpeg \
+      linux-virt mesa-dri-gallium mesa-egl mesa-gbm mesa-gles \
+      mbedtls3 openrc openssh protobuf-c sdl2 sdl2_ttf shadow su-exec \
+      util-linux-misc xauth xf86-input-libinput xf86-video-vmware \
+      xorg-server xvfb
+RUN for group in audio input render tty video wheel; do \
+      grep -q "^${group}:" /etc/group || addgroup -S "${group}"; \
+    done \
+    && addgroup -S stearlight \
+    && adduser -D -u 1000 -G stearlight -s /bin/ash stearlight \
+    && for group in audio input render tty video wheel; do \
+         addgroup stearlight "$group"; \
+       done \
+    && printf 'stearlight:stearlight\n' | chpasswd \
+    && printf 'root:stearlight\n' | chpasswd
+COPY --from=receiver-build /staging/ /
+COPY os/vm/overlay/ /
+RUN chown -R stearlight:stearlight /home/stearlight \
+    && chmod 0755 /etc/init.d/stearlight-vm-session \
+                  /usr/local/libexec/stearlight/vm-session \
+                  /usr/local/libexec/stearlight/vm-console \
+    && rc-update add devfs sysinit \
+    && rc-update add dmesg sysinit \
+    && rc-update add mdev sysinit \
+    && rc-update add hwdrivers sysinit \
+    && rc-update add modules boot \
+    && rc-update add localmount boot \
+    && rc-update add sysctl boot \
+    && rc-update add dbus default \
+    && rc-update add avahi-daemon default \
+    && rc-update add dhcpcd default \
+    && rc-update add sshd default \
+    && rc-update add stearlight-vm-session default
+
+FROM alpine:${ALPINE_TAG} AS image-build
+RUN apk add --no-cache dosfstools e2fsprogs genimage grub-efi mtools qemu-img
+COPY --from=rootfs / /work/rootfs/
+COPY os/vm/genimage.cfg /work/genimage.cfg
+COPY os/vm/grub.cfg /work/grub.cfg
+RUN mkdir -p /work/input/efi/EFI/BOOT /work/output /work/tmp \
+    && grub-mkstandalone -O x86_64-efi \
+         -o /work/input/efi/EFI/BOOT/BOOTX64.EFI \
+         --modules='part_gpt fat ext2 normal linux search search_label all_video' \
+         'boot/grub/grub.cfg=/work/grub.cfg' \
+    && genimage --config /work/genimage.cfg --rootpath /work/rootfs \
+         --inputpath /work/input --outputpath /work/output \
+         --tmppath /work/tmp \
+    && qemu-img convert -f raw -O vdi /work/output/stearlight-vm.raw \
+         /work/output/stearlight-os-vm-x86_64.vdi \
+    && sha256sum /work/output/stearlight-os-vm-x86_64.vdi \
+         > /work/output/stearlight-os-vm-x86_64.vdi.sha256 \
+    && rm -f /work/output/efi.vfat /work/output/root.ext4 \
+             /work/output/stearlight-vm.raw
+
+FROM scratch AS image
+COPY --from=image-build /work/output/ /

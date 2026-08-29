@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+steam_root="${HOME}/.local/share/Steam"
+steam_bin="${steam_root}/steamrtarm64/steam"
+if [[ ! -x "${steam_bin}" ]]; then
+    echo "Stearlight: ARM64 Steam client is not installed at ${steam_bin}" >&2
+    exit 127
+fi
+exec "${steam_bin}" "$@"
+

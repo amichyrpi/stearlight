@@ -1,0 +1,11 @@
+.git
+.cache
+.cxx
+.gradle
+.idea
+build
+build-*
+buildpi
+out
+squashfs-root
+vanilla-master

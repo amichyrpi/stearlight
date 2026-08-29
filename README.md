@@ -25,6 +25,13 @@ This is a **work in progress**. SteamVR driver and Raspberry Pi 4 receiver. This
 
 Builds and driver are available on the [Releases](https://github.com/amichyrpi/H.265-SVRT/releases) page.
 
+### Stearlight OS appliance image
+
+The custom Alpine aarch64 image, silent Raspberry Pi boot configuration,
+native Gamescope/Monado stack, isolated Steam glibc runtime, and 1440x1600 per
+eye shell are documented in [os/alpine/README.md](os/alpine/README.md). The
+builder creates an image file only; it never flashes or alters a connected Pi.
+
 ### Compiling on Raspberry Pi
 
 Before compilling H.265 SVRT you need to be running a 64-bit Raspberry Pi OS image with KMS enabled and FFmpeg. If you don't have a 64-bit Raspberry Pi OS image, you can install it by using [Raspberry Pi Imager](https://www.raspberrypi.com/software/). You can enable KMS and install FFmpeg using the following commands:

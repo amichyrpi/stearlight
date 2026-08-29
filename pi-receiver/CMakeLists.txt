@@ -2,6 +2,10 @@ if(NOT SVRT_BUILD_RECEIVER OR NOT UNIX)
   return()
 endif()
 include(GNUInstallDirs)
+set(SVRT_RECEIVER_BOOT_ASSET "boot.mkv")
+if(SVRT_STEARLIGHT_OS)
+  set(SVRT_RECEIVER_BOOT_ASSET "os/os_boot.mp4")
+endif()
 add_executable(svrt-receiver
   main.c
   status.c status.h
@@ -14,10 +18,16 @@ target_sources(svrt-receiver PRIVATE
 target_include_directories(svrt-receiver PRIVATE ../gui .)
 target_compile_definitions(svrt-receiver PRIVATE
   SVRT_GUI_FONT_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/D-DINExp-Bold.otf"
-  SVRT_GUI_BOOT_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/boot.mkv"
+  SVRT_GUI_BOOT_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/${SVRT_RECEIVER_BOOT_ASSET}"
   SVRT_GUI_LOOP_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/loop.mkv"
   SVRT_GUI_STEAM_LOADING_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/steam_loading.mkv"
   SVRT_GUI_BACKGROUND_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/transition_background.png")
+if(SVRT_STEARLIGHT_OS)
+  target_compile_definitions(svrt-receiver PRIVATE
+    SVRT_ENABLE_DEBUG_LEFT_EYE_UI=0
+    SVRT_UI_MINIMAL_STEAMOS=1
+    SVRT_STEAM_CAPTURE_INTERVAL_MS=16)
+endif()
 target_compile_features(svrt-receiver PRIVATE c_std_11)
 find_package(Threads REQUIRED)
 find_package(ALSA REQUIRED)
@@ -77,4 +87,5 @@ install(PROGRAMS ${CMAKE_CURRENT_SOURCE_DIR}/../scripts/install-steam-arm64-pi.s
   DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/svrt)
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../assets/
   DESTINATION ${CMAKE_INSTALL_DATADIR}/svrt/assets
-  FILES_MATCHING PATTERN "*.mkv" PATTERN "*.otf" PATTERN "transition_background.png")
+  FILES_MATCHING PATTERN "*.mkv" PATTERN "*.mp4" PATTERN "*.otf"
+                 PATTERN "transition_background.png")

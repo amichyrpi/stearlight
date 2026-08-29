@@ -12,6 +12,8 @@ option(SVRT_BUILD_RECEIVER "Build the Raspberry Pi receiver" ON)
 option(SVRT_BUILD_PI_LIBRARY "Build the Raspberry Pi HEVC/DRM library" ON)
 option(SVRT_BUILD_TESTS "Build unit and integration tests" ON)
 option(SVRT_BUILD_UTILITY "Build the Windows SVRT Utility" ON)
+option(SVRT_STEARLIGHT_OS
+  "Build the stereo, black-environment Stearlight OS shell" OFF)
 set(SVRT_VENDORED_SDL_DEFAULT OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
    CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|armv[67].*)$")
@@ -43,8 +45,11 @@ if(SVRT_BUILD_RECEIVER AND UNIX)
     POSITION_INDEPENDENT_CODE ON)
   # IHSlib commit 5609081 calls sqrt() from its video statistics module
   # without including math.h. Inject the standard declaration without
-  # carrying a modified LGPL source fork.
+  # carrying a modified LGPL source fork. Its POSIX UDP backend also uses
+  # struct timeval without including sys/time.h, which musl exposes less
+  # permissively than glibc.
   target_compile_options(ihslib PRIVATE -include math.h)
+  target_compile_options(ihs-platforms PRIVATE -include sys/time.h)
   if(TARGET OpenSSL::Crypto)
     target_link_libraries(ihslib PRIVATE OpenSSL::Crypto)
   endif()

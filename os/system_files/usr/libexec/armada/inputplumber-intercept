@@ -1,0 +1,25 @@
+#!/usr/bin/env sh
+set -eu
+
+service='org.shadowblip.InputPlumber'
+path='/org/shadowblip/InputPlumber/CompositeDevice0'
+iface='org.shadowblip.Input.CompositeDevice'
+
+case "${1:-}" in
+  status)
+    busctl --system get-property "$service" "$path" "$iface" InterceptMode | awk '{print $2}'
+    ;;
+  overlay)
+    busctl --system set-property "$service" "$path" "$iface" InterceptMode u 2
+    ;;
+  gamepad)
+    busctl --system set-property "$service" "$path" "$iface" InterceptMode u 3
+    ;;
+  reset)
+    busctl --system set-property "$service" "$path" "$iface" InterceptMode u 0
+    ;;
+  *)
+    echo "usage: inputplumber-intercept status|overlay|gamepad|reset" >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,129 @@
+#!/bin/bash
+set -euo pipefail
+
+device_dir=${ARMADA_DEVICE_DIR:-/usr/lib/armada/devices}
+
+source "$device_dir/defaults.conf"
+
+model=${ARMADA_MODEL:-}
+if [[ -z "$model" ]]; then
+    model=$(tr -d '\0' </sys/firmware/devicetree/base/model 2>/dev/null || true)
+fi
+case "$model" in
+    "AYANEO Pocket EVO") profile=ayaneo-pocket-evo ;;
+    "AYN Odin 2") profile=ayn-odin-2 ;;
+    "AYN Odin 2 Mini") profile=ayn-odin-2-mini ;;
+    "AYN Odin 2 Portal") profile=ayn-odin-2-portal ;;
+    "AYN Thor") profile=ayn-thor ;;
+    "AYANEO Pocket ACE") profile=ayaneo-pocket-ace ;;
+    "AYANEO Pocket DMG") profile=ayaneo-pocket-dmg ;;
+    "AYANEO Pocket DS") profile=ayaneo-pocket-ds ;;
+    "AYANEO Pocket S 2K") profile=ayaneo-pocket-s2k ;;
+    "AYANEO Pocket S2") profile=ayaneo-pocket-s2 ;;
+    "KONKR Pocket FIT") profile=konkr-pocket-fit ;;
+    "KONKR Pocket FIT Elite") profile=konkr-pocket-fit-elite ;;
+    "AYN Odin 3") profile=ayn-odin-3 ;;
+    "Retroid Pocket 5") profile=retroid-pocket-5 ;;
+    "Retroid Pocket Flip2") profile=retroid-pocket-flip2 ;;
+    "Retroid Pocket Mini") profile=retroid-pocket-mini ;;
+    "Retroid Pocket Mini V2") profile=retroid-pocket-mini-v2 ;;
+    "Retroid Pocket 6") profile=retroid-pocket-6 ;;
+    "Retroid Pocket 6 TOP-DPAD") profile=retroid-pocket-6 ;;
+    "Retroid Pocket Nova") profile=retroid-pocket-nova ;;
+    *) profile= ;;
+esac
+
+if [[ -n "$profile" && -r "$device_dir/$profile.conf" ]]; then
+    source "$device_dir/$profile.conf"
+fi
+profile_suspend_mode=${ARMADA_SUSPEND_MODE:-fake}
+
+mem_sleep=${ARMADA_MEM_SLEEP_PATH:-/sys/power/mem_sleep}
+mem_sleep_modes=
+if [[ -r "$mem_sleep" ]]; then
+    mem_sleep_modes=$(<"$mem_sleep")
+fi
+selected_mem_sleep=$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' <<<"$mem_sleep_modes")
+
+sleep_config=${ARMADA_SLEEP_CONFIG:-/etc/armada/sleep.conf}
+if [[ -r "$sleep_config" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" =~ ^[[:space:]]*suspend_mode[[:space:]]*=[[:space:]]*(fake|s2idle|deep)[[:space:]]*$ ]]; then
+            suspend_mode=${BASH_REMATCH[1]}
+            if [[ "$suspend_mode" == fake ]] || grep -qw "$suspend_mode" <<<"$mem_sleep_modes"; then
+                ARMADA_SUSPEND_MODE=$suspend_mode
+            else
+                ARMADA_SUSPEND_MODE=$profile_suspend_mode
+            fi
+        fi
+    done <"$sleep_config"
+fi
+if [[ "${ARMADA_SUSPEND_MODE:-fake}" == "mem" ]]; then
+    if [[ "$selected_mem_sleep" == "s2idle" || "$selected_mem_sleep" == "deep" ]]; then
+        ARMADA_SUSPEND_MODE=$selected_mem_sleep
+    else
+        ARMADA_SUSPEND_MODE=fake
+    fi
+fi
+
+# CPU topology by SoC (device conf may override). Cpulists are ordered:
+# presets expand in host order, WINE_CPU_TOPOLOGY consumers keep the order.
+# BIG includes the prime cores; PRIME is the strict subset. Empty
+# ARMADA_IRQ_CORES means no IRQ restriction.
+case "${ARMADA_SOC_CLASS:-}" in
+    SM8250)
+        : "${ARMADA_LITTLE_CORES=0-3}"
+        : "${ARMADA_BIG_CORES=4-7}"
+        : "${ARMADA_PRIME_CORES=7}"
+        # references run SM8250 unrestricted; the A55s are too weak to
+        # carry all IRQ handling
+        : "${ARMADA_IRQ_CORES=}"
+        ;;
+    SM8550)
+        : "${ARMADA_LITTLE_CORES=0-2}"
+        : "${ARMADA_BIG_CORES=3-7}"
+        : "${ARMADA_PRIME_CORES=7}"
+        : "${ARMADA_IRQ_CORES=0-2}"
+        ;;
+    SM8650)
+        : "${ARMADA_LITTLE_CORES=0-1}"
+        : "${ARMADA_BIG_CORES=2-7}"
+        : "${ARMADA_PRIME_CORES=7}"
+        : "${ARMADA_IRQ_CORES=0-1}"
+        ;;
+    SM8750)
+        : "${ARMADA_LITTLE_CORES=}"
+        : "${ARMADA_BIG_CORES=0-7}"
+        : "${ARMADA_PRIME_CORES=6-7}"
+        : "${ARMADA_IRQ_CORES=}"
+        ;;
+esac
+
+vars=(
+    ARMADA_DEVICE_ID
+    ARMADA_DEVICE_NAME
+    ARMADA_SOC_CLASS
+    ARMADA_SUSPEND_MODE
+    ARMADA_SYNC_SUSPEND
+    ARMADA_PRIMARY_CONNECTOR
+    ARMADA_PRIMARY_BACKLIGHT
+    ARMADA_SECONDARY_CONNECTOR
+    ARMADA_VIRTUAL_KEYBOARD_CONNECTOR
+    ARMADA_PRIMARY_TOUCHSCREEN
+    ARMADA_SECONDARY_TOUCHSCREEN
+    ARMADA_PANEL_TYPE
+    ARMADA_PANEL_ORIENTATION
+    ARMADA_HDR_NITS
+    ARMADA_GAMEPAD_QUIRK
+    ARMADA_RGB_BACKEND
+    ARMADA_RGB_TARGETS
+    ARMADA_RGB_CORRECTION
+    ARMADA_LITTLE_CORES
+    ARMADA_BIG_CORES
+    ARMADA_PRIME_CORES
+    ARMADA_IRQ_CORES
+)
+
+for var in "${vars[@]}"; do
+    printf '%s=%q\n' "$var" "${!var:-}"
+done

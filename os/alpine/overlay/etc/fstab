@@ -1,0 +1,4 @@
+/dev/mmcblk0p1  /boot  vfat  ro,noatime,fmask=0177,dmask=0077  0  2
+/dev/mmcblk0p2  /      ext4  rw,noatime,commit=30             0  1
+tmpfs           /tmp   tmpfs nosuid,nodev,mode=1777           0  0
+tmpfs           /var/log tmpfs nosuid,nodev,mode=0755,size=32M 0 0

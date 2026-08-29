@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+export XDG_RUNTIME_DIR=/run/user/1000
+export XDG_SESSION_TYPE=tty
+export XDG_CURRENT_DESKTOP=Stearlight
+export SDL_VIDEODRIVER=KMSDRM
+export SVRT_STEAM_HOME=/home/stearlight
+export SVRT_STEAM_USER=stearlight
+export SVRT_USE_GAMESCOPE=1
+export SVRT_START_IN_STREAMING_MODE=0
+export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+
+chown -R stearlight:stearlight "$XDG_RUNTIME_DIR"
+
+{
+  printf '%s\n' 'Starting Stearlight display session'
+  date -u 2>/dev/null || true
+  id stearlight
+  printf '%s\n' 'DRM devices:'
+  ls -l /dev/dri 2>&1 || true
+  printf '%s\n' 'Framebuffer devices:'
+  ls -l /dev/fb* 2>&1 || true
+  printf '%s\n' 'TTY devices:'
+  ls -l /dev/tty0 /dev/tty1 2>&1 || true
+} >>/var/log/stearlight-ui.log 2>&1
+
+su-exec stearlight pipewire >/var/log/pipewire.log 2>&1 &
+su-exec stearlight wireplumber >/var/log/wireplumber.log 2>&1 &
+exec openvt -c 1 -f -s -w -- su-exec stearlight sh -c \
+  'exec /usr/bin/svrt-receiver 2>>/var/log/stearlight-ui.log'

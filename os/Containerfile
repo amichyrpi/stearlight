@@ -1,0 +1,114 @@
+# syntax=docker/dockerfile:1.7
+# Fedora bootc is Armada's image base.  The Pi-specific kernel/firmware layer
+# is kept separate from Armada's Qualcomm device packages.
+ARG FEDORA_VERSION=44
+ARG FEX_PKG=ghcr.io/armada-os/armada-packages/fex@sha256:7ad92a80e6698245ade709b4f357988dd1520aca25203f7d39659585f2b9948f
+
+# Armada's pinned ARM64 FEX build is used instead of a distro placeholder. It
+# contains the Steam-compatible emulator and native Vulkan/GL thunks.
+FROM ${FEX_PKG} AS fex
+
+FROM quay.io/fedora/fedora-bootc:${FEDORA_VERSION} AS pi-kernel
+RUN dnf -y install ca-certificates curl tar gzip kmod \
+    && dnf clean all
+# Arch Linux ARM's Raspberry Pi archive supplies the Pi 4 kernel modules and
+# firmware that Fedora's generic bootc image does not ship.  Userspace remains
+# Fedora/bootc; only the hardware boot layer is imported.
+ARG PI_KERNEL_ARCHIVE=https://archlinuxarm.org/os/ArchLinuxARM-rpi-aarch64-latest.tar.gz
+ADD ${PI_KERNEL_ARCHIVE} /tmp/archlinuxarm-rpi.tar.gz
+RUN mkdir -p /stage \
+    && tar -xzf /tmp/archlinuxarm-rpi.tar.gz -C /stage ./boot ./usr/lib/modules ./usr/lib/firmware 2>/dev/null || \
+       tar -xzf /tmp/archlinuxarm-rpi.tar.gz -C /stage ./boot ./usr/lib/modules \
+    && rm -f /tmp/archlinuxarm-rpi.tar.gz
+
+FROM quay.io/fedora/fedora-bootc:${FEDORA_VERSION} AS decky-build
+RUN dnf -y install nodejs npm \
+    && dnf clean all
+# bootc intentionally does not carry a writable /root home in intermediate
+# layers. Keep npm's cache and config in an explicit writable directory so the
+# reproducible plugin build never depends on the builder's root layout.
+ENV HOME=/tmp/decky-home \
+    NPM_CONFIG_CACHE=/tmp/decky-npm-cache
+RUN install -d -m 0700 "$HOME" "$NPM_CONFIG_CACHE"
+WORKDIR /build
+COPY os/decky/armada-control/package.json \
+     os/decky/armada-control/package-lock.json armada-control/
+COPY os/decky/armada-store/package.json \
+     os/decky/armada-store/package-lock.json armada-store/
+RUN cd armada-control && npm ci --ignore-scripts \
+    && cd ../armada-store && npm ci --ignore-scripts
+COPY os/decky/armada-control/ armada-control/
+COPY os/decky/armada-store/ armada-store/
+RUN cd armada-control && npm run build \
+    && cd ../armada-store && npm run build
+
+FROM quay.io/fedora/fedora-bootc:${FEDORA_VERSION}
+ARG ARMADA_VERSION=stearlight-dev
+LABEL org.opencontainers.image.version="${ARMADA_VERSION}"
+
+RUN dnf -y install \
+      NetworkManager NetworkManager-wifi iwd bluez \
+      pipewire pipewire-alsa pipewire-pulseaudio wireplumber \
+      dbus-broker polkit upower seatd \
+      gamescope xorg-x11-server-Xwayland xorg-x11-server-Xvfb \
+      mesa-dri-drivers mesa-vulkan-drivers mesa-libgbm libdrm \
+      vulkan-loader SDL2 SDL2_ttf \
+      curl ca-certificates git jq unzip xz tar gzip file python3 \
+      kmod btrfs-progs e2fsprogs squashfs-tools \
+    && dnf clean all \
+    && useradd --create-home --uid 1000 --shell /bin/bash stearlight \
+    && usermod -aG video,render,input,audio,seat stearlight \
+    && install -d -o stearlight -g stearlight -m 0700 /var/home/stearlight \
+    && systemctl set-default graphical.target \
+    && systemctl mask getty@tty1.service sshd.service \
+    && systemctl enable NetworkManager.service \
+    && systemctl enable seatd.service
+
+# Armada session contract and Decky plugin payloads are vendored directly in
+# this repository; Pi-specific services below replace handheld-only units.
+COPY os/system_files/usr/share/gamescope-session-plus \
+     /usr/share/gamescope-session-plus/
+COPY os/system_files/usr/share/armada \
+     /usr/share/armada/
+COPY --from=decky-build /build/armada-control/dist \
+     /usr/share/decky-plugins/armada-control/dist
+COPY --from=decky-build /build/armada-store/dist \
+     /usr/share/decky-plugins/armada-store/dist
+COPY os/system_files/ /
+COPY os/scripts/ /usr/libexec/stearlight/
+COPY os/build_files/generate-steam-bootstrap.sh \
+     /usr/libexec/stearlight/generate-steam-bootstrap.sh
+COPY os/decky/armada-control /tmp/decky/armada-control
+COPY os/decky/armada-store /tmp/decky/armada-store
+COPY os/system_files/usr/lib/decky-loader/ /usr/lib/decky-loader/
+COPY os/system_files/usr/lib/systemd/system/armada-decky-sync.service \
+     /usr/lib/systemd/system/armada-decky-sync.service
+COPY --from=fex /rpms/ /packages/fex/
+COPY --from=pi-kernel /stage/boot/ /boot/
+COPY --from=pi-kernel /stage/usr/lib/modules/ /usr/lib/modules/
+COPY --from=pi-kernel /stage/usr/lib/firmware/ /usr/lib/firmware/
+COPY os/boot/ /boot/
+
+RUN dnf -y install --setopt=install_weak_deps=False /packages/fex/fex-emu-*.rpm \
+    && dnf clean all
+
+RUN chmod 0755 /usr/libexec/stearlight/* \
+    && sed -i 's/\r$//' /usr/libexec/stearlight/*.sh \
+    && sed -i 's/^user_name=armada$/user_name=stearlight/' \
+       /usr/lib/decky-loader/armada-decky-sync \
+    && install -d -m 0755 /usr/share/decky-plugins/armada-control \
+                       /usr/share/decky-plugins/armada-store \
+    && cp -a /tmp/decky/armada-control/. \
+          /usr/share/decky-plugins/armada-control/ 2>/dev/null || true \
+    && cp -a /tmp/decky/armada-store/. \
+          /usr/share/decky-plugins/armada-store/ 2>/dev/null || true \
+    && install -d -o stearlight -g stearlight -m 0700 \
+          /var/home/stearlight/.local/share \
+    && STEAM_BOOTSTRAP_HOME=/var/home/stearlight \
+       /usr/libexec/stearlight/generate-steam-bootstrap.sh \
+    && chown -R stearlight:stearlight /var/home/stearlight \
+    && /usr/libexec/stearlight/configure-fex.sh \
+    && /usr/libexec/stearlight/install-compat.sh \
+    && (depmod -a "$(ls /usr/lib/modules | head -n1)" || true) \
+    && systemctl enable armada-decky-sync.service \
+    && systemctl enable stearlight-session.service

@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+credentials=/etc/stearlight/wifi.env
+[ -s "$credentials" ] || exit 0
+. "$credentials"
+
+ssid=$(printf '%s' "$STEARLIGHT_WIFI_SSID_B64" | base64 -d)
+psk=$(printf '%s' "${STEARLIGHT_WIFI_PSK_B64:-}" | base64 -d)
+interface=${STEARLIGHT_WIFI_INTERFACE:-wlan0}
+
+attempt=0
+while [ ! -e "/sys/class/net/$interface" ] && [ "$attempt" -lt 20 ]; do
+    sleep 1
+    attempt=$((attempt + 1))
+done
+[ -e "/sys/class/net/$interface" ] || exit 1
+
+attempt=0
+while :; do
+    if [ -n "$psk" ]; then
+        iwctl --passphrase "$psk" station "$interface" connect "$ssid" && break
+    else
+        iwctl station "$interface" connect "$ssid" && break
+    fi
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 6 ] || exit 1
+    sleep 2
+done
+
+unset psk
+rm -f "$credentials"
+touch /var/lib/stearlight-wifi-provisioned

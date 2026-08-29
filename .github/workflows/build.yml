@@ -68,9 +68,45 @@ jobs:
           path: svrt-steamvr-driver-win64.zip
           if-no-files-found: error
 
+  stearlight-os-rpi4:
+    name: Stearlight OS Raspberry Pi 4
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Validate OS scripts
+        run: bash os/alpine/tests/layout-test.sh
+
+      - name: Build dated flash image
+        env:
+          STEAM_USERNAME: ${{ secrets.STEARLIGHT_STEAM_USERNAME }}
+          STEAM_PASSWORD: ${{ secrets.STEARLIGHT_STEAM_PASSWORD }}
+          STEARLIGHT_FEX_BRANCH: beta
+          STEARLIGHT_PROTON_BRANCH: public
+        run: |
+          set -euo pipefail
+          export STEARLIGHT_BUILD_DATE="$(date -u +%Y%m%d)"
+          export STEARLIGHT_OUTPUT_DIR="$PWD/out/stearlight-os"
+          bash os/alpine/build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-stearlight-os-rpi4
+          path: |
+            out/stearlight-os/image/stearlight-os-*rp4.img.gz
+            out/stearlight-os/image/stearlight-os-*rp4.img.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
+
   continuous-release:
     name: Continuous build release
-    needs: [linux, windows-driver]
+    needs: [linux, windows-driver, stearlight-os-rpi4]
     if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-24.04
     permissions:

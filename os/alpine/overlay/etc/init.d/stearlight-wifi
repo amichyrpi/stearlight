@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+description="Provision the locally bundled Stearlight Wi-Fi profile"
+
+depend() {
+    need iwd
+    before stearlight-session
+}
+
+start() {
+    if [ ! -s /etc/stearlight/wifi.env ]; then
+        return 0
+    fi
+    ebegin "Provisioning Stearlight Wi-Fi"
+    /usr/local/libexec/stearlight/provision-wifi
+    eend $?
+}

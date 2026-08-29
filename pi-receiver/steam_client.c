@@ -9,27 +9,39 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define SVRT_STEAM_HOME "/var/lib/svrt-receiver"
+#define SVRT_DEFAULT_STEAM_HOME "/var/lib/svrt-receiver"
 #define SVRT_STEAM_DISPLAY ":8"
 #define SVRT_STEAM_WIDTH 1024
 #define SVRT_STEAM_HEIGHT 640
+#ifndef SVRT_STEAM_CAPTURE_INTERVAL_MS
+#define SVRT_STEAM_CAPTURE_INTERVAL_MS 33
+#endif
+
+static const char *steam_home(void) {
+    const char *configured = getenv("SVRT_STEAM_HOME");
+    return configured && configured[0] ? configured : SVRT_DEFAULT_STEAM_HOME;
+}
 
 static const char *steam_binary(void) {
-    static const char path[] =
-        SVRT_STEAM_HOME "/.local/share/Steam/steamrtarm64/steam";
+    static char path[512];
+    snprintf(path, sizeof(path), "%s/.local/share/Steam/steamrtarm64/steam",
+             steam_home());
     return path;
 }
 
 static const char *steam_launcher(void) {
-    static const char path[] =
-        SVRT_STEAM_HOME "/.local/share/Steam/launch-steam.sh";
+    static char path[512];
+    snprintf(path, sizeof(path), "%s/.local/share/Steam/launch-steam.sh",
+             steam_home());
     return path;
 }
 
 static void child_environment(void) {
-    setenv("HOME", SVRT_STEAM_HOME, 1);
-    setenv("USER", "svrt-receiver", 1);
-    setenv("LOGNAME", "svrt-receiver", 1);
+    const char *user = getenv("SVRT_STEAM_USER");
+    if (!user || !user[0]) user = "svrt-receiver";
+    setenv("HOME", steam_home(), 1);
+    setenv("USER", user, 1);
+    setenv("LOGNAME", user, 1);
     setenv("DISPLAY", SVRT_STEAM_DISPLAY, 1);
     setenv("XDG_SESSION_TYPE", "x11", 1);
     setenv("XDG_CURRENT_DESKTOP", "SVRT", 1);
@@ -53,6 +65,12 @@ static pid_t start_steam(void) {
     if (pid) return pid;
     setpgid(0, 0);
     child_environment();
+    const char *gamescope = getenv("SVRT_USE_GAMESCOPE");
+    if (gamescope && gamescope[0] && strcmp(gamescope, "0") &&
+        access(steam_launcher(), X_OK) == 0)
+        execlp("gamescope", "gamescope", "-e", "-b", "-W", "1024",
+               "-H", "640", "-w", "1024", "-h", "640", "-r", "60",
+               "--", steam_launcher(), NULL);
     if (access(steam_launcher(), X_OK) == 0)
         execl(steam_launcher(), steam_launcher(), NULL);
     execl(steam_binary(), steam_binary(), "-gamepadui", "-720p",
@@ -104,7 +122,9 @@ static void connect_display(svrt_steam_client *client, uint32_t now_ms) {
         return;
     }
     client->root = DefaultRootWindow(client->display);
-    client->window_manager_pid = start_window_manager();
+    const char *gamescope = getenv("SVRT_USE_GAMESCOPE");
+    if (!(gamescope && gamescope[0] && strcmp(gamescope, "0")))
+        client->window_manager_pid = start_window_manager();
     client->steam_pid = start_steam();
     if (client->steam_pid <= 0) {
         client->state = SVRT_STEAM_CLIENT_FAILED;
@@ -134,7 +154,7 @@ void svrt_steam_client_update(svrt_steam_client *client,
         return;
     }
     if (now_ms < client->next_capture_ms) return;
-    client->next_capture_ms = now_ms + 33;
+    client->next_capture_ms = now_ms + SVRT_STEAM_CAPTURE_INTERVAL_MS;
     XImage *image = XGetImage(client->display, client->root, 0, 0,
                               SVRT_STEAM_WIDTH, SVRT_STEAM_HEIGHT,
                               AllPlanes, ZPixmap);
