@@ -1,0 +1,10 @@
+#!/bin/sh
+# SteamOS exposes this helper through its polkit service when the first-run
+# flow probes developer mode. Stearlight has no mutable SteamOS partition or
+# developer-mode switch, so accept both operations as a successful no-op.
+# Keeping the command available lets Valve's welcome pipeline continue without
+# presenting a missing-helper error.
+case "${1-}" in
+    --enable|--disable|"") exit 0 ;;
+    *) exit 0 ;;
+esac

@@ -8,11 +8,18 @@ an appliance image, not an in-place conversion of Raspberry Pi OS.
 - Alpine edge with OpenRC and the Raspberry Pi downstream `linux-rpi` kernel.
 - Native aarch64 Mesa/V3DV, Gamescope, PipeWire/WirePlumber, and Monado/OpenXR.
 - A Debian glibc runtime isolated with Bubblewrap for the Steam ARM64 beta.
-- Steam Gamepad UI inside Gamescope, captured by the Stearlight stereo shell.
+- Steam Gamepad UI inside Gamescope, captured by the standalone Stearlight
+  stereo shell (the OS image does not start the Steam Link receiver).
+  The VM build runs Valve's bootstrap once and includes the extracted client
+  payload, so VM boots do not repeat the 500 MB client download.
 - A 2880x1600 side-by-side scanout at 60 Hz (1440x1600 per eye), pure black world, and
   one smaller curved floating Steam surface.
 - `assets/os/os_boot.mp4` as the first userspace splash and
   `steam_loading.mkv` for Steam/connection transitions.
+- SteamOS compatibility helpers (`timedatectl`, `localectl`, timezone,
+  developer-mode, update/branch and firmware probes) are included so the
+  native Gamepad UI can complete its first-run setup without a desktop
+  session.
 - Silent firmware/kernel configuration, no desktop and no console on the HMD.
 - No local login prompt: the supervised Stearlight UI takes tty1 immediately.
 - No password-based SSH service or bundled host credentials. The image has no
@@ -68,12 +75,19 @@ them from the optional `STEARLIGHT_STEAM_USERNAME` and
 
 ## First boot welcome
 
-The first graphical boot shows the Stearlight welcome panel after the startup
-movie. Press A, Enter, Space, or click to continue. This records a protected
-completion marker under `/var/lib/stearlight` and then hands language, account,
-and network setup to the Steam client and its Settings pages. No Wi-Fi profile
-or password is copied from the build host. `iwd` and `dhcpcd` remain enabled so
-Steam can configure the connection interactively.
+After the startup movie, the standalone shell immediately displays the real
+Steam first-run experience from the Steam Gamepad UI client. The small
+  `steam-firstboot` helper prepares the per-user bootstrap tree and repairs its
+  ABI-specific Mesa seed; it never draws a replacement welcome page or writes
+  account credentials. The SteamOS helper commands satisfy the timezone,
+  update, branch and firmware probes used by Valve's setup. Steam owns the
+  complete welcome pipeline shown
+by SteamOS: language, timezone, network, update, account sign-in, and the
+initial tour. The VM image pre-extracts this payload at build time, while a Pi
+image uses the already-installed ARM64 client and performs only the quick
+local preparation at boot. No Wi-Fi profile or password is copied from the
+build host; `iwd` and `dhcpcd` remain enabled so Steam can configure the
+connection interactively.
 
 ## Hide the Pi 4 EEPROM diagnostic screen
 
@@ -109,9 +123,11 @@ OpenXR quad/cylinder layer.
 
 ## VM smoke test
 
-The x86_64 VM uses the same Alpine receiver build and a small EFI image; it is a
-fast check for boot, service startup, and UI composition. It does not
-emulate the Pi 4 GPU, firmware, headset timing, or ARM64 Steam runtime.
+The x86_64 VM uses the same Alpine standalone shell and includes Valve's
+x86_64 Steam bootstrap so the Steam client is started in the guest too. It is
+a fast check for boot, service startup, Steam first-run rendering, and UI
+composition. It does not emulate the Pi 4 GPU, firmware, headset timing, or
+ARM64 Steam runtime.
 `test-vm.ps1` uses VirtualBox when available and falls back to QEMU with WHPX
 (or multi-threaded TCG), GTK/OpenGL, a `zoom-to-fit` window, an aspect-ratio
 correction for the title-bar height, and a serial smoke test. The guest
@@ -124,5 +140,5 @@ monitor. Add `-MeasureFps` to verify boot animation frame changes.
 ```
 
 The VM-only files are kept at the `os/` root (`Dockerfile.vm`,
-`vm-overlay/`, `genimage-vm.cfg`, and `grub-vm.cfg`) so there is no separate
+`vm-overlay/`, `genimage-vm.cfg`, and the systemd-boot loader entries) so there is no separate
 Alpine or VM project tree.

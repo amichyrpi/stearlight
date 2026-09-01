@@ -1,0 +1,61 @@
+#!/bin/sh
+# Small systemd-free compatibility command used by Steam's first-run setup.
+# Alpine uses OpenRC, but the Steam Gamepad UI still asks timedatectl for the
+# timezone list and to apply the user's selection. Keep the interface narrow
+# and delegate writes to the allowlisted SteamOS helper.
+set -eu
+
+state_home=${XDG_STATE_HOME:-${HOME:-/home/stearlight}/.local/state}
+timezone_state="$state_home/stearlight/timezone"
+
+print_timezone() {
+    if [ -r "$timezone_state" ]; then
+        sed -n '1p' "$timezone_state"
+    elif [ -r /etc/timezone ]; then
+        sed -n '1p' /etc/timezone
+    else
+        printf '%s\n' UTC
+    fi
+}
+
+case "${1-}" in
+    list-timezones)
+        find /usr/share/zoneinfo -type f \
+            ! -path '*/posix/*' ! -path '*/right/*' \
+            ! -name 'localtime' ! -name 'posixrules' \
+            -print 2>/dev/null |
+            sed 's#^/usr/share/zoneinfo/##' | LC_ALL=C sort
+        ;;
+    set-timezone)
+        exec /usr/bin/steamos-polkit-helpers/steamos-set-timezone "${2-}"
+        ;;
+    show-timezone)
+        print_timezone
+        ;;
+    show)
+        property=
+        value_only=0
+        shift
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                -p|--property) property=${2-}; shift 2 ;;
+                --value) value_only=1; shift ;;
+                *) shift ;;
+            esac
+        done
+        if [ "$property" = Timezone ] && [ "$value_only" -eq 1 ]; then
+            print_timezone
+        else
+            printf 'Timezone=%s\n' "$(print_timezone)"
+        fi
+        ;;
+    status)
+        printf 'System clock synchronized: yes\n'
+        printf 'NTP service: active\n'
+        printf 'Time zone: %s\n' "$(print_timezone)"
+        ;;
+    *)
+        # Steam's optional systemd check is non-fatal on SteamOS derivatives.
+        exit 0
+        ;;
+esac

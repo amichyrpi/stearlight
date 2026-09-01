@@ -1,0 +1,13 @@
+# Bash reads BASH_ENV for every non-interactive script.  The x86 Steam
+# bootstrap needs an i386 Mesa DRI directory for its own GLX window, but it
+# later launches the 64-bit CEF/WebHelper through steamwebhelper.sh.  Clearing
+# the ABI-specific DRI override at that script boundary keeps the two process
+# trees from loading each other's swrast module without modifying Valve's
+# checksum-protected wrapper files.
+case "${BASH_SOURCE[1]-$0}" in
+  *steamwebhelper.sh|*steamwebhelper_sniper_wrap.sh)
+    unset LIBGL_DRIVERS_PATH
+    unset VK_ICD_FILENAMES VK_DRIVER_FILES
+    unset SVRT_STEAM_PLATFORM_LIBRARY_PATH
+    ;;
+esac

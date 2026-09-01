@@ -1,0 +1,17 @@
+#!/bin/sh
+# Minimal SteamOS compatibility helper.  The standalone image has no mutable
+# SteamOS system partition; allow only an explicitly requested destination and
+# keep failures non-fatal so Steam's welcome flow can continue.
+set -eu
+
+if [ "$#" -ge 2 ] && [ "$(id -u)" -eq 0 ]; then
+    value=$1
+    destination=$2
+    case "$destination" in
+        /etc/stearlight/*|/var/lib/stearlight/*)
+            mkdir -p "$(dirname "$destination")"
+            printf '%s\n' "$value" > "$destination"
+            ;;
+    esac
+fi
+exit 0

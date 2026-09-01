@@ -1,6 +1,6 @@
 #!/sbin/openrc-run
 
-description="Stearlight VirtualBox display session"
+description="Stearlight standalone SteamOS VM session"
 command="/usr/local/libexec/stearlight/vm-session"
 supervisor="supervise-daemon"
 pidfile="/run/stearlight-vm-session.pid"

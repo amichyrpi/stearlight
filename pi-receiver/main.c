@@ -19,25 +19,6 @@
 static svrt_context *running;
 static volatile sig_atomic_t quitting;
 
-#define SVRT_WELCOME_MARKER "/var/lib/stearlight/welcome-complete"
-
-static int welcome_completed(void) {
-    const char *skip = getenv("SVRT_SKIP_WELCOME");
-    if (skip && skip[0] && strcmp(skip, "0")) return 1;
-    return access(SVRT_WELCOME_MARKER, F_OK) == 0;
-}
-
-static int complete_welcome(void) {
-    const int fd = open(SVRT_WELCOME_MARKER,
-                        O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0) return -1;
-    static const char marker[] = "completed\n";
-    const ssize_t written = write(fd, marker, sizeof(marker) - 1);
-    const int close_result = close(fd);
-    return written == (ssize_t)(sizeof(marker) - 1) && close_result == 0 ?
-               0 : -1;
-}
-
 static void stop(int sig) {
     (void)sig;
     quitting = 1;
@@ -232,9 +213,6 @@ int main(int argc, char **argv) {
                          (start_streaming && start_streaming[0] &&
                           strcmp(start_streaming, "0"));
     if (have_ui) svrt_ui_set_streaming_mode(&ui, streaming_mode);
-    int welcome_required = have_ui && !welcome_completed();
-    if (welcome_required)
-        fprintf(stderr, "SVRT WELCOME REQUIRED\n");
     while (!quitting) {
         svrt_status_server_update(&status, SVRT_RECEIVER_UNAUTHORIZED, NULL);
         /* Standalone Steam is the receiver's home mode.  Steam Link pairing
@@ -249,7 +227,7 @@ int main(int argc, char **argv) {
                     &ui, svrt_steam_client_frame(&steam_client));
             }
             svrt_ui_draw(&ui,
-                         welcome_required ? SVRT_UI_WELCOME : SVRT_UI_HOME,
+                         SVRT_UI_HOME,
                          NULL, NULL,
                          steam_client_started ?
                              svrt_steam_client_detail(&steam_client) :
@@ -257,17 +235,7 @@ int main(int argc, char **argv) {
             const svrt_ui_action action = svrt_ui_take_action(&ui);
             const int connection_requested =
                 svrt_ui_take_connection_request(&ui);
-            if (welcome_required) {
-                if (action == SVRT_UI_ACTION_WELCOME_CONTINUE) {
-                    if (!complete_welcome()) {
-                        welcome_required = 0;
-                        fprintf(stderr, "SVRT WELCOME COMPLETE\n");
-                    } else {
-                        fprintf(stderr,
-                                "SVRT WELCOME: cannot save completion marker\n");
-                    }
-                }
-            } else if (action == SVRT_UI_ACTION_CONNECTION ||
+            if (action == SVRT_UI_ACTION_CONNECTION ||
                 connection_requested) {
                 streaming_mode = 1;
                 svrt_ui_set_streaming_mode(&ui, 1);

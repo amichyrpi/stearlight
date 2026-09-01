@@ -1,0 +1,197 @@
+#!/bin/sh
+# Prepare Valve's per-user Steam tree before the shell starts the client.
+#
+# The distro package deliberately carries only the small Valve bootstrap
+# archive.  Steam's first-run updater then installs the Gamepad UI and writes
+# it below ~/.local/share/Steam.  Doing the archive step here makes that
+# operation resumable and keeps a failed extraction from being mistaken for a
+# valid installation on the next boot.  The network update remains owned by
+# Steam itself, so its language, timezone, network, account, update and tour
+# screens are never replaced by a Stearlight imitation.
+
+set -eu
+
+home=${SVRT_STEAM_HOME:-${HOME:-/home/stearlight}}
+steam_root="$home/.local/share/Steam"
+archive=${SVRT_STEAM_BOOTSTRAP:-/usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz}
+seed_root=${SVRT_STEAM_RUNTIME_SEED:-/usr/lib/steam}
+beta=${STEARLIGHT_STEAM_BETA:-steamdeck_publicbeta}
+lock="$steam_root/.stearlight-prepare.lock"
+pressure_dir=${SVRT_STEAM_PRESSURE_DIR:-/var/pressure-vessel}
+config_home=${XDG_CONFIG_HOME:-$home/.config}
+bootstrap_config="$config_home/gamescope/bootstrap.cfg"
+bootstrap_extracted=0
+
+log() {
+    printf 'STEARLIGHT STEAM PREPARE: %s\n' "$*" >&2
+}
+
+status() {
+    # A launcher alone only proves that Valve's 20 MiB bootstrap was copied.
+    # Treat the client as ready once Gamepad UI has a non-empty payload; this
+    # prevents an interrupted extraction from being reported as a complete
+    # Steam installation. Native ARM installs use steamui.so directly.
+    steamui=
+    if [ -d "$steam_root/steamui" ]; then
+        steamui=$(find "$steam_root/steamui" -type f -size +1c \
+            -print -quit 2>/dev/null || true)
+    fi
+    if [ -x "$steam_root/steamrtarm64/steam" ] &&
+       { [ -s "$steam_root/steamrtarm64/steamui.so" ] ||
+         [ -n "$steamui" ]; }; then
+        printf '%s\n' ready
+    elif { [ -x "$steam_root/steam.sh" ] ||
+           [ -x "$steam_root/ubuntu12_32/steam" ]; } &&
+         [ -n "$steamui" ]; then
+        printf '%s\n' ready
+    elif [ -x "$steam_root/steam.sh" ] ||
+         [ -x "$steam_root/ubuntu12_32/steam" ]; then
+        printf '%s\n' bootstrap-ready
+    else
+        printf '%s\n' bootstrap-missing
+    fi
+}
+
+if [ "${1-}" = "--status" ]; then
+    status
+    exit 0
+fi
+
+mkdir -p "$steam_root/package" "$steam_root/steamapps" "$home/.steam"
+mkdir -p "$(dirname "$bootstrap_config")"
+touch "$bootstrap_config"
+ln -sfn "$steam_root" "$home/.steam/root"
+ln -sfn "$steam_root" "$home/.steam/steam"
+ln -sfn "$steam_root/linux32" "$home/.steam/sdk32"
+ln -sfn "$steam_root/linux64" "$home/.steam/sdk64"
+ln -sfn "$steam_root/linuxarm64" "$home/.steam/sdkarm64"
+ln -sfn "$steam_root/ubuntu12_32" "$home/.steam/bin32"
+ln -sfn "$steam_root/ubuntu12_64" "$home/.steam/bin64"
+mkdir -p "$steam_root/config" "$home/.config/gamescope"
+touch "$steam_root/config/SteamAppData.vdf"
+
+# Do not overwrite a branch selected by the user.  A clean appliance starts
+# on the SteamOS/Gamepad UI branch so Valve's first-run setup is shown.
+if [ ! -s "$steam_root/package/beta" ]; then
+    printf '%s\n' "$beta" > "$steam_root/package/beta"
+fi
+
+# mkdir is an atomic, dependency-free lock on Alpine. If another boot task is
+# already extracting, wait briefly for it and let that task own the result.
+if ! mkdir "$lock" 2>/dev/null; then
+    attempt=0
+    while [ "$attempt" -lt 120 ] && [ ! -x "$steam_root/steamrtarm64/steam" ] &&
+          [ ! -x "$steam_root/steam.sh" ] &&
+          [ ! -x "$steam_root/ubuntu12_32/steam" ]; do
+        attempt=$((attempt + 1))
+        sleep 0.25
+    done
+    status
+    exit 0
+fi
+trap 'rmdir "$lock" 2>/dev/null || true' EXIT INT TERM
+
+if [ ! -x "$steam_root/steamrtarm64/steam" ] &&
+   [ ! -x "$steam_root/steam.sh" ] &&
+   [ ! -x "$steam_root/ubuntu12_32/steam" ] && [ -f "$archive" ]; then
+    tmp="$steam_root/.stearlight-bootstrap.$$"
+    rm -rf "$tmp"
+    mkdir "$tmp"
+    log "extracting Valve bootstrap"
+    if tar -xJf "$archive" -C "$tmp"; then
+        # The temporary tree is complete before anything is copied into the
+        # live Steam directory.  cp -a is intentionally resumable if power is
+        # removed while the copy is in progress.
+        cp -a "$tmp"/. "$steam_root"/
+        rm -rf "$tmp"
+        bootstrap_extracted=1
+    else
+        rm -rf "$tmp"
+        log "bootstrap archive extraction failed; Steam will retry"
+    fi
+fi
+
+# Steam's updater can replace ubuntu12_32/steam-runtime and discard the small
+# ABI-specific Mesa seed bundled with the image.  Restore only when the
+# expected 32-bit ELF driver is absent; this avoids copying hundreds of MB on
+# every normal boot and prevents Mesa from falling through to an incompatible
+# host DRI directory.
+runtime="$steam_root/ubuntu12_32/steam-runtime"
+for abi in 32 64; do
+    source="$seed_root/stearlight_libs_$abi"
+    target="$runtime/stearlight_libs_$abi"
+    driver="$target/dri/swrast_dri.so"
+    # A previous image revision copied zero-byte DRI placeholders into the
+    # per-user runtime.  Merely checking for a non-empty file is not enough:
+    # Mesa then reports "invalid ELF header" and WebHelper never creates its
+    # X11 window.  Only keep a driver that actually starts with the ELF magic.
+    magic=
+    if [ -r "$driver" ]; then
+        magic=$(dd if="$driver" bs=1 count=4 2>/dev/null |
+            od -An -tx1 | tr -d '[:space:]')
+    fi
+    case "$magic" in
+        7f454c46*) : ;;
+        *)
+            if [ -d "$source" ]; then
+                mkdir -p "$target"
+                cp -a "$source"/. "$target"/
+            fi
+            ;;
+    esac
+done
+
+# Keep the small Mesa/XCB dependency set ABI-matched after bootstrap
+# extraction. These are ordinary runtime libraries, not Valve launchers, so
+# replacing them does not invalidate Steam's file manifest.
+for abi in 32 64; do
+    if [ "$abi" = 32 ]; then
+        multiarch=i386-linux-gnu
+    else
+        multiarch=x86_64-linux-gnu
+    fi
+    source="$seed_root/stearlight_libs_$abi"
+    [ -d "$source" ] || continue
+    for runtime_dir in \
+        "$runtime/lib/$multiarch" \
+        "$runtime/usr/lib/$multiarch"; do
+        [ -d "$runtime_dir" ] || continue
+        for name in libgcc_s.so.1 libstdc++.so.6 libxcb.so.1 \
+                    libxcb-dri3.so.0 libxcb-dri2.so.0; do
+            if [ -f "$source/$name" ] &&
+               { [ ! -f "$runtime_dir/$name" ] ||
+                 ! cmp -s "$source/$name" "$runtime_dir/$name"; }; then
+                cp -L "$source/$name" "$runtime_dir/$name"
+            fi
+        done
+    done
+done
+
+# Never rewrite files delivered by Valve.  Steam verifies the exact byte
+# size/content of its WebHelper wrappers and downloads the whole client again
+# when a local ABI shim changes them. ABI selection belongs at the launcher
+# boundary (SVRT_STEAM_RUNTIME_SEED and the Mesa environment); the replaceable
+# Steam tree remains byte-for-byte Valve-owned.
+
+# pressure-vessel creates a transient loader cache here.  The directory is
+# provisioned by the image as stearlight-owned; mkdir keeps upgrades and an
+# older image (where it was absent) recoverable without root privileges.
+mkdir -p "$pressure_dir/ldso" "$pressure_dir/tmp" 2>/dev/null || true
+
+if [ -x "$steam_root/steamrtarm64/steam" ] ||
+   [ -x "$steam_root/steam.sh" ] ||
+   [ -x "$steam_root/ubuntu12_32/steam" ]; then
+    # set_bootstrap belongs to the legacy Ubuntu12 bootstrap flow. Native
+    # ARM64 Steam already starts from steamrtarm64 and Armada's session leaves
+    # this flag unset; forcing it makes the ARM client look for a nonexistent
+    # 32-bit bootstrap archive and can hide the real OOBE surface.
+    if [ "$bootstrap_extracted" -eq 1 ] &&
+       ! grep -q '^set_bootstrap=1$' "$bootstrap_config" 2>/dev/null; then
+        printf '%s\n' set_bootstrap=1 >> "$bootstrap_config"
+    fi
+    touch "$steam_root/.stearlight-prepared"
+    touch "$steam_root/.cef-enable-remote-debugging"
+    log "Steam bootstrap ready ($(status))"
+else
+    log "Steam bootstrap is not present; leaving Steam's error path visible"
+fi

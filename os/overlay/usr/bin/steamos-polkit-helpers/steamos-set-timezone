@@ -1,0 +1,31 @@
+#!/bin/sh
+# SteamOS's first-run timezone picker invokes this helper through pkexec.
+# Stearlight has no desktop/polkit agent, so keep the operation small and
+# deterministic: persist the selected zone and update /etc/localtime when the
+# caller has the privilege to do so.  Returning success is important because
+# Steam treats a missing helper as a fatal first-run setup error.
+set -eu
+
+zone=${1:-}
+case "$zone" in
+    ''|/*|*..*|*[^A-Za-z0-9_+./-]*)
+        echo "Invalid timezone: $zone" >&2
+        exit 2
+        ;;
+esac
+
+zone_file="/usr/share/zoneinfo/$zone"
+if [ -r "$zone_file" ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+        ln -sfn "$zone_file" /etc/localtime
+        printf '%s\n' "$zone" > /etc/timezone
+    else
+        # The Steam UI still needs to advance when pkexec is unavailable. A
+        # later privileged boot hook can apply this value without exposing a
+        # general-purpose root shell to the user session.
+        state_home=${XDG_STATE_HOME:-${HOME:-/home/stearlight}/.local/state}
+        mkdir -p "$state_home/stearlight"
+        printf '%s\n' "$zone" > "$state_home/stearlight/timezone"
+    fi
+fi
+exit 0

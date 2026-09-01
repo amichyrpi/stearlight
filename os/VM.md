@@ -1,15 +1,19 @@
 # Stearlight VM test image
 
-This target builds a real x86_64 GPT disk with an EFI System Partition, GRUB,
-an Alpine ext4 root filesystem, Linux kernel/initramfs, OpenRC, Xorg, and the
-same Stearlight receiver and UI assets used by the Raspberry Pi image. The VM
+This target builds a real x86_64 GPT disk with an EFI System Partition,
+systemd-boot, an Alpine ext4 root filesystem, Linux kernel/initramfs, OpenRC, Xorg, the
+standalone Stearlight shell, and Valve's x86_64 Steam bootstrap. The VM
 advertises and selects a 2880x1600 display at 60 Hz; the side-by-side shell is
 therefore 1440x1600 per eye.
 
-VirtualBox or QEMU on an x86_64 host cannot execute the Pi's ARM64 guest. The VM
-target therefore validates boot, service startup, video decoding, window
-composition, and UI rendering. The VM runs the receiver-only shell because an
-x86_64 guest cannot execute the ARM64 Steam runtime. It does not validate
+The EFI partition carries the kernel and initramfs so this VM path does not
+depend on the GRUB 2.14 EFI `LoadFile2` initrd handoff, which is unreliable with
+the OVMF firmware used by QEMU. The Pi image keeps its native firmware/kernel
+path.
+
+VirtualBox or QEMU on an x86_64 host cannot execute the Pi's ARM64 Steam
+runtime. The VM uses the native x86_64 Steam bootstrap instead, while keeping
+the same standalone shell and first-run Steam path. It does not validate
 Raspberry Pi firmware, VC4 KMS, or the ARM64 Steam runtime.
 
 Build and run an automated screenshot test from PowerShell:

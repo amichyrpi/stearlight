@@ -3,32 +3,538 @@ set -eu
 
 export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_SESSION_TYPE=x11
-export XDG_CURRENT_DESKTOP=Stearlight
+export XDG_CURRENT_DESKTOP=gamescope
 export DISPLAY=:0
 export SVRT_STEAM_HOME=/home/stearlight
 export SVRT_STEAM_USER=stearlight
-export SVRT_USE_GAMESCOPE=0
+export SVRT_STEAM_BINARY=/usr/bin/steam
+export SVRT_STEAM_LAUNCHER=/usr/local/libexec/stearlight/steam32-launch
+export SVRT_STEAM_PREPARE=/usr/local/libexec/stearlight/steam-firstboot
+export SVRT_STEAMUI_PATCH=/usr/local/libexec/stearlight/patch-steamui-network
+export SVRT_STEAM_RUNTIME_SEED=/usr/lib/steam
+export SVRT_STEAM_RUNTIME_WATCH=/usr/local/libexec/stearlight/steam-runtime-watch
+export SVRT_STEAM_SOFTWARE_GL=1
+# VM boots are intentionally traceable: this overlay is only used by the
+# disposable QEMU image and the serial log is the only diagnostic channel.
+# Production Pi sessions keep the variable unset and do not inherit this
+# extra output.
+export SVRT_TRACE_VM_GPU=${SVRT_TRACE_VM_GPU:-1}
+# The patched Steam Runtime selects an ABI-specific Mesa seed for each
+# executable it launches.  Enabling this at the runtime boundary prevents the
+# The standard multiarch DRI directories are ABI-aware and are populated by
+# the VM seed step below.  Keep the private seed opt-in: steam.sh shares one
+# environment between its 32-bit bootstrap and 64-bit WebHelper, so exporting
+# the i386 seed here would make the latter open an ELF32 swrast module.
+export SVRT_STEAM_USE_SEED_DRI=${SVRT_STEAM_USE_SEED_DRI:-0}
+export SVRT_STEAM_FORCE_RUN=${SVRT_STEAM_FORCE_RUN:-0}
+# Keep the bootstrap DRI override opt-in. The Steam process tree contains both
+# 32-bit and 64-bit GL clients; a global i386 path makes the 64-bit branch load
+# an ELF32 swrast module and abort. Mesa's multiarch search path is correct for
+# both ABIs on the VM and on the Pi.
+export SVRT_STEAM_BOOTSTRAP_DRI=${SVRT_STEAM_BOOTSTRAP_DRI:-}
+# The stable Steam branch is entered through Valve's steam.sh bootstrap.  It
+# performs the normal runtime hand-off and starts the Gamepad UI client after
+# verification; the steamrt64 binary is only an explicit diagnostic path for
+# non-stable beta branches.
+export SVRT_STEAM_FORCE_DIRECT_CLIENT=${SVRT_STEAM_FORCE_DIRECT_CLIENT:-0}
+export SVRT_STEAM_DIRECT_WEBHELPER=${SVRT_STEAM_DIRECT_WEBHELPER:-0}
+# The x86 VM uses the same SteamRT3 client entry point as Armada's native
+# launcher.  The public-beta tree contains the Gamepad UI and OOBE assets;
+# opt into it explicitly instead of allowing the bootstrap's stable beta file
+# to route back to the legacy 32-bit client.
+# Keep the VM on the same stable SteamOS branch baked by
+# preextract-steam-client.sh.  Rewriting this to publicbeta on every boot
+# forces a full client update before the OOBE can create a surface.
+export STEARLIGHT_STEAM_BETA=${STEARLIGHT_STEAM_BETA:-steamdeck_stable}
+# The C bridge owns the private X display, but Steam itself must be hosted by
+# a real nested gamescope Wayland compositor.  The previous Weston fallback
+# only painted its checkerboard window; Steam's Gamepad UI never became the
+# captured surface.  Leave the compositor selector unset so steam32-launch
+# connects to gamescope's socket instead of starting another compositor.
+unset SVRT_STEAM_COMPOSITOR
+export SVRT_STEAM_FORCE_WAYLAND=1
+# Use gamescope's SDL/X11 nested backend for a deterministic VM display. It
+# presents a single host window while preserving the real Gamepad UI/Wayland
+# handshake inside it. A virtio-gpu node alone is not enough to select DRM:
+# QEMU's non-GL virtio adapter exposes lavapipe, which intentionally has no
+# VK_EXT_physical_device_drm properties. Set SVRT_VM_USE_DRM=1 only when the
+# hypervisor provides a Vulkan device tied to the DRM node (for example Venus).
+export SVRT_USE_GAMESCOPE=${SVRT_USE_GAMESCOPE:-1}
+export SVRT_STEAM_UI_MODE=${SVRT_STEAM_UI_MODE:-gamepad}
+# QEMU's software VGA path cannot provide a Vulkan/DRM presentation device to
+# gamescope.  Use the real Steam Gamepad UI on the guest X11 scanout by
+# default; hardware/DRM test runs can opt into the full gamescope session with
+# SVRT_VM_SESSION_MODE=gamescope.
+export SVRT_VM_SESSION_MODE=${SVRT_VM_SESSION_MODE:-x11}
+# QEMU's software VGA backend cannot expose the Gamescope Wayland protocol
+# required by the Gamepad UI.  Keep the VM's default on the classic Steam
+# ten-foot surface so the first-boot welcome flow remains visible in a normal
+# X11 window.  Hardware/DRM images leave this unset and use Gamepad UI.
+export SVRT_VM_STEAM_UI_MODE=${SVRT_VM_STEAM_UI_MODE:-classic}
+# Load the guest DRM module so it is available to an explicit DRM test, but do
+# not infer a usable Vulkan/DRM pair from the existence of /dev/dri/card*.
+if command -v modprobe >/dev/null 2>&1; then
+  # The VM test harness uses QEMU's standard VGA device (`-device VGA`).
+  # linux-virt ships its DRM driver as `bochs.ko`; without loading it the
+  # modesetting X server has no /dev/dri/card0 and every Steam surface stays
+  # black even though Xorg itself starts successfully.  Keep the virtio path
+  # too, since alternate QEMU runs may select virtio-gpu-pci instead.
+  modprobe drm 2>/dev/null || true
+  modprobe bochs 2>/dev/null || modprobe bochs_drm 2>/dev/null || true
+  modprobe virtio_pci 2>/dev/null || true
+  modprobe virtio_gpu 2>/dev/null || true
+fi
+if [ "${SVRT_TRACE_VM_GPU:-0}" != 0 ]; then
+  printf 'STEARLIGHT VM GPU DEVICES: ' >>/dev/ttyS0
+  if [ -d /dev/dri ]; then
+    ls -1 /dev/dri >>/dev/ttyS0 2>&1 || true
+  else
+    printf '%s\n' none >>/dev/ttyS0
+  fi
+  printf 'STEARLIGHT VM FRAMEBUFFER DEVICES: ' >>/dev/ttyS0
+  if ls /dev/fb* >/dev/null 2>&1; then
+    ls -1 /dev/fb* >>/dev/ttyS0 2>&1 || true
+  else
+    printf '%s\n' none >>/dev/ttyS0
+  fi
+fi
+if [ -n "${SVRT_VM_GAMESCOPE_BACKEND:-}" ]; then
+  gamescope_backend=$SVRT_VM_GAMESCOPE_BACKEND
+elif [ "${SVRT_VM_USE_DRM:-0}" = 1 ] && ls /dev/dri/card* >/dev/null 2>&1; then
+  gamescope_backend=drm
+else
+  gamescope_backend=sdl
+fi
+# gamescope itself is the native Alpine/musl process.  Its ICD must point to
+# Alpine's native software driver; steam32-launch selects the glibc/i386 ICD
+# only after gamescope has spawned the Valve client.
+export SVRT_GAMESCOPE_VK_ICD=/usr/share/vulkan/icd.d/stearlight-alpine-lvp.json
+# Do not export a Steam ICD from the session supervisor. Steam starts a mixed
+# 32/64-bit process tree (bootstrap, WebHelper and pressure-vessel); a single
+# inherited manifest is ABI-specific and makes one side fail with
+# VK_ERROR_INCOMPATIBLE_DRIVER. gamescope-session-plus receives the native
+# Alpine ICD through SVRT_GAMESCOPE_VK_ICD, while steam32-launch selects an
+# ABI-matched ICD only at an explicit direct-runtime boundary.
+unset VK_ICD_FILENAMES VK_DRIVER_FILES
 export SVRT_START_IN_STREAMING_MODE=0
-export SVRT_VM_RECEIVER_ONLY=1
+export STEAM_BOOTSTRAP_CONFIG=/home/stearlight/.config/gamescope/bootstrap.cfg
+export STEAMOS_STEAM_REBOOT_SENTINEL=/tmp/steamos-reboot-sentinel
+export REBOOT_SENTINEL=$STEAMOS_STEAM_REBOOT_SENTINEL
+export STEAMOS_STEAM_SHUTDOWN_SENTINEL=/tmp/steamos-shutdown-sentinel
+export SHUTDOWN_SENTINEL=$STEAMOS_STEAM_SHUTDOWN_SENTINEL
+export STEAM_GAMESCOPE=1
+export STEAM_GAMESCOPE_WAYLAND=1
+export STEAM_GAMEPADUI=1
+export STEAMOS_OOBE=1
+export STEAMOS_OOBE_IMAGE=1
+export STEAM_GAMESCOPE_VRR_SUPPORTED=1
+export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
+export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
+export STEAM_GAMESCOPE_HDR_SUPPORTED=1
+export STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER=1
+export STEAM_GAMESCOPE_NIS_SUPPORTED=1
+export STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT=1
+export STEAM_GAMESCOPE_COLOR_MANAGED=1
+export STEAM_GAMESCOPE_VIRTUAL_WHITE=1
+export STEAM_MANGOAPP_PRESETS_SUPPORTED=1
+export STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=1
+export STEAM_USE_MANGOAPP=1
+export STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1
+export STEAM_USE_DYNAMIC_VRS=1
+export STEAM_MULTIPLE_XWAYLANDS=1
+export STEAM_ENABLE_VOLUME_HANDLER=1
+export STEAM_ALLOW_DRIVE_UNMOUNT=1
+export STEAM_ALLOW_DRIVE_ADOPT=1
+export SRT_URLOPEN_PREFER_STEAM=1
+export STEAM_DISABLE_AUDIO_DEVICE_SWITCHING=1
+export QT_IM_MODULE=steam
+export GTK_IM_MODULE=Steam
+export XCURSOR_THEME=steam
+export XCURSOR_SCALE=256
+export GAMESCOPE_FALLBACK_APPID=0x41524d41
+# The VM's lavapipe/XWayland path has no hardware CEF context.  Keep the
+# welcome pipeline and Gamepad UI intact, but disable CEF's optional GPU
+# process so its 32-bit bootstrap does not try to load a host DRI module that
+# belongs to the other ABI.  The variable is an override for diagnostics; the
+# production Pi keeps hardware CEF enabled.
+export SVRT_VM_CEF_ARGS="${SVRT_VM_CEF_ARGS:--cef-disable-gpu -cef-disable-gpu-sandbox -no-cef-sandbox -cef-disable-gpu-compositing}"
+# The VM test overlay patches the replaceable WebUI bundle to provide the
+# optional System.Network methods that are absent from its minimal bridge.
+# Avoid Steam's checksum repair immediately undoing that diagnostic patch;
+# production sessions leave these flags unset and retain normal updates.
+export SVRT_VM_STEAM_UPDATE_ARGS="${SVRT_VM_STEAM_UPDATE_ARGS:--noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles}"
+export CLIENTCMD="/usr/local/libexec/stearlight/steam32-launch -gamepadui -steamos3 -steampal -steamdeck ${SVRT_VM_STEAM_UPDATE_ARGS} ${SVRT_VM_CEF_ARGS}"
+export CURSOR_FILE="$SVRT_STEAM_HOME/.local/share/Steam/tenfoot/resource/images/cursors/arrow.png"
+# Keep a bounded X11 tree trace in the serial log while the standalone Steam
+# bridge is being validated.  It is disabled for normal users by setting the
+# variable to 0 in the service environment.
+export SVRT_TRACE_STEAM_X11=${SVRT_TRACE_STEAM_X11:-0}
 
-Xorg :0 -ac -keeptty -noreset -nolisten tcp vt1 \
-  >>/dev/ttyS0 2>&1 &
-xorg_pid=$!
-trap 'kill "$xorg_pid" 2>/dev/null || true' EXIT INT TERM
+# Keep the optional SteamRT marker available for beta diagnostics.  The normal
+# stable launch below intentionally goes through steam.sh, which chooses the
+# correct client branch from package/beta and only then starts WebHelper.
+steam_data="$SVRT_STEAM_HOME/.local/share/Steam"
+if [ -x "$steam_data/steamrt64/steam" ]; then
+  # The marker is persistent Steam state.  Create it only when an image was
+  # built without one; never overwrite Valve's branch choice on later boots.
+  [ -e "$steam_data/.steam-enable-steamrt64-client" ] ||
+    : > "$steam_data/.steam-enable-steamrt64-client"
+  mkdir -p "$steam_data/package"
+  [ -s "$steam_data/package/beta" ] ||
+    printf '%s\n' "$STEARLIGHT_STEAM_BETA" > "$steam_data/package/beta"
+fi
 
-attempt=0
-while [ ! -S /tmp/.X11-unix/X0 ] && [ "$attempt" -lt 100 ]; do
-  kill -0 "$xorg_pid" 2>/dev/null || {
-    printf '%s\n' 'Xorg exited before creating display :0' \
-      >>/dev/ttyS0
-    exit 1
-  }
-  attempt=$((attempt + 1))
-  sleep 0.1
-done
-[ -S /tmp/.X11-unix/X0 ] || exit 1
+# The VM can be powered off while the shell is still running.  Some minimal
+# boots do not mount /tmp as tmpfs, so Xorg's lock/socket can survive that
+# abrupt stop and make the next session attach to (or reject) a stale display.
+# Remove only the two displays owned by this service before starting Xorg.
+rm -f /tmp/.X0-lock /tmp/.X8-lock /tmp/.X11-unix/X0 /tmp/.X11-unix/X8
+
+# Steam's pressure-vessel/bwrap runtime requires unprivileged user
+# namespaces.  Alpine's minimal VM kernel leaves the limits conservative (and
+# some builds default the Debian compatibility knob to 0), which makes Steam
+# stop at its own "user namespaces are required" prompt before WebUI starts.
+# Apply the settings before dropping to the stearlight user.  Unknown knobs are
+# harmless on kernels that do not expose them; the user.max_user_namespaces
+# limit is the upstream control used by Alpine's linux-virt kernel.
+if command -v sysctl >/dev/null 2>&1; then
+  sysctl -w user.max_user_namespaces=1048576 2>/dev/null || true
+  sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+  sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+  # CEF/WebHelper reserves a large virtual address space.  These are safe
+  # defaults for the sealed VM and avoid mmap(ENOMEM) when pressure-vessel
+  # starts the 64-bit helper; kernels without a knob simply ignore it.
+  sysctl -w vm.max_map_count=2147483642 2>/dev/null || true
+  sysctl -w vm.overcommit_memory=1 2>/dev/null || true
+  sysctl -w vm.overcommit_ratio=100 2>/dev/null || true
+fi
+
+# OpenRC/supervise-daemon may inherit a conservative address-space limit from
+# the initramfs.  Chromium/CEF needs a large sparse virtual address range,
+# even though it commits little physical memory.  Lift only the limits for
+# this VM session; the production service remains governed by its unit limits.
+ulimit -v unlimited 2>/dev/null || true
+ulimit -m unlimited 2>/dev/null || true
+ulimit -d unlimited 2>/dev/null || true
+ulimit -l unlimited 2>/dev/null || true
+ulimit -n 1048576 2>/dev/null || true
+
+if [ "${SVRT_TRACE_VM_GPU:-0}" != 0 ]; then
+  {
+    printf '%s\n' 'STEARLIGHT VM MEMORY LIMITS BEGIN'
+    ulimit -a
+    printf '%s\n' '--- /proc/meminfo ---'
+    sed -n '1,12p' /proc/meminfo
+    printf '%s\n' '--- vm knobs ---'
+    for knob in max_map_count overcommit_memory overcommit_ratio; do
+      printf '%s=' "$knob"
+      cat "/proc/sys/vm/$knob" 2>/dev/null || true
+    done
+    printf '%s\n' '--- shared memory ---'
+    df -h /dev/shm 2>/dev/null || true
+    printf '%s\n' 'STEARLIGHT VM MEMORY LIMITS END'
+  } >>/dev/ttyS0 2>&1 || true
+fi
+
+# Chromium/CEF uses shared-memory mappings for compositor surfaces and its
+# offscreen JS context.  The minimal VM kernel otherwise mounts /dev/shm with
+# a tiny default, which presents as repeated mmap(ENOMEM) and a blank Steam
+# WebHelper even when the guest has free RAM.  Give the test session a bounded
+# tmpfs large enough for those surfaces without reserving physical memory.
+if command -v mount >/dev/null 2>&1; then
+  if mountpoint -q /dev/shm 2>/dev/null; then
+    mount -o remount,size=${SVRT_VM_SHM_SIZE:-2G} /dev/shm 2>/dev/null || true
+  else
+    mount -t tmpfs -o mode=1777,size=${SVRT_VM_SHM_SIZE:-2G} tmpfs /dev/shm 2>/dev/null || true
+  fi
+fi
+
+# pressure-vessel's capsule loader requires a host ldconfig cache. Keep this
+# repair in the privileged VM session as well as the image build: it makes an
+# older VM overlay recover without another multi-stage build.
+if [ ! -s /var/cache/ldconfig/ld.so.cache ]; then
+  steam_cache=$(find "$SVRT_STEAM_HOME/.local/share/Steam" -type f \
+    -path '*/files/etc/ld.so.cache' -print -quit 2>/dev/null || true)
+  if [ -n "$steam_cache" ]; then
+    mkdir -p /var/cache/ldconfig 2>/dev/null || true
+    cp -L "$steam_cache" /var/cache/ldconfig/ld.so.cache 2>/dev/null || true
+  fi
+fi
+
+# The Alpine compatibility layer may ship empty placeholder DRI directories.
+# Pressure-vessel discovers host GL drivers before it starts WebHelper; if the
+# x86_64 directory is empty it falls through to the valid i386 swrast module
+# and the CEF process aborts with ELFCLASS32. Populate only an absent/empty
+# swrast entry from the ABI-matched Steam Runtime seed.
+seed_host_dri() {
+  abi=$1
+  target=$2
+  source="$SVRT_STEAM_RUNTIME_SEED/stearlight_libs_${abi}/dri"
+  if [ ! -d "$source" ]; then
+    source=$(find "$SVRT_STEAM_HOME/.local/share/Steam/ubuntu12_32/steam-runtime" \
+      -path "*/stearlight_libs_${abi}/dri" -type d -print -quit 2>/dev/null || true)
+  fi
+  [ -d "$source" ] || return 0
+  magic=
+  if [ -r "$target/swrast_dri.so" ]; then
+    magic=$(dd if="$target/swrast_dri.so" bs=1 count=4 2>/dev/null |
+      od -An -tx1 | tr -d '[:space:]')
+  fi
+  case "$magic" in
+    7f454c46*) return 0 ;;
+  esac
+  mkdir -p "$target" 2>/dev/null || return 0
+  cp -a "$source"/. "$target"/ 2>/dev/null || true
+}
+
+# Steam may replace ubuntu12_32/steam-runtime while applying its first client
+# update.  Keep an ABI-matched copy outside that replaceable tree so the
+# watcher can restore Mesa modules (and their matching glibc dependencies)
+# after the update completes.  Extract only the small Stearlight seed from
+# Valve's bootstrap archive; do not unpack a second full Steam runtime.
+ensure_steam_runtime_seed() {
+  abi=$1
+  target="$SVRT_STEAM_RUNTIME_SEED/stearlight_libs_${abi}"
+  archive=/usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz
+  [ -r "$target/dri/swrast_dri.so" ] && return 0
+  [ -r "$archive" ] || return 0
+  tmp="/var/lib/stearlight/.steam-seed.$$"
+  rm -rf "$tmp"
+  mkdir -p "$tmp"
+  path="./ubuntu12_32/steam-runtime/stearlight_libs_${abi}"
+  if tar -xJf "$archive" -C "$tmp" "$path" 2>/dev/null; then
+    extracted="$tmp/ubuntu12_32/steam-runtime/stearlight_libs_${abi}"
+    if [ -d "$extracted" ]; then
+      mkdir -p "$target"
+      cp -a "$extracted"/. "$target"/ 2>/dev/null || true
+    fi
+  fi
+  rm -rf "$tmp"
+}
+ensure_steam_runtime_seed 32
+ensure_steam_runtime_seed 64
+seed_host_dri 32 /usr/lib/i386-linux-gnu/dri
+seed_host_dri 64 /usr/lib/x86_64-linux-gnu/dri
+
+# The VM enters the gamescope session directly, so there is no C-bridge
+# callback to run the common first-boot preparation hook.  Run it explicitly
+# as root before dropping to the Steam user: the extracted Steam Runtime in a
+# sealed image is root-owned, and the ABI repair must finish before Steam
+# starts.  Hand ownership back afterward so Valve can update the per-user
+# tree normally.
+if [ -x "$SVRT_STEAM_PREPARE" ]; then
+  "$SVRT_STEAM_PREPARE" >>/dev/ttyS0 2>&1 || true
+  if [ -x "$SVRT_STEAMUI_PATCH" ]; then
+    "$SVRT_STEAMUI_PATCH" >>/dev/ttyS0 2>&1 || true
+  fi
+  chown -R stearlight:stearlight "$SVRT_STEAM_HOME/.local/share/Steam" \
+    "$SVRT_STEAM_HOME/.steam" 2>/dev/null || true
+fi
+
+# Steam's IPC and WebUI bind loopback sockets (including the local remote
+# debugger). Minimal Alpine boots can leave `lo` down until a desktop network
+# manager starts, so initialize it before launching the client.
+if command -v ip >/dev/null 2>&1; then
+  ip link set lo up 2>/dev/null || true
+  ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+  ip -6 addr add ::1/128 dev lo 2>/dev/null || true
+fi
+
+mkdir -p /home/stearlight/.steam /home/stearlight/.local/share
+# Steam's client and pressure-vessel logger expect this directory to exist
+# before the first WebHelper/update process starts.  A sealed image otherwise
+# reaches Steam's updater and then aborts in CFrameFunctionMgr while trying to
+# initialize its assertion dump path.
+mkdir -p "$steam_data/logs"
+ln -sfn /home/stearlight/.local/share/Steam /home/stearlight/.steam/root
+ln -sfn /home/stearlight/.local/share/Steam /home/stearlight/.steam/steam
+chown -R stearlight:stearlight /home/stearlight/.steam /home/stearlight/.local
+
+xorg_pid=
+window_clamp_pid=
+if [ "$SVRT_VM_SESSION_MODE" != gamescope ] || [ "$gamescope_backend" != drm ]; then
+  # SDL is retained only as a hypervisor fallback.  The normal VM and Pi
+  # paths run gamescope directly on DRM/KMS, which avoids a nested X server.
+  Xorg :0 -ac -keeptty -noreset -nolisten tcp vt1 \
+    >>/dev/ttyS0 2>&1 &
+  xorg_pid=$!
+  attempt=0
+  while [ ! -S /tmp/.X11-unix/X0 ] && [ "$attempt" -lt 100 ]; do
+    kill -0 "$xorg_pid" 2>/dev/null || {
+      printf '%s\n' 'Xorg exited before creating display :0' \
+        >>/dev/ttyS0
+      exit 1
+    }
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+  [ -S /tmp/.X11-unix/X0 ] || exit 1
+fi
+
+# QEMU's software-VGA diagnostic path has no window manager.  CEF uses an
+# INT_MIN position as a request for WM placement; without a WM Steam's login
+# window is mapped at an enormous unsigned coordinate and never reaches the
+# framebuffer.  Center those VM-only windows after X11 is ready.  Gamescope
+# and the production Pi path do their own surface placement and never start
+# this helper.
+if [ "$SVRT_VM_SESSION_MODE" = x11 ] &&
+   [ "${SVRT_VM_X11_WINDOW_CLAMP:-1}" = 1 ] &&
+   [ -x /usr/local/libexec/stearlight/x11-window-clamp ]; then
+  su-exec stearlight env DISPLAY=:0 \
+    SVRT_X11_CLAMP_SECONDS="${SVRT_VM_X11_CLAMP_SECONDS:-0}" \
+    SVRT_X11_CLAMP_DEBUG="${SVRT_VM_X11_CLAMP_DEBUG:-0}" \
+    /usr/local/libexec/stearlight/x11-window-clamp >>/dev/ttyS0 2>&1 &
+  window_clamp_pid=$!
+fi
 
 printf '%s\n' 'STEARLIGHT VM DISPLAY READY 2880x1600 @ 60Hz' >>/dev/ttyS0
-DISPLAY=:0 xrandr --current >>/dev/ttyS0 2>&1 || true
-exec su-exec stearlight /usr/bin/svrt-receiver \
-  2>>/dev/ttyS0
+if [ -n "$xorg_pid" ]; then
+  # Xorg creates its socket before modesetting has completed.  A synchronous
+  # xrandr query at that point can wait forever on the server and prevent the
+  # Steam session from ever starting.  Keep the query diagnostic-only and
+  # bounded; it must never be part of the launch critical path.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 5s env DISPLAY=:0 xrandr --current >>/dev/ttyS0 2>&1 || true
+  else
+    ( DISPLAY=:0 xrandr --current >>/dev/ttyS0 2>&1 || true ) &
+  fi
+  if [ "${SVRT_TRACE_VM_GPU:-0}" != 0 ]; then
+    printf '%s\n' 'STEARLIGHT XORG LOG BEGIN' >>/dev/ttyS0
+    sed -n '/(II) modeset/,/(II) Initializing extension GLX/p' \
+      /var/log/Xorg.0.log >>/dev/ttyS0 2>&1 || true
+    printf '%s\n' 'STEARLIGHT XORG LOG END' >>/dev/ttyS0
+  fi
+fi
+
+# Let dhcpcd obtain the user-mode NAT lease before Steam performs its first
+# manifest request.  The timeout is deliberately short so an offline VM still
+# reaches the Steam welcome/error UI instead of hanging the display session.
+attempt=0
+while [ "$attempt" -lt 15 ]; do
+  if ip route show default 2>/dev/null | grep -q default; then
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 1
+done
+
+# Keep this supervisor process alive for the lifetime of the X server.  The
+# previous `exec` form orphaned Xorg whenever the shell exited (for example
+# after an X11 capture error); OpenRC then respawned a second session against
+# the still-running display and produced an endless "server is already active"
+# loop.  Waiting here gives the trap a chance to tear down both processes in
+# the correct order before OpenRC retries.
+shell_pid=
+watcher_pid=
+cleanup_session() {
+  if [ -n "${shell_pid:-}" ]; then
+    kill "$shell_pid" 2>/dev/null || true
+    wait "$shell_pid" 2>/dev/null || true
+  fi
+  if [ -n "${watcher_pid:-}" ]; then
+    kill "$watcher_pid" 2>/dev/null || true
+    wait "$watcher_pid" 2>/dev/null || true
+  fi
+  if [ -n "${window_clamp_pid:-}" ]; then
+    kill "$window_clamp_pid" 2>/dev/null || true
+    wait "$window_clamp_pid" 2>/dev/null || true
+  fi
+  if [ -n "${xorg_pid:-}" ]; then
+    kill "$xorg_pid" 2>/dev/null || true
+    wait "$xorg_pid" 2>/dev/null || true
+  fi
+}
+trap cleanup_session EXIT INT TERM
+
+# Steam replaces parts of ubuntu12_32/steam-runtime during its first client
+# update. It can briefly leave zero-byte compatibility libraries behind while
+# the 32-bit bootstrap is already creating its GLX window. Keep the small
+# ABI-repair loop alive before Steam starts, so that replacement is repaired
+# during that window instead of after the client has crashed.
+if [ -x "$SVRT_STEAM_RUNTIME_WATCH" ]; then
+  su-exec stearlight env \
+    HOME="$SVRT_STEAM_HOME" \
+    SVRT_STEAM_RUNTIME_SEED="$SVRT_STEAM_RUNTIME_SEED" \
+    "$SVRT_STEAM_RUNTIME_WATCH" >>/dev/ttyS0 2>&1 &
+  watcher_pid=$!
+fi
+
+set +e
+if [ "$SVRT_VM_SESSION_MODE" = gamescope ] &&
+   [ -x /usr/bin/gamescope-session-plus ]; then
+  # This is the real Armada/SteamOS session path.  gamescope owns the X11
+  # output and publishes a Wayland socket before the Steam client starts, so
+  # the VM framebuffer is the Steam welcome page rather than the C bridge's
+  # placeholder/background capture.
+  export BACKEND=$gamescope_backend
+export SCREEN_WIDTH=2880
+export SCREEN_HEIGHT=1600
+# Keep the guest's logical stereo surface at 2880x1600, but use a smaller
+# nested SDL swapchain in the x86 VM.  lavapipe cannot reliably allocate the
+# three full-size presentation images; Gamescope scales this output into the
+# same 2880x1600 VGA scanout.  The production Pi leaves these unset and uses
+# the native 2880x1600 DRM output.
+export SVRT_GAMESCOPE_OUTPUT_WIDTH=${SVRT_VM_OUTPUT_WIDTH:-1440}
+export SVRT_GAMESCOPE_OUTPUT_HEIGHT=${SVRT_VM_OUTPUT_HEIGHT:-800}
+# Keep the software renderer's internal allocation independently tunable. A
+# full 2880x1600 triple-buffered Vulkan swapchain exceeds lavapipe's device
+# memory in the QEMU test; the production DRM path defaults to the native
+# logical size, while VM runs can select a smaller internal surface that is
+# scaled into the exact 2880x1600 scanout.
+export INTERNAL_WIDTH=${SVRT_VM_INTERNAL_WIDTH:-$SVRT_GAMESCOPE_OUTPUT_WIDTH}
+export INTERNAL_HEIGHT=${SVRT_VM_INTERNAL_HEIGHT:-$SVRT_GAMESCOPE_OUTPUT_HEIGHT}
+export NESTED_REFRESH=60
+  su-exec stearlight dbus-launch --exit-with-session \
+    /usr/bin/gamescope-session-plus steam \
+    2>>/dev/ttyS0 &
+elif [ "$SVRT_VM_SESSION_MODE" = x11 ]; then
+  # A software-only hypervisor can expose a working X11 scanout even when
+  # lavapipe cannot allocate gamescope's Vulkan presentation images.  Keep
+  # this as an explicit VM diagnostic mode: it still launches Valve's real
+  # Gamepad UI, while the Pi production session remains gamescope/DRM.
+  unset WAYLAND_DISPLAY GAMESCOPE_WAYLAND_DISPLAY
+  export XDG_SESSION_TYPE=x11
+  # The nested X11 path is deliberately not a Gamescope session. Leaving
+  # these SteamOS compositor flags enabled makes the Gamepad UI wait for a
+  # Wayland transport that does not exist on QEMU's software VGA output; the
+  # webhelper then opens but rejects every loopback UI connection. Keep the
+  # Gamepad UI itself enabled while advertising the actual X11 session.
+  export STEAM_GAMESCOPE=0
+  export STEAM_GAMESCOPE_WAYLAND=0
+  export XDG_CURRENT_DESKTOP=steam
+  steam_ui_args='-gamepadui -steamos3 -steampal -steamdeck'
+  if [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = classic ]; then
+    # Classic ten-foot Steam uses the ordinary X11 WebHelper surface and is
+    # the only Steam UI that can be presented by QEMU's software VGA path.
+    # It still runs Valve's real client and first-run language/network/sign-in
+    # pipeline; production Pi sessions retain the Gamepad UI branch.
+    steam_ui_args='-tenfoot -steamos'
+  elif [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = legacy ]; then
+    # Last-resort X11 diagnostic mode. The old VGUI path creates a regular
+    # sized WebHelper window and proves the guest scanout independently of
+    # the Gamescope-specific Gamepad UI transport.
+    steam_ui_args='-vgui'
+  fi
+  printf '%s\n' 'STEARLIGHT STEAM SESSION STARTING' >>/dev/ttyS0
+  su-exec stearlight dbus-launch --exit-with-session \
+    "$SVRT_STEAM_LAUNCHER" $steam_ui_args \
+    ${SVRT_VM_STEAM_UPDATE_ARGS} \
+    ${SVRT_VM_CEF_ARGS} \
+    2>>/dev/ttyS0 &
+else
+  # Explicit diagnostic fallback: the standalone shell captures an X11
+  # surface into its stereo renderer when gamescope cannot run on a host.
+  su-exec stearlight dbus-launch --exit-with-session \
+    /usr/bin/stearlight-shell \
+    2>>/dev/ttyS0 &
+fi
+shell_pid=$!
+wait "$shell_pid"
+shell_status=$?
+set -e
+shell_pid=
+if [ -n "$xorg_pid" ]; then
+  kill "$xorg_pid" 2>/dev/null || true
+  wait "$xorg_pid" 2>/dev/null || true
+fi
+exit "$shell_status"

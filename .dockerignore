@@ -9,3 +9,18 @@ buildpi
 out
 squashfs-root
 vanilla-master
+
+# The standalone OS shell does not build or link these desktop/receiver
+# targets.  Keeping their large sources out of the Docker context makes an
+# iterative VM image build take seconds instead of transferring hundreds of
+# megabytes (notably the OpenVR SDK checkout).
+openvr
+steamvr-driver
+pi-receiver
+utility
+tests
+scripts
+buildroot
+build-win64-msvc
+docker
+.github

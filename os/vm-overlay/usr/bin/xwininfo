@@ -1,0 +1,6 @@
+#!/bin/sh
+# Steam's 32-bit bootstrap exports an i386 glibc path to helper processes.
+# xwininfo in the Alpine rootfs is a native 64-bit musl binary; remove the
+# inherited runtime path before invoking the preserved host utility.
+unset LD_LIBRARY_PATH LD_PRELOAD LIBGL_DRIVERS_PATH
+exec /usr/bin/xwininfo.real "$@"

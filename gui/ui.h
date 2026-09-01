@@ -24,6 +24,16 @@
 #ifndef SVRT_UI_MINIMAL_STEAMOS
 #define SVRT_UI_MINIMAL_STEAMOS 0
 #endif
+#ifndef SVRT_UI_FORCE_PANEL_STRIPS
+#define SVRT_UI_FORCE_PANEL_STRIPS 0
+#endif
+
+/* The standalone OS must expose Valve's own first-run surface.  The generic
+ * receiver UI may opt into a local transition, but it is disabled for the OS
+ * target so a missing Steam frame never gets mistaken for a welcome screen. */
+#ifndef SVRT_SHOW_STEAM_STARTING_FALLBACK
+#define SVRT_SHOW_STEAM_STARTING_FALLBACK 1
+#endif
 
 /* The headset scanout is a side-by-side stereo surface.  Keep the geometry
  * in one place so the renderer, the VM display and the Pi KMS session agree
@@ -48,7 +58,6 @@ typedef enum svrt_ui_state {
     SVRT_UI_AUTHORIZING,
     SVRT_UI_STARTING,
     SVRT_UI_FAILED,
-    SVRT_UI_WELCOME,
     SVRT_UI_HOME
 } svrt_ui_state;
 
@@ -61,8 +70,7 @@ typedef enum svrt_ui_action {
     SVRT_UI_ACTION_DOWNLOADS,
     SVRT_UI_ACTION_SETTINGS,
     SVRT_UI_ACTION_PROFILE,
-    SVRT_UI_ACTION_CONNECTION,
-    SVRT_UI_ACTION_WELCOME_CONTINUE
+    SVRT_UI_ACTION_CONNECTION
 } svrt_ui_action;
 
 typedef struct svrt_ui_video svrt_ui_video;

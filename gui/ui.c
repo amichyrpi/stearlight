@@ -74,17 +74,7 @@ static void poll_ui_actions(svrt_ui *ui) {
         if (event.type == SDL_KEYDOWN) {
             if (event.key.keysym.sym == SDLK_F9)
                 ui->connection_requested = 1;
-            if (ui->state == SVRT_UI_WELCOME &&
-                (event.key.keysym.sym == SDLK_RETURN ||
-                 event.key.keysym.sym == SDLK_KP_ENTER ||
-                 event.key.keysym.sym == SDLK_SPACE))
-                ui->pending_action = SVRT_UI_ACTION_WELCOME_CONTINUE;
         }
-        if (event.type == SDL_CONTROLLERBUTTONDOWN &&
-            ui->state == SVRT_UI_WELCOME &&
-            (event.cbutton.button == SDL_CONTROLLER_BUTTON_A ||
-             event.cbutton.button == SDL_CONTROLLER_BUTTON_START))
-            ui->pending_action = SVRT_UI_ACTION_WELCOME_CONTINUE;
         if (event.type == SDL_MOUSEBUTTONDOWN) {
             int width = 0, height = 0;
             SDL_GetRendererOutputSize(ui->renderer, &width, &height);
@@ -99,10 +89,6 @@ static void poll_ui_actions(svrt_ui *ui) {
             y = (y - (height - scene_height) * 0.5f) /
                 SVRT_DEBUG_LEFT_EYE_UI_SCALE;
 #endif
-            if (ui->state == SVRT_UI_WELCOME) {
-                ui->pending_action = SVRT_UI_ACTION_WELCOME_CONTINUE;
-                continue;
-            }
             const int eye_width = width / 2;
             const int sidebar_w = (int)(eye_width * 0.065f);
             const int sidebar_h = (int)(height * 0.48f);
@@ -186,14 +172,22 @@ static int system_battery_percent(void) {
     return cached;
 }
 
+static const char *steam_home_for_ui(void) {
+    const char *configured = getenv("SVRT_STEAM_HOME");
+    return configured && configured[0] ? configured : "/var/lib/svrt-receiver";
+}
+
 static void update_steam_avatar(svrt_ui *ui) {
     if (!ui || ui->avatar) return;
     const uint32_t now_ms = SDL_GetTicks();
     if (now_ms < ui->next_avatar_scan_ms) return;
     ui->next_avatar_scan_ms = now_ms + 5000;
     glob_t matches = {0};
-    if (glob("/var/lib/svrt-receiver/.local/share/Steam/config/avatarcache/*",
-             0, NULL, &matches))
+    char pattern[640];
+    snprintf(pattern, sizeof(pattern),
+             "%s/.local/share/Steam/config/avatarcache/*",
+             steam_home_for_ui());
+    if (glob(pattern, 0, NULL, &matches))
         return;
     for (size_t i = 0; i < matches.gl_pathc && !ui->avatar; ++i) {
         snprintf(ui->avatar_path, sizeof(ui->avatar_path), "%s",
@@ -660,31 +654,6 @@ static void draw_loading_content(svrt_ui *ui, svrt_ui_state state,
     }
 }
 
-static void draw_welcome_content(svrt_ui *ui) {
-    const SDL_Color muted = {190, 198, 210, 230};
-    const SDL_Color accent = {48, 151, 238, 255};
-    const int title_y = 132;
-    draw_text(ui->renderer, ui->font, "Welcome to Stearlight OS",
-              SVRT_PANEL_WIDTH / 2, title_y, 255);
-    draw_text(ui->renderer, ui->small_font,
-              "Your SteamOS-style VR shell is ready.",
-              SVRT_PANEL_WIDTH / 2, title_y + 76, muted.a);
-    draw_text(ui->renderer, ui->small_font,
-              "Steam will guide language, account, and network setup.",
-              SVRT_PANEL_WIDTH / 2, title_y + 116, muted.a);
-    draw_text(ui->renderer, ui->small_font,
-              "You can change these choices later in Steam Settings.",
-              SVRT_PANEL_WIDTH / 2, title_y + 150, muted.a);
-
-    SDL_Rect button = {SVRT_PANEL_WIDTH / 2 - 176, 410, 352, 72};
-    fill_rounded_rect(ui->renderer, &button, 14, accent);
-    draw_text(ui->renderer, ui->font, "Start Steam setup",
-              SVRT_PANEL_WIDTH / 2, button.y + 12, 255);
-    draw_text(ui->renderer, ui->small_font,
-              "Press A, Enter, or click to continue",
-              SVRT_PANEL_WIDTH / 2, button.y + 92, muted.a);
-}
-
 static void draw_video_per_eye(svrt_ui *ui, svrt_ui_video *video,
                                uint32_t elapsed_ms, int source_width,
                                int source_height, int margin, int loop,
@@ -708,9 +677,17 @@ static void draw_video_per_eye(svrt_ui *ui, svrt_ui_video *video,
 static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
                                const char code[5], const char *detail,
                                uint32_t elapsed_ms, uint8_t alpha) {
-    if (!ui->panel || SDL_SetRenderTarget(ui->renderer, ui->panel)) return;
-    const int loading_state = state == SVRT_UI_WELCOME ||
-                              state == SVRT_UI_AUTHORIZING ||
+    if (!ui->panel) return;
+    if (SDL_SetRenderTarget(ui->renderer, ui->panel)) {
+        static int reported_target_error;
+        if (!reported_target_error) {
+            fprintf(stderr, "SVRT UI: panel render target unavailable: %s\n",
+                    SDL_GetError());
+            reported_target_error = 1;
+        }
+        return;
+    }
+    const int loading_state = state == SVRT_UI_AUTHORIZING ||
                               state == SVRT_UI_STARTING ||
                               state == SVRT_UI_FAILED ||
                               (SVRT_UI_MINIMAL_STEAMOS &&
@@ -722,9 +699,7 @@ static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
     else
         SDL_SetRenderDrawColor(ui->renderer, 5, 7, 10, 255);
     SDL_RenderClear(ui->renderer);
-    if (state == SVRT_UI_WELCOME) {
-        draw_welcome_content(ui);
-    } else if (state == SVRT_UI_SEARCHING) {
+    if (state == SVRT_UI_SEARCHING) {
         if (!ui->loop) ui->loop = video_open(SVRT_GUI_LOOP_PATH);
         if (ui->loop)
             draw_panel_video(ui, ui->loop, elapsed_ms, 1440, 1600, 0, 1);
@@ -740,8 +715,10 @@ static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
             SDL_Rect destination = {0, 0, SVRT_PANEL_WIDTH, SVRT_PANEL_HEIGHT};
             SDL_RenderCopy(ui->renderer, ui->client_frame, NULL, &destination);
         } else if (SVRT_UI_MINIMAL_STEAMOS) {
+#if SVRT_SHOW_STEAM_STARTING_FALLBACK
             draw_loading_content(ui, SVRT_UI_STARTING, NULL, detail,
                                  elapsed_ms, alpha);
+#endif
         } else {
             draw_text(ui->renderer, ui->font, "Steam ARM64",
                       SVRT_PANEL_WIDTH / 2, SVRT_PANEL_HEIGHT / 2 - 42, 255);
@@ -973,8 +950,65 @@ static void draw_curved_panel_eye(svrt_ui *ui, int eye_x, int eye_width,
         indices[index + 2] = vertex + 2; indices[index + 3] = vertex + 2;
         indices[index + 4] = vertex + 1; indices[index + 5] = vertex + 3;
     }
-    SDL_RenderGeometry(ui->renderer, ui->panel, vertices,
-                       (slices + 1) * 2, indices, slices * 6);
+#if SVRT_UI_FORCE_PANEL_STRIPS
+    /* SDL's OpenGL renderer on the VM exposes RenderGeometry but can drop
+       textured geometry silently. Draw narrow projected strips with the
+       well-supported RenderCopy path instead; the varying top/bottom and x
+       coordinates preserve the curved floating-panel silhouette. */
+    for (int column = 0; column < slices; ++column) {
+        const SDL_FPoint top = {
+            (vertices[column * 2].position.x +
+             vertices[(column + 1) * 2].position.x) * 0.5f,
+            (vertices[column * 2].position.y +
+             vertices[(column + 1) * 2].position.y) * 0.5f};
+        const SDL_FPoint bottom = {
+            (vertices[column * 2 + 1].position.x +
+             vertices[(column + 1) * 2 + 1].position.x) * 0.5f,
+            (vertices[column * 2 + 1].position.y +
+             vertices[(column + 1) * 2 + 1].position.y) * 0.5f};
+        const int source_x = column * SVRT_PANEL_WIDTH / slices;
+        const int source_next = (column + 1) * SVRT_PANEL_WIDTH / slices;
+        const int destination_x = (int)floorf(
+            vertices[column * 2].position.x);
+        const int destination_next = (int)ceilf(
+            vertices[(column + 1) * 2].position.x);
+        SDL_Rect source = {source_x, 0,
+                           source_next - source_x, SVRT_PANEL_HEIGHT};
+        SDL_Rect destination = {
+            destination_x, (int)floorf(top.y),
+            destination_next - destination_x,
+            (int)ceilf(bottom.y) - (int)floorf(top.y)};
+        if (source.w > 0 && destination.w > 0 && destination.h > 0)
+            SDL_RenderCopy(ui->renderer, ui->panel, &source, &destination);
+    }
+#else
+    const int geometry_rc = SDL_RenderGeometry(ui->renderer, ui->panel,
+                                                vertices, (slices + 1) * 2,
+                                                indices, slices * 6);
+    if (geometry_rc < 0) {
+        static int reported_geometry_error;
+        if (!reported_geometry_error) {
+            fprintf(stderr, "SVRT UI: curved panel geometry unavailable: %s\n",
+                    SDL_GetError());
+            reported_geometry_error = 1;
+        }
+        /* Some X11/llvmpipe combinations expose SDL_RenderGeometry but do
+           not support textured geometry. Keep the shell visible while
+           retaining the curved path on renderers that implement it. */
+        const int fallback_width = (int)lroundf(
+            eye_width * 0.82f * SVRT_UI_HORIZONTAL_ASPECT);
+        const int fallback_height = (int)lroundf(height * 0.72f);
+        SDL_Rect fallback = {
+            eye_x + (eye_width - fallback_width) / 2,
+            (height - fallback_height) / 2,
+            fallback_width, fallback_height};
+        SDL_SetRenderDrawBlendMode(ui->renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(ui->renderer, 14, 18, 24, 255);
+        SDL_RenderFillRect(ui->renderer, &fallback);
+        SDL_SetRenderDrawColor(ui->renderer, 48, 151, 238, 230);
+        SDL_RenderDrawRect(ui->renderer, &fallback);
+    }
+#endif
 #else
     (void)eye;
     const int corrected_width = (int)lroundf(
@@ -984,6 +1018,37 @@ static void draw_curved_panel_eye(svrt_ui *ui, int eye_x, int eye_width,
     SDL_RenderCopy(ui->renderer, ui->panel, NULL, &destination);
 #endif
 }
+
+/* A visible transition for the generic receiver target.  The standalone OS
+ * deliberately compiles this out: Valve's Steam surface owns the first-run
+ * experience and a missing frame must remain a black environment. */
+#if SVRT_SHOW_STEAM_STARTING_FALLBACK
+static void draw_steam_starting_eye(svrt_ui *ui, int eye_x, int eye_width,
+                                    int height, uint32_t elapsed_ms) {
+    const int panel_width = (int)lroundf(eye_width * 0.72f);
+    const int panel_height = (int)lroundf(height * 0.55f);
+    SDL_Rect panel = {eye_x + (eye_width - panel_width) / 2,
+                      (height - panel_height) / 2,
+                      panel_width, panel_height};
+    fill_rounded_rect(ui->renderer, &panel, panel_width / 24,
+                      (SDL_Color){14, 18, 24, 255});
+
+    const int animation_width = (int)lroundf(eye_width * 0.30f);
+    const int animation_height = animation_width * 1080 / 1920;
+    const int gap = (int)lroundf(height * 0.018f);
+    const int text_height = TTF_FontHeight(ui->font);
+    const int group_height = animation_height + gap + text_height;
+    const int group_y = panel.y + (panel.h - group_height) / 2;
+    if (ui->steam_loading) {
+        SDL_Rect animation = {eye_x + (eye_width - animation_width) / 2,
+                              group_y, animation_width, animation_height};
+        video_draw(ui->steam_loading, ui->renderer, &animation,
+                   elapsed_ms, 1);
+    }
+    draw_text(ui->renderer, ui->font, "Starting Steam",
+              eye_x + eye_width / 2, group_y + animation_height + gap, 255);
+}
+#endif
 
 static void draw_scene(svrt_ui *ui) {
     int width = 0, height = 0;
@@ -1000,10 +1065,24 @@ static void draw_scene(svrt_ui *ui) {
     if (!SVRT_UI_MINIMAL_STEAMOS)
         draw_environment(ui);
     const int eye_count = SVRT_ENABLE_DEBUG_LEFT_EYE_UI ? 1 : 2;
-    for (int eye = 0; eye < eye_count; ++eye)
-        draw_curved_panel_eye(ui, eye * (width / 2),
-                              eye ? width - width / 2 : width / 2,
-                              height, eye);
+    /* A standalone boot with no Steam frame is intentionally pitch black.
+       Do not draw the old local panel/loading card while Valve's OOBE is
+       still extracting or negotiating its compositor surface. */
+    if (!(SVRT_UI_MINIMAL_STEAMOS && !ui->client_frame))
+        for (int eye = 0; eye < eye_count; ++eye)
+            draw_curved_panel_eye(ui, eye * (width / 2),
+                                  eye ? width - width / 2 : width / 2,
+                                  height, eye);
+#if SVRT_SHOW_STEAM_STARTING_FALLBACK
+    if (SVRT_UI_MINIMAL_STEAMOS && !ui->client_frame) {
+        /* Keep a non-black native-Steam transition on scanout until the
+           client has produced its first X11 frame. */
+        for (int eye = 0; eye < eye_count; ++eye)
+            draw_steam_starting_eye(ui, eye * (width / 2),
+                                    eye ? width - width / 2 : width / 2,
+                                    height, SDL_GetTicks() - ui->state_started_ms);
+    }
+#endif
     if (ui->state == SVRT_UI_HOME && !SVRT_UI_MINIMAL_STEAMOS)
         for (int eye = 0; eye < eye_count; ++eye)
             draw_dashboard_chrome_eye(ui, eye * (width / 2),
@@ -1118,6 +1197,13 @@ int svrt_ui_open(svrt_ui *ui) {
     if (ui->window && !ui->renderer)
         ui->renderer = SDL_CreateRenderer(ui->window, -1,
                                           SDL_RENDERER_SOFTWARE);
+    if (ui->renderer) {
+        SDL_RendererInfo renderer_info;
+        if (!SDL_GetRendererInfo(ui->renderer, &renderer_info))
+            fprintf(stderr, "SVRT UI: renderer=%s flags=0x%x\n",
+                    renderer_info.name ? renderer_info.name : "unknown",
+                    renderer_info.flags);
+    }
     int output_width = 0, output_height = 0;
     SDL_DisplayMode output_mode = {0};
     if (ui->renderer)
@@ -1212,8 +1298,7 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
             video_close(&ui->steam_loading);
             video_rewind(ui->loop);
         }
-        if (state == SVRT_UI_WELCOME || state == SVRT_UI_AUTHORIZING ||
-            state == SVRT_UI_STARTING ||
+        if (state == SVRT_UI_AUTHORIZING || state == SVRT_UI_STARTING ||
             state == SVRT_UI_FAILED) {
             ui->loop_first_frame_ms = 0;
             video_close(&ui->loop);

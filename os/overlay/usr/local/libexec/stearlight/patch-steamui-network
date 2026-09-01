@@ -1,0 +1,95 @@
+#!/bin/sh
+# Keep Steam's first-run Gamepad UI usable on minimal Linux hosts.
+#
+# Recent Steam UI builds probe optional System.Network bindings before they
+# create the first network state.  On a small Alpine/VM host those bindings
+# are not exported by the native Steam bridge.  The capability helper can
+# still report true, which leaves the UI waiting forever and the WebHelper
+# surface at 0x0.  Patch only the affected minified chunk at boot, after Steam
+# has updated it.  The replacement is intentionally narrow and is reapplied
+# on every boot so a client update is safe.
+
+set -eu
+
+home=${SVRT_STEAM_HOME:-${HOME:-/home/stearlight}}
+steam_ui=${SVRT_STEAMUI_DIR:-$home/.local/share/Steam/steamui}
+log_file=${SVRT_STEAMUI_PATCH_LOG:-/dev/ttyS0}
+
+log() {
+    printf 'STEARLIGHT STEAMUI NETWORK PATCH: %s\n' "$*" >>"$log_file" 2>/dev/null || true
+}
+
+[ -d "$steam_ui" ] || exit 0
+
+# Python is already part of the image for the Steam/Armada setup tooling.  A
+# byte-level replacement keeps this independent of locale and avoids parsing
+# a 14 MiB single-line JavaScript bundle with sed.
+patched=0
+for file in "$steam_ui"/chunk~*.js; do
+    [ -f "$file" ] || continue
+    result=$(python3 - "$file" <<'PY'
+import os
+import pathlib
+import sys
+import tempfile
+
+path = pathlib.Path(sys.argv[1])
+data = path.read_bytes()
+replacements = (
+    (
+        b'const t=(0,B.Dp)("System.Network.RegisterForDeviceChanges");',
+        b'const t="function"==typeof SteamClient?.System?.Network?.RegisterForDeviceChanges;',
+    ),
+    (
+        b'(0,B.Dp)("System.Network.GetProxyInfo")&&SteamClient.System.Network.GetProxyInfo().then',
+        b'"function"==typeof SteamClient?.System?.Network?.GetProxyInfo&&SteamClient.System.Network.GetProxyInfo().then',
+    ),
+    (
+        b'(0,B.Dp)("System.Network.RegisterForConnectivityTestChanges")&&SteamClient.System.Network.RegisterForConnectivityTestChanges(this.OnConnectivityTestStateChanged)',
+        b'"function"==typeof SteamClient?.System?.Network?.RegisterForConnectivityTestChanges&&SteamClient.System.Network.RegisterForConnectivityTestChanges(this.OnConnectivityTestStateChanged)',
+    ),
+    (
+        b't||(this.m_bIsAwaitingInitialNetworkState=!1)',
+        b't||(this.m_bIsAwaitingInitialNetworkState=!1,this.m_bIsConnectedToANetwork=!0)',
+    ),
+)
+
+changed = False
+for old, new in replacements:
+    if old in data:
+        data = data.replace(old, new)
+        changed = True
+
+if not changed:
+    print('unchanged')
+    raise SystemExit(0)
+
+fd, temporary = tempfile.mkstemp(prefix=path.name + '.', dir=str(path.parent))
+try:
+    with os.fdopen(fd, 'wb') as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    os.chmod(temporary, path.stat().st_mode & 0o7777)
+    os.replace(temporary, path)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+print('patched')
+PY
+)
+    case "$result" in
+        *patched*)
+            patched=$((patched + 1))
+            log "patched $(basename "$file")"
+            ;;
+    esac
+done
+
+if [ "$patched" -gt 0 ]; then
+    log "patched_files=$patched"
+else
+    log 'no matching Steam network chunk (already patched or client variant)' 
+fi

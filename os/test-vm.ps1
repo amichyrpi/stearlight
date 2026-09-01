@@ -3,8 +3,12 @@ param(
     [string]$ImagePath = (Join-Path $PSScriptRoot '..\out\stearlight-vm\stearlight-os-vm-x86_64.vdi'),
     [string]$Name = 'Stearlight-OS-Test',
     [int]$BootSeconds = 45,
+    [int]$CaptureDelaySeconds = 8,
+    [int]$MemoryMB = 3072,
     [switch]$MeasureFps,
-    [switch]$KeepRunning
+    [switch]$SecondaryMonitor,
+    [switch]$KeepRunning,
+    [switch]$PersistDisk
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,7 +47,13 @@ function Wait-SerialReady {
         if ($serial -match '(?i)active mode is|could not open user') {
             throw "Stearlight session reported a display/runtime error. Serial log: $Path`n$serial"
         }
-        if ($serial -match "SVRT UI READY $expectedWidth`x$expectedHeight @ $expectedRefresh`Hz") {
+        # VM diagnostic mode uses an X11 scanout when gamescope cannot use a
+        # software Vulkan presentation device.  It still guarantees the same
+        # guest framebuffer dimensions and refresh rate, so accept its marker
+        # as a display-ready result as well.
+        $displayReady = $serial -match "(?i)(SVRT UI READY|STEARLIGHT GAMESCOPE READY|STEARLIGHT VM DISPLAY READY) $expectedWidth`x$expectedHeight @ $expectedRefresh`Hz"
+        $steamSessionReady = $serial -match "(?i)STEARLIGHT STEAM SESSION STARTING"
+        if ($displayReady -and $steamSessionReady) {
             return $serial
         }
         if ($Process -and $Process.HasExited) { break }
@@ -52,7 +62,7 @@ function Wait-SerialReady {
     $exitCode = if ($Process -and $Process.HasExited) {
         $Process.ExitCode
     } else { 'timeout' }
-    throw "VM did not report SVRT UI READY ${expectedWidth}x${expectedHeight}@${expectedRefresh}Hz (code $exitCode). Serial log: $Path`n$serial"
+    throw "VM did not report a ready gamescope/Steam session at ${expectedWidth}x${expectedHeight}@${expectedRefresh}Hz (code $exitCode). Serial log: $Path`n$serial"
 }
 
 function Invoke-QemuMonitor {
@@ -146,7 +156,7 @@ function Wait-QemuUiInitialized {
     )
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        if ((Read-SerialLog -Path $Path) -match 'SVRT UI INITIALIZED') { return $true }
+        if ((Read-SerialLog -Path $Path) -match '(?i)(SVRT UI INITIALIZED|STEARLIGHT GAMESCOPE READY|STEARLIGHT VM DISPLAY READY)') { return $true }
         if ($Process.HasExited) { return $false }
         Start-Sleep -Milliseconds 100
     }
@@ -315,6 +325,12 @@ if (-not [IO.File]::Exists($vbox)) {
     Copy-Item -LiteralPath $qemuCode -Destination $qemuCodeLocal -Force
     Copy-Item -LiteralPath $qemuVarsSource -Destination $qemuVars -Force
     Remove-Item -LiteralPath $serialLog -Force -ErrorAction SilentlyContinue
+    $diskFormat = switch ([IO.Path]::GetExtension($image).ToLowerInvariant()) {
+        '.raw' { 'raw'; break }
+        '.img' { 'raw'; break }
+        '.qcow2' { 'qcow2'; break }
+        default { 'vdi' }
+    }
 
     # QEMU's GTK backend keeps the non-client (title-bar/border) height from
     # its default 4:3 window when zoom-to-fit is enabled.  That leaves a large
@@ -400,6 +416,49 @@ public static class StearlightQemuWindow {
         return $false
     }
 
+    function Move-QemuWindowToSecondaryMonitor {
+        param(
+            [Parameter(Mandatory = $true)][System.Diagnostics.Process]$Process
+        )
+
+        if (-not $SecondaryMonitor) { return $false }
+        try {
+            Add-Type -AssemblyName System.Windows.Forms
+            $screens = [System.Windows.Forms.Screen]::AllScreens
+            if ($screens.Count -lt 2) {
+                Write-Warning 'A secondary monitor was requested, but only one display is available.'
+                return $false
+            }
+            $Process.Refresh()
+            $rawHandle = $Process.MainWindowHandle
+            if (-not $rawHandle -or $rawHandle -eq 0) {
+                Write-Warning 'QEMU window handle was not available for secondary-monitor placement.'
+                return $false
+            }
+            $work = $screens[1].WorkingArea
+            $handle = [IntPtr]$rawHandle
+            $outer = New-Object StearlightQemuWindow+Rect
+            if (-not [StearlightQemuWindow]::GetWindowRect($handle, [ref]$outer)) {
+                return $false
+            }
+            $width = [Math]::Max(320, $outer.Right - $outer.Left)
+            $height = [Math]::Max(240, $outer.Bottom - $outer.Top)
+            $x = $work.Left + 20
+            $y = $work.Top + 20
+            $flags = [uint32]0x0004 -bor [uint32]0x0010 # SWP_NOZORDER | SWP_NOACTIVATE
+            if (-not [StearlightQemuWindow]::SetWindowPos(
+                    $handle, [IntPtr]::Zero, $x, $y, $width, $height, $flags)) {
+                Write-Warning 'Could not move the QEMU GTK window to the secondary monitor.'
+                return $false
+            }
+            Write-Host "QEMU window placed on secondary monitor at ${x},${y}."
+            return $true
+        } catch {
+            Write-Warning "Secondary-monitor placement unavailable: $($_.Exception.Message)"
+            return $false
+        }
+    }
+
     $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $portProbe.Start()
     $monitorPort = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
@@ -407,7 +466,11 @@ public static class StearlightQemuWindow {
 
     $qemuArgs = @(
         '-machine', 'q35',
-        '-m', '4096',
+        # Steam's 32-bit bootstrap, 64-bit WebHelper and lavapipe each keep
+        # their own mapped runtime/LLVM images.  Four GiB exhausts the guest
+        # before the Gamepad UI can create its Vulkan surface; keep the VM
+        # generous while the host window remains scaled to the monitor.
+        '-m', "$MemoryMB",
         '-smp', '4',
         # Prefer Windows Hypervisor Platform when it is enabled.  The second
         # accelerator keeps the test portable on machines where Hyper-V/WHPX
@@ -417,21 +480,32 @@ public static class StearlightQemuWindow {
         '-cpu', 'max',
         '-drive', "if=pflash,format=raw,readonly=on,file=$qemuCodeLocal",
         '-drive', "if=pflash,format=raw,file=$qemuVars",
-        '-drive', "file=$image,format=vdi,if=virtio",
+        # systemd-boot is read through the firmware SATA controller.  IDE is
+        # deliberately used here because the minimal EFI path has no virtio
+        # firmware driver; the guest kernel still exposes the fixed target
+        # mode and framebuffer below.
+        '-drive', "file=$image,format=$diskFormat,if=ide",
+        # Steam's first-run client downloads the Gamepad UI/bootstrap payload.
+        # Give the appliance a private user-mode NAT interface so this works
+        # in a VM without exposing or depending on a host bridge.
+        '-nic', 'user,model=e1000',
+        # The classic VGA device is intentionally used for the software VM.
+        # Unlike virtio-vga on hosts without GL/DMABUF support, it exposes a
+        # deterministic 2880x1600 EDID mode.  gamescope still runs in its SDL
+        # nested backend and its Wayland surface is the Steam session tested.
         '-vga', 'none',
-        # Keep the VGA model because the VM's firmware and Xorg modeline are
-        # validated against it; WHPX/GTK OpenGL below accelerates the host
-        # presentation without changing the guest scanout device.
-        '-device', "VGA,edid=on,xres=$expectedWidth,yres=$expectedHeight,refresh_rate=$expectedRefresh,vgamem_mb=64",
+        '-device', "VGA,xres=$expectedWidth,yres=$expectedHeight,vgamem_mb=32,edid=on",
         # Keep the guest scanout at 2880x1600, but let GTK scale it into a
         # normal desktop window instead of opening a 2880-pixel-wide host
         # window.  zoom-to-fit preserves the stereo aspect ratio.
         '-display', 'gtk,gl=on,zoom-to-fit=on,show-menubar=off,window-close=on',
         '-serial', "file:$serialLog",
         '-monitor', "tcp:127.0.0.1:$monitorPort,server=on,wait=off",
-        '-no-reboot',
-        '-snapshot'
+        '-no-reboot'
     )
+    if (-not $PersistDisk) {
+        $qemuArgs += '-snapshot'
+    }
     $qemuProcess = $null
     $testSucceeded = $false
     try {
@@ -439,6 +513,7 @@ public static class StearlightQemuWindow {
             -WorkingDirectory $output -PassThru
         [void](Set-QemuWindowAspect -Process $qemuProcess `
             -FramebufferWidth $expectedWidth -FramebufferHeight $expectedHeight)
+        [void](Move-QemuWindowToSecondaryMonitor -Process $qemuProcess)
         Write-Host "QEMU started (PID $($qemuProcess.Id)); waiting for the ${expectedWidth}x${expectedHeight}@${expectedRefresh}Hz UI..."
         if ($MeasureFps) {
             Measure-QemuBootFps -Port $monitorPort -Process $qemuProcess `
@@ -446,17 +521,18 @@ public static class StearlightQemuWindow {
         }
         [void](Wait-SerialReady -Path $serialLog -Process $qemuProcess `
             -TimeoutSeconds $BootSeconds)
-        Write-Host "QEMU receiver/UI readiness passed. Serial log: $serialLog"
+        Write-Host "QEMU UI readiness passed. Serial log: $serialLog"
 
         # The guest mode switch can recreate the GTK drawing area.  Apply the
         # same correction once more after the exact display mode is ready.
         [void](Set-QemuWindowAspect -Process $qemuProcess `
             -FramebufferWidth $expectedWidth -FramebufferHeight $expectedHeight)
+        [void](Move-QemuWindowToSecondaryMonitor -Process $qemuProcess)
 
         # The first boot frame is decoded lazily.  Allow the 4.6 s boot movie
         # (and TCG's initial FFmpeg setup) to reach a visible frame before
         # taking the framebuffer sample.
-        Start-Sleep -Seconds 8
+        Start-Sleep -Seconds ([Math]::Max(0, $CaptureDelaySeconds))
         $dumped = $false
         $dumpResponse = ''
         Remove-Item -LiteralPath $qemuScreenshot -Force -ErrorAction SilentlyContinue
@@ -477,13 +553,33 @@ public static class StearlightQemuWindow {
         Write-Host "QEMU framebuffer screenshot: $qemuScreenshot"
         $testSucceeded = $true
     } finally {
-        if ($qemuProcess -and (-not $KeepRunning -or -not $testSucceeded)) {
+        if ($qemuProcess -and -not $KeepRunning) {
+            # A persistent qcow2 is useful for inspecting Steam's logs, but
+            # killing QEMU while ext4 is mounted corrupts its journal (the
+            # next run then drops into the initramfs recovery shell).  Ask the
+            # guest to shut down first and only use Kill as a last resort.
+            if ($PersistDisk -and -not $qemuProcess.HasExited) {
+                try {
+                    [void](Invoke-QemuMonitor -Port $monitorPort -Command 'system_powerdown' -DelayMilliseconds 250)
+                } catch { }
+                $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(20)
+                while (-not $qemuProcess.HasExited -and
+                       [DateTime]::UtcNow -lt $shutdownDeadline) {
+                    Start-Sleep -Milliseconds 250
+                }
+                if (-not $qemuProcess.HasExited) {
+                    try {
+                        [void](Invoke-QemuMonitor -Port $monitorPort -Command 'quit' -DelayMilliseconds 250)
+                    } catch { }
+                    [void]$qemuProcess.WaitForExit(5000)
+                }
+            }
             try {
                 if (-not $qemuProcess.HasExited) { $qemuProcess.Kill() }
                 [void]$qemuProcess.WaitForExit(5000)
             } catch { }
             Write-Host 'QEMU stopped.'
-        } elseif ($qemuProcess -and $KeepRunning -and $testSucceeded) {
+        } elseif ($qemuProcess -and $KeepRunning) {
             Write-Host "QEMU remains running (PID $($qemuProcess.Id))."
         }
     }

@@ -1,0 +1,27 @@
+#!/bin/sh
+# Steam's setup uses pkexec only as a transport for the small steamos-
+# polkit-helpers. Stearlight has no desktop authentication agent; keep a
+# narrow, non-root compatibility shim rather than shipping a general-purpose
+# privilege escalator into the image.
+set -eu
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --disable-internal-agent|--keep-cwd|--user=*) shift ;;
+        --) shift; break ;;
+        -*) echo "pkexec: unsupported option: $1" >&2; exit 2 ;;
+        *) break ;;
+    esac
+done
+
+command=${1:-}
+case "$command" in
+    /usr/bin/steamos-polkit-helpers/*|/usr/bin/jupiter-biosupdate|\
+    steamos-polkit-helpers/*|jupiter-biosupdate)
+        exec "$@"
+        ;;
+    *)
+        echo 'pkexec: command is not permitted by Stearlight policy' >&2
+        exit 126
+        ;;
+esac

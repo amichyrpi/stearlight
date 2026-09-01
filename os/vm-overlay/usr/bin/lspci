@@ -1,0 +1,8 @@
+#!/bin/sh
+# Alpine's pciutils installs lspci under /usr/sbin while Steam probes it from
+# a restricted runtime PATH. Keep the probe available without changing PATH
+# globally.
+if [ -x /usr/sbin/lspci ]; then
+    exec /usr/sbin/lspci "$@"
+fi
+exit 127

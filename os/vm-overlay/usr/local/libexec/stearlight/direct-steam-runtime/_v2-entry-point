@@ -1,0 +1,65 @@
+#!/bin/sh
+# Minimal entry point used only for the VM's Steam WebHelper. Valve's normal
+# pressure-vessel entry point creates a PID namespace; the VM does not have the
+# portal broker needed to map the WebHelper back to the Steam client, so the
+# transport rejects it. Keep the helper in the host PID namespace while
+# retaining the library environment assembled by steamwebhelper.sh.
+
+set -eu
+
+if [ "${1-}" = -- ]; then
+    shift
+fi
+[ "$#" -gt 0 ] || exit 64
+
+# steamwebhelper.sh normally invokes the pressure-vessel entry point with the
+# small sniper wrapper as its command.  Executing that wrapper directly from
+# the Alpine host fails because its relative `./steamwebhelper` lookup is
+# resolved from the wrong working directory.  Resolve it here and launch the
+# real helper binary in the caller's PID namespace.  This keeps the VM-only
+# transport workaround narrow while preserving Steam's generated arguments.
+command=$1
+shift
+case "${command##*/}" in
+    steamwebhelper_sniper_wrap.sh|steamwebhelper.sh)
+        helper_dir=$(CDPATH= cd -- "$(dirname -- "$command")" && pwd)
+        steam_root=${helper_dir%/ubuntu12_64}
+        runtime_root="$steam_root/steamrt64/pv-runtime/steam-runtime-steamrt"
+        runtime_files=
+        for candidate in "$runtime_root"/*/files; do
+            if [ -d "$candidate" ]; then
+                runtime_files=$candidate
+                break
+            fi
+        done
+
+        # The pressure-vessel container normally supplies these paths and a
+        # glibc loader.  A VM has no portal broker, so retain the same ABI
+        # explicitly while skipping only the PID namespace.  The generated
+        # var/tmp tree contains the soname links (libibus, NSS, ATK, ...),
+        # whereas files/lib contains the immutable payload.
+        runtime_tmp=
+        for candidate in "$runtime_root"/var/tmp-*/usr/lib/x86_64-linux-gnu; do
+            if [ -d "$candidate" ]; then
+                runtime_tmp=$candidate
+                break
+            fi
+        done
+        library_path="$helper_dir"
+        if [ -n "$runtime_tmp" ]; then
+            library_path="$library_path:$runtime_tmp"
+        fi
+        if [ -n "$runtime_files" ]; then
+            library_path="$library_path:$runtime_files/lib/x86_64-linux-gnu:$runtime_files/lib"
+        fi
+        library_path="$library_path:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib64:/usr/lib"
+        export LD_LIBRARY_PATH="$library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+        if [ -x /lib64/ld-linux-x86-64.so.2 ]; then
+            exec /lib64/ld-linux-x86-64.so.2 --library-path "$LD_LIBRARY_PATH" "$helper_dir/steamwebhelper" "$@"
+        fi
+        exec "$helper_dir/steamwebhelper" "$@"
+        ;;
+    *)
+        exec "$command" "$@"
+        ;;
+esac

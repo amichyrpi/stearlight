@@ -1,0 +1,6 @@
+#!/bin/sh
+# Stearlight intentionally has no desktop mode.  Keep the Steam menu action
+# callable so it does not produce a missing-command dialog, while leaving the
+# console-first shell in control of the display.
+printf '%s\n' 'Desktop mode is not available in Stearlight.' >&2
+exit 0

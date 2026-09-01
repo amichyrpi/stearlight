@@ -5,25 +5,28 @@ ARG STEARLIGHT_BUILD_DATE=unknown
 FROM --platform=$TARGETPLATFORM debian:bookworm-slim AS steam-runtime
 ARG STEARLIGHT_BAKE_STEAM=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl dbus libasound2 libgbm1 libgl1-mesa-dri \
+    ca-certificates curl dbus file libasound2 libgbm1 libgl1-mesa-dri \
     libgtk2.0-0 libnss3 libopenal1 libpipewire-0.3-0 libvulkan1 \
     libx11-6 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
-    libxss1 libxtst6 mesa-vulkan-drivers unzip xz-utils xvfb \
+    libxss1 libxtst6 mesa-vulkan-drivers python3 unzip xz-utils xvfb \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 -s /bin/bash stearlight
 COPY --chmod=0755 os/scripts/install-steam-arm64.sh /usr/local/bin/
+COPY --chmod=0755 os/scripts/sanitize-steam-profile.sh /usr/local/bin/
 USER stearlight
 RUN if [ "$STEARLIGHT_BAKE_STEAM" = 1 ]; then install-steam-arm64.sh; fi
 USER root
 
-FROM --platform=$TARGETPLATFORM alpine:${ALPINE_TAG} AS receiver-build
+FROM --platform=$TARGETPLATFORM alpine:${ALPINE_TAG} AS shell-build
 RUN apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
-    libdrm-dev libx11-dev mbedtls3-dev ninja openssl-dev pkgconf protobuf-c-dev \
+    libx11-dev ninja pkgconf \
     sdl2-dev sdl2_ttf-dev
 WORKDIR /src
 COPY . .
 RUN cmake -S . -B /build -G Ninja \
-      -DSVRT_BUILD_DRIVER=OFF -DSVRT_BUILD_UTILITY=OFF \
+      -DSVRT_BUILD_DRIVER=OFF -DSVRT_BUILD_RECEIVER=OFF \
+      -DSVRT_BUILD_OS_SHELL=ON -DSVRT_BUILD_UTILITY=OFF \
+      -DSVRT_BUILD_PI_LIBRARY=OFF \
       -DSVRT_BUILD_TESTS=OFF -DSVRT_BUILD_VENDORED_SDL=OFF \
       -DSVRT_STEARLIGHT_OS=ON -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/usr \
@@ -36,11 +39,11 @@ RUN printf '%s\n' \
       https://dl-cdn.alpinelinux.org/alpine/edge/community \
       > /etc/apk/repositories \
     && apk add --no-cache \
-      alpine-base alsa-lib avahi bash bubblewrap ca-certificates chrony dbus dhcpcd \
+      alpine-base alsa-lib bash bubblewrap ca-certificates chrony dbus dbus-glib dbus-x11 dhcpcd \
       e2fsprogs-extra ffmpeg gamescope iwd linux-rpi \
       linux-firmware-cypress mesa-dri-gallium \
-      mesa-egl mesa-gbm mesa-gles mesa-vulkan-broadcom mbedtls3 monado openrc \
-      pipewire pipewire-alsa pipewire-pulse protobuf-c raspberrypi-bootloader \
+      mesa-egl mesa-gbm mesa-gles mesa-vulkan-broadcom vulkan-loader mbedtls3 monado openrc \
+      pipewire pipewire-alsa pipewire-pulse raspberrypi-bootloader tzdata \
       sdl2 sdl2_ttf shadow su-exec util-linux-misc wireplumber xauth xvfb \
       xwayland
 RUN for group in audio input render video wheel; do \
@@ -56,16 +59,44 @@ RUN for group in audio input render video wheel; do \
     && addgroup stearlight wheel \
     && mkdir -p /home/stearlight/.local/share /opt/stearlight/steam-runtime \
                 /var/lib/stearlight \
+                /var/cache/ldconfig \
                 /run/openrc \
-    && touch /run/openrc/softlevel
-COPY --from=receiver-build /staging/ /
+                && touch /run/openrc/softlevel
+COPY --from=shell-build /staging/ /
 COPY --from=steam-runtime / /opt/stearlight/steam-runtime/
 COPY --from=steam-runtime --chown=1000:1000 /home/stearlight/ /home/stearlight/
 COPY os/overlay/ /
+COPY os/steam-firstboot /usr/local/libexec/stearlight/steam-firstboot
 RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
     && chmod 0700 /var/lib/stearlight \
+    && mkdir -p /etc/first-boot \
+    && if [ -f /usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz ]; then \
+         ln -sfn /usr/lib/steam/bootstraplinux_ubuntu12_32.tar.xz \
+           /etc/first-boot/bootstraplinux_ubuntu12_32.tar.xz; \
+       fi \
     && chmod 0755 /etc/init.d/stearlight-session \
-                  /usr/local/libexec/stearlight/session \
+                   /usr/local/libexec/stearlight/session \
+                   /usr/local/libexec/stearlight/launch-steam \
+                   /usr/local/libexec/stearlight/steam-firstboot \
+                   /usr/local/libexec/stearlight/patch-steamui-network \
+                   /usr/bin/gamescope-session-plus \
+                   /usr/share/gamescope-session-plus/gamescope-session-plus \
+                   /usr/share/gamescope-session-plus/sessions.d/steam \
+                  /usr/bin/jupiter-biosupdate \
+                  /usr/bin/jupiter-dock-updater \
+                  /usr/bin/pkexec \
+                  /usr/bin/steamos-update \
+                  /usr/bin/steamos-select-branch \
+                  /usr/bin/steamos-session-select \
+                  /usr/bin/timedatectl \
+                  /usr/bin/localectl \
+                  /usr/bin/steamos-set-timezone \
+                  /usr/bin/steamos-devkit-mode \
+                  /usr/bin/steamos-polkit-helpers/jupiter-biosupdate \
+                  /usr/bin/steamos-polkit-helpers/jupiter-dock-updater \
+                  /usr/bin/steamos-polkit-helpers/steamos-priv-write \
+                  /usr/bin/steamos-polkit-helpers/steamos-set-timezone \
+                  /usr/bin/steamos-polkit-helpers/steamos-devkit-mode \
                   /home/stearlight/.local/share/Steam/launch-steam.sh \
     && rc-update add devfs sysinit \
     && rc-update add dmesg sysinit \
@@ -75,7 +106,6 @@ RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
     && rc-update add localmount boot \
     && rc-update add sysctl boot \
     && rc-update add dbus default \
-    && rc-update add avahi-daemon default \
     && rc-update add chronyd default \
     && rc-update add dhcpcd default \
     && rc-update add iwd default \

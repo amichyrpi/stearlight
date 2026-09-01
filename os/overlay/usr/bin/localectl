@@ -1,0 +1,10 @@
+#!/bin/sh
+# Steam probes locale state during first boot. Locale selection is stored by
+# the client; Alpine has no systemd-localed daemon to contact.
+set -eu
+case "${1-}" in
+    status) printf 'System Locale: LANG=%s\n' "${LANG:-en_US.UTF-8}" ;;
+    get-locale) printf 'LANG=%s\n' "${LANG:-en_US.UTF-8}" ;;
+    set-locale) exit 0 ;;
+    *) exit 0 ;;
+esac

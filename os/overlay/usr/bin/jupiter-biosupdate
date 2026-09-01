@@ -1,0 +1,5 @@
+#!/bin/sh
+# SteamOS probes this during first-run setup. Raspberry Pi firmware is managed
+# by the image, so there is no Jupiter BIOS payload to apply.
+printf '%s\n' 'No firmware updates configured for this device.' >&2
+exit 0

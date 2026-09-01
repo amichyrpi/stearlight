@@ -23,6 +23,8 @@ static const char *steam_home(void) {
 }
 
 static const char *steam_binary(void) {
+    const char *configured = getenv("SVRT_STEAM_BINARY");
+    if (configured && configured[0]) return configured;
     static char path[512];
     snprintf(path, sizeof(path), "%s/.local/share/Steam/steamrtarm64/steam",
              steam_home());
@@ -30,6 +32,8 @@ static const char *steam_binary(void) {
 }
 
 static const char *steam_launcher(void) {
+    const char *configured = getenv("SVRT_STEAM_LAUNCHER");
+    if (configured && configured[0]) return configured;
     static char path[512];
     snprintf(path, sizeof(path), "%s/.local/share/Steam/launch-steam.sh",
              steam_home());
@@ -44,7 +48,12 @@ static void child_environment(void) {
     setenv("LOGNAME", user, 1);
     setenv("DISPLAY", SVRT_STEAM_DISPLAY, 1);
     setenv("XDG_SESSION_TYPE", "x11", 1);
-    setenv("XDG_CURRENT_DESKTOP", "SVRT", 1);
+    setenv("XDG_CURRENT_DESKTOP", "gamescope", 1);
+    /* Steam's Gamepad UI/first-run path uses this marker on SteamOS.  It
+       also prevents the generic launcher from stopping on a host-library
+       diagnostic before the bundled Steam Runtime is started. */
+    setenv("STEAMOS", "1", 1);
+    setenv("STEAM_RUNTIME", "1", 1);
     /* The receiver itself uses SDL's direct KMS backend.  Never leak that
        choice into Steam: its UI lives in the private Xvfb display. */
     setenv("SDL_VIDEODRIVER", "x11", 1);
@@ -66,16 +75,23 @@ static pid_t start_steam(void) {
     setpgid(0, 0);
     child_environment();
     const char *gamescope = getenv("SVRT_USE_GAMESCOPE");
+    const char *launcher = steam_launcher();
+    const char *binary = steam_binary();
     if (gamescope && gamescope[0] && strcmp(gamescope, "0") &&
-        access(steam_launcher(), X_OK) == 0)
+        access(launcher, X_OK) == 0)
         execlp("gamescope", "gamescope", "-e", "-b", "-W", "1024",
                "-H", "640", "-w", "1024", "-h", "640", "-r", "60",
-               "--", steam_launcher(), NULL);
-    if (access(steam_launcher(), X_OK) == 0)
-        execl(steam_launcher(), steam_launcher(), NULL);
-    execl(steam_binary(), steam_binary(), "-gamepadui", "-720p",
-          "-noverifyfiles", "-nocrashmonitor", "-no-cef-sandbox",
-          "-cef-disable-sandbox", NULL);
+               "--", launcher, launcher, "-gamepadui", "-steamos3",
+               "-steampal", "-steamdeck", "-720p", "-vrskip",
+               "-vrdisable", NULL);
+    if (access(launcher, X_OK) == 0)
+        execl(launcher, launcher, "-gamepadui", "-steamos3", "-steampal",
+              "-steamdeck", "-720p", "-vrskip", "-vrdisable",
+              "-nocrashmonitor", "-no-cef-sandbox",
+              "-cef-disable-sandbox", NULL);
+    execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
+          "-steamdeck", "-720p", "-vrskip", "-vrdisable", "-nocrashmonitor",
+          "-no-cef-sandbox", "-cef-disable-sandbox", NULL);
     _exit(127);
 }
 

@@ -1,0 +1,85 @@
+#!/bin/sh
+# Repair the per-user Steam runtime after its first-run updater replaces the
+# baked-in bootstrap archive.  The watcher exits with the Steam process group
+# and is intentionally tiny so it does not hold up the UI while Steam starts.
+
+set -eu
+
+runtime="${HOME:-/home/stearlight}/.local/share/Steam/ubuntu12_32/steam-runtime/run.sh"
+seed_root=${SVRT_STEAM_RUNTIME_SEED:-/usr/lib/steam}
+
+repair_runtime_libs() {
+    runtime_root=${runtime%/run.sh}
+    for abi in 32 64; do
+        if [ "$abi" = 32 ]; then
+            multiarch=i386-linux-gnu
+        else
+            multiarch=x86_64-linux-gnu
+        fi
+        for runtime_dir in \
+            "$runtime_root/lib/$multiarch" \
+            "$runtime_root/usr/lib/$multiarch"; do
+            [ -d "$runtime_dir" ] || continue
+            # Current Mesa swrast needs xcb_dri3_buffers_from_pixmap_strides;
+            # SteamRT's old xcb library does not export it. Keep the matching
+            # xcb ABI with the DRI seed after every Steam client update.
+            for name in libgcc_s.so.1 libstdc++.so.6 libxcb.so.1 libxcb-dri3.so.0 libxcb-dri2.so.0; do
+                source="$seed_root/stearlight_libs_$abi/$name"
+                [ -f "$source" ] || continue
+                if [ ! -f "$runtime_dir/$name" ] ||
+                   ! cmp -s "$source" "$runtime_dir/$name"; then
+                    rm -f "$runtime_dir/$name"
+                    cp -L "$source" "$runtime_dir/$name"
+                fi
+            done
+            # Keep musl host helpers from loading these glibc libraries when
+            # pressure-vessel runs /bin/rm during a runtime update.
+            rm -f "$runtime_dir"/libacl.so* "$runtime_dir"/libattr.so*
+        done
+    done
+}
+
+repair_dri() {
+    runtime_root=${runtime%/run.sh}
+    for abi in 32 64; do
+        source="$seed_root/stearlight_libs_$abi"
+        target="$runtime_root/stearlight_libs_$abi"
+        driver="$target/dri/swrast_dri.so"
+        [ -d "$source" ] || continue
+        # A valid Mesa module starts with the ELF magic.  The VM image also
+        # contains an empty placeholder at /usr/lib/i386-linux-gnu/dri;
+        # never copy or expose that path to Steam.
+        magic=
+        if [ -r "$driver" ]; then
+            magic=$(dd if="$driver" bs=1 count=4 2>/dev/null |
+                od -An -tx1 | tr -d '[:space:]')
+        fi
+        case "$magic" in
+            7f454c46*) : ;;
+            *)
+                mkdir -p "$target"
+                cp -a "$source"/. "$target"/
+                ;;
+        esac
+    done
+}
+
+repair_vulkan_icd() {
+    runtime_root=${runtime%/run.sh}
+    for abi in 32 64; do
+        source="$seed_root/stearlight_libs_$abi/lvp_icd.json"
+        target="$runtime_root/stearlight_libs_$abi/lvp_icd.json"
+        [ -r "$source" ] || continue
+        [ -r "$target" ] || {
+            mkdir -p "${target%/*}"
+            cp -a "$source" "$target"
+        }
+    done
+}
+
+while :; do
+    repair_runtime_libs
+    repair_dri
+    repair_vulkan_icd
+    sleep 1
+done

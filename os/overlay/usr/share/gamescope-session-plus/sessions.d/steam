@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+
+# SteamOS/Armada-compatible Steam session configuration. Steam owns the
+# first-run language, timezone, network, update, sign-in and tour screens.
+# This file only supplies gamescope capabilities and the client entry point.
+
+export STEAM_GAMESCOPE_VRR_SUPPORTED=1
+export STEAM_MANGOAPP_PRESETS_SUPPORTED=1
+export STEAM_USE_MANGOAPP=1
+export STEAM_USE_DYNAMIC_VRS=1
+export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
+export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
+export STEAM_GAMESCOPE_HDR_SUPPORTED=1
+export STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER=1
+export STEAM_GAMESCOPE_NIS_SUPPORTED=1
+export STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT=1
+export STEAM_GAMESCOPE_COLOR_MANAGED=1
+export STEAM_GAMESCOPE_VIRTUAL_WHITE=1
+export STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=1
+export STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1
+export STEAM_MULTIPLE_XWAYLANDS=1
+export STEAM_ENABLE_VOLUME_HANDLER=1
+export STEAM_ALLOW_DRIVE_UNMOUNT=1
+export STEAM_ALLOW_DRIVE_ADOPT=1
+export SRT_URLOPEN_PREFER_STEAM=1
+export STEAM_DISABLE_AUDIO_DEVICE_SWITCHING=1
+export QT_IM_MODULE=steam
+export GTK_IM_MODULE=Steam
+export XCURSOR_THEME=steam
+export XCURSOR_SCALE=256
+export GAMESCOPE_FALLBACK_APPID=0x53565254
+
+export STEAM_BOOTSTRAP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/gamescope/bootstrap.cfg"
+mkdir -p "$(dirname "$STEAM_BOOTSTRAP_CONFIG")"
+touch "$STEAM_BOOTSTRAP_CONFIG"
+
+export STEAMOS_STEAM_REBOOT_SENTINEL=/tmp/steamos-reboot-sentinel
+export REBOOT_SENTINEL="$STEAMOS_STEAM_REBOOT_SENTINEL"
+export STEAMOS_STEAM_SHUTDOWN_SENTINEL=/tmp/steamos-shutdown-sentinel
+export SHUTDOWN_SENTINEL="$STEAMOS_STEAM_SHUTDOWN_SENTINEL"
+
+if [[ -z "${SCREEN_WIDTH:-}" ]]; then export SCREEN_WIDTH=2880; fi
+if [[ -z "${SCREEN_HEIGHT:-}" ]]; then export SCREEN_HEIGHT=1600; fi
+if [[ -z "${OUTPUT_WIDTH:-}" ]]; then
+    export OUTPUT_WIDTH="${SVRT_GAMESCOPE_OUTPUT_WIDTH:-$SCREEN_WIDTH}"
+fi
+if [[ -z "${OUTPUT_HEIGHT:-}" ]]; then
+    export OUTPUT_HEIGHT="${SVRT_GAMESCOPE_OUTPUT_HEIGHT:-$SCREEN_HEIGHT}"
+fi
+if [[ -z "${INTERNAL_WIDTH:-}" ]]; then export INTERNAL_WIDTH=2880; fi
+if [[ -z "${INTERNAL_HEIGHT:-}" ]]; then export INTERNAL_HEIGHT=1600; fi
+if [[ -z "${NESTED_REFRESH:-}" ]]; then export NESTED_REFRESH=60; fi
+
+if [[ -z "${CLIENTCMD:-}" ]]; then
+    CLIENTCMD='/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck'
+    export CLIENTCMD
+fi
+
+if [[ -z "${CURSOR_FILE:-}" ]]; then
+    CURSOR_FILE="$HOME/.local/share/Steam/tenfoot/resource/images/cursors/arrow.png"
+    export CURSOR_FILE
+fi
+
+post_gamescope_start() { :; }
+post_client_shutdown() { :; }

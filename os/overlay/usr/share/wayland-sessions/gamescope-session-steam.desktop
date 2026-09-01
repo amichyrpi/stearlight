@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Steam (Stearlight)
+Comment=Steam Gamepad UI in gamescope
+Exec=/usr/bin/gamescope-session-plus steam
+Type=Application
+DesktopNames=gamescope

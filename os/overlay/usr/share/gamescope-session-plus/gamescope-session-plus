@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Stearlight's in-tree gamescope-session-plus runtime.
+#
+# This is the small common session used by SteamOS/Armada: gamescope owns the
+# display, publishes its XWayland/Wayland endpoints through a startup FIFO,
+# and only then starts the Steam Gamepad UI client. Keeping this boundary in
+# the image (rather than starting a nested Weston window from the renderer)
+# is what makes Valve's language/network/account welcome pipeline visible.
+
+set -euo pipefail
+
+client=${1:-steam}
+config_usr=/usr/share/gamescope-session-plus/sessions.d
+config_etc=/etc/gamescope-session-plus/sessions.d
+config_local=${XDG_CONFIG_HOME:-$HOME/.config}/gamescope-session-plus/sessions.d
+
+short_session_recover() { :; }
+post_gamescope_start() { :; }
+post_client_shutdown() { :; }
+
+# Keep the same configuration precedence as the upstream session package.
+set -a
+for config in "$config_usr/$client" "$config_etc/$client" \
+             "$config_local/$client"; do
+    if [[ -f "$config" ]]; then
+        # shellcheck disable=SC1090
+        source "$config"
+    fi
+done
+for config in /etc/environment.d/*.conf \
+             "$HOME"/.config/environment.d/*.conf; do
+    if [[ -f "$config" ]]; then
+        # shellcheck disable=SC1090
+        source "$config"
+    fi
+done
+set +a
+
+: "${GAMESCOPE_BIN:=/usr/bin/gamescope}"
+: "${SCREEN_WIDTH:=2880}"
+: "${SCREEN_HEIGHT:=1600}"
+: "${OUTPUT_WIDTH:=${SVRT_GAMESCOPE_OUTPUT_WIDTH:-$SCREEN_WIDTH}}"
+: "${OUTPUT_HEIGHT:=${SVRT_GAMESCOPE_OUTPUT_HEIGHT:-$SCREEN_HEIGHT}}"
+: "${INTERNAL_WIDTH:=$SCREEN_WIDTH}"
+: "${INTERNAL_HEIGHT:=$SCREEN_HEIGHT}"
+: "${NESTED_REFRESH:=60}"
+: "${BACKEND:=drm}"
+: "${XWAYLAND_COUNT:=2}"
+: "${TOUCH_MODE:=4}"
+: "${HIDE_CURSOR_DELAY_MS:=3000}"
+: "${FADE_OUT_DURATION_MS:=200}"
+: "${CLIENTCMD:=/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck}"
+
+export ENABLE_GAMESCOPE_WSI=1
+export QT_QPA_PLATFORM=xcb
+export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+export GAMESCOPE_MODE_SAVE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/gamescope/modes.cfg"
+export GAMESCOPE_PATCHED_EDID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/gamescope/edid.bin"
+mkdir -p "$(dirname "$GAMESCOPE_MODE_SAVE_FILE")"
+touch "$GAMESCOPE_MODE_SAVE_FILE" "$GAMESCOPE_PATCHED_EDID_FILE"
+
+runtime_dir=${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set for gamescope}
+tmpdir=$(mktemp -p "$runtime_dir" -d gamescope.XXXXXXX)
+socket="$tmpdir/startup.socket"
+stats="$tmpdir/stats.pipe"
+mkfifo -- "$socket" "$stats"
+export GAMESCOPE_STATS="$stats"
+
+cleanup() {
+    if [[ -n "${gamescope_pid:-}" ]]; then
+        kill "$gamescope_pid" 2>/dev/null || true
+        wait "$gamescope_pid" 2>/dev/null || true
+    fi
+    rm -rf -- "$tmpdir"
+}
+trap cleanup EXIT INT TERM
+
+gamescope_args=(
+    --backend "$BACKEND"
+    -W "$OUTPUT_WIDTH" -H "$OUTPUT_HEIGHT"
+    -w "$INTERNAL_WIDTH" -h "$INTERNAL_HEIGHT"
+    -r "$NESTED_REFRESH"
+    --xwayland-count "$XWAYLAND_COUNT"
+    --default-touch-mode "$TOUCH_MODE"
+    --hide-cursor-delay "$HIDE_CURSOR_DELAY_MS"
+    --fade-out-duration "$FADE_OUT_DURATION_MS"
+    --steam
+    -R "$socket" -T "$stats"
+)
+printf 'STEARLIGHT GAMESCOPE CONFIG output=%sx%s internal=%sx%s backend=%s\n' \
+    "$OUTPUT_WIDTH" "$OUTPUT_HEIGHT" "$INTERNAL_WIDTH" "$INTERNAL_HEIGHT" \
+    "$BACKEND" >&2
+if [[ "$BACKEND" == sdl ]]; then
+    # SDL is the nested VM backend.  A forced borderless mode makes gamescope
+    # request the physical 2880x1600 scanout even when the diagnostic VM has a
+    # smaller software swapchain, which can exhaust lavapipe before Steam gets
+    # a surface.  Keep borderless output for the real Pi/DRM session and make
+    # the VM opt-in to a normal, movable SDL window.
+    gamescope_args+=(--expose-wayland)
+    if [[ "${SVRT_VM_GAMESCOPE_WINDOWED:-0}" != 1 ]]; then
+        gamescope_args+=(-b)
+    fi
+fi
+if [[ -n "${CURSOR_FILE:-}" && -f "$CURSOR_FILE" ]]; then
+    gamescope_args+=(--cursor "$CURSOR_FILE")
+fi
+
+gamescope_env=()
+if [[ -n "${SVRT_GAMESCOPE_VK_ICD:-}" ]]; then
+    # gamescope is a native Alpine process. Steam's launcher may select an
+    # x86 SteamRT ICD in the parent environment; keep that ABI out of the
+    # compositor and use the host (LVP on the VM, V3D on the Pi) manifest.
+    gamescope_env=(env VK_ICD_FILENAMES="$SVRT_GAMESCOPE_VK_ICD")
+fi
+"${gamescope_env[@]}" "$GAMESCOPE_BIN" "${gamescope_args[@]}" &
+gamescope_pid=$!
+
+# gamescope writes the X display and Wayland socket it created to the startup
+# FIFO. Do not start Steam until both values have arrived; doing so is the
+# race that previously left the VM displaying an empty Weston checkerboard.
+response_x_display=''
+response_wl_display=''
+if ! read -r -t 10 response_x_display response_wl_display <"$socket"; then
+    echo 'gamescope-session-plus: gamescope did not become ready' >&2
+    exit 1
+fi
+if [[ -z "$response_x_display" || -z "$response_wl_display" ]]; then
+    echo 'gamescope-session-plus: invalid gamescope startup response' >&2
+    exit 1
+fi
+export DISPLAY="$response_x_display"
+export GAMESCOPE_WAYLAND_DISPLAY="$response_wl_display"
+export WAYLAND_DISPLAY="$response_wl_display"
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=gamescope
+printf 'STEARLIGHT GAMESCOPE READY %sx%s @ %sHz\n' \
+    "$SCREEN_WIDTH" "$SCREEN_HEIGHT" "$NESTED_REFRESH" >&2
+
+post_gamescope_start
+
+if command -v ibus-daemon >/dev/null 2>&1; then
+    ibus-daemon -d -r --panel=disable --emoji-extension=disable || true
+fi
+
+# CLIENTCMD is intentionally a session variable, matching Armada's session
+# contract. It can be replaced by /etc or ~/.config without rebuilding the
+# image, while the default always starts Valve's real Gamepad UI.
+printf '%s\n' 'STEARLIGHT STEAM SESSION STARTING' >&2
+eval "$CLIENTCMD"
+
+post_client_shutdown
+
+if [[ -e "${REBOOT_SENTINEL:-/tmp/steamos-reboot-sentinel}" ]]; then
+    rm -f "$REBOOT_SENTINEL"
+    reboot || true
+elif [[ -e "${SHUTDOWN_SENTINEL:-/tmp/steamos-shutdown-sentinel}" ]]; then
+    rm -f "$SHUTDOWN_SENTINEL"
+    poweroff || true
+fi

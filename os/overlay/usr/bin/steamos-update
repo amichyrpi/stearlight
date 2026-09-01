@@ -1,0 +1,5 @@
+#!/bin/sh
+# OS updates are delivered by the Stearlight image updater, not Steam's
+# mutable SteamOS updater.  Steam interprets status 7 as "not applicable".
+printf '%s\n' 'Stearlight image updates are managed outside Steam.' >&2
+exit 7

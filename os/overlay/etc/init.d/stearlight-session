@@ -1,6 +1,6 @@
 #!/sbin/openrc-run
 
-description="Stearlight stereo Steam shell"
+description="Stearlight standalone SteamOS shell"
 command="/usr/local/libexec/stearlight/session"
 supervisor="supervise-daemon"
 pidfile="/run/stearlight-session.pid"

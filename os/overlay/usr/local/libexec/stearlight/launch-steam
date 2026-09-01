@@ -1,0 +1,49 @@
+#!/bin/sh
+# Launch Valve's native ARM64 Steam client with the SteamRT ARM64 loader.
+#
+# This is the small, standalone equivalent of Armada's launch-steam helper.
+# Steam must be started from steamrtarm64; invoking steam.sh or the host
+# /usr/bin/steam on Alpine selects the legacy x86 bootstrap and cannot provide
+# the Gamepad UI welcome pipeline on a Pi.
+set -eu
+
+home=${HOME:-/home/stearlight}
+steam_root=${STEAM_ROOT:-${home}/.local/share/Steam}
+steam_arm_dir=${STEAM_ARM_DIR:-${steam_root}/steamrtarm64}
+steam_arm=${STEAM_ARM_BINARY:-${steam_arm_dir}/steam}
+steam_shim_dir=${steam_root}/lib/aarch64-linux-gnu
+steam_runtime_dir=${STEAM_RUNTIME_ARM64_DIR:-${steam_root}/steam-runtime-steamrt-arm64}
+
+# Images produced before the native runtime layout fix kept the archive under
+# steamrtarm64/pv-runtime.  Accept that layout during an in-place upgrade, but
+# always prefer the Armada-compatible top-level path for new images.
+if [ ! -d "${steam_runtime_dir}" ] &&
+   [ -d "${steam_arm_dir}/pv-runtime/steam-runtime-steamrt-arm64" ]; then
+    steam_runtime_dir=${steam_arm_dir}/pv-runtime/steam-runtime-steamrt-arm64
+fi
+
+if [ ! -x "${steam_arm}" ]; then
+    printf '%s\n' "Stearlight: native ARM64 Steam is not installed (${steam_arm})" >&2
+    exit 127
+fi
+
+ld_path=${steam_arm_dir}
+if [ -d "${steam_shim_dir}" ]; then
+    ld_path=${ld_path}:${steam_shim_dir}
+fi
+if [ -d "${steam_runtime_dir}/files/lib/aarch64-linux-gnu" ]; then
+    ld_path=${ld_path}:${steam_runtime_dir}/files/lib/aarch64-linux-gnu
+fi
+export LD_LIBRARY_PATH=${ld_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
+
+if [ -d "${steam_runtime_dir}/bin" ]; then
+    PATH=${steam_runtime_dir}/bin:${PATH:-/usr/bin:/bin}
+    export PATH
+fi
+if [ -x /run/host/usr/bin/fusermount3 ]; then
+    export FUSERMOUNT_PROG=/run/host/usr/bin/fusermount3
+fi
+
+touch "${steam_root}/.cef-enable-remote-debugging"
+cd "${steam_arm_dir}"
+exec "${steam_arm}" "$@"

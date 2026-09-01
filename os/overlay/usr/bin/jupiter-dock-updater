@@ -1,0 +1,5 @@
+#!/bin/sh
+# Steam's system dock probe is harmless on a Pi/VM without a Jupiter dock.
+# Keep the command available so the Gamepad UI can finish first-run setup
+# without surfacing a missing-helper error.
+exit 0

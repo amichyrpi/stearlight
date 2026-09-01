@@ -1,17 +1,108 @@
 #!/bin/sh
 set -eu
 
+# The appliance boots into the same gamescope-session contract as Armada so
+# Valve's own Gamepad UI owns the welcome/OOBE flow.  The older stereo shell is
+# retained as an explicit fallback for hardware bring-up (`vr-shell`), not as
+# a second competing compositor.
+export STEARLIGHT_SESSION_MODE=${STEARLIGHT_SESSION_MODE:-gamescope}
+
 export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_SESSION_TYPE=tty
 export XDG_CURRENT_DESKTOP=Stearlight
 export SDL_VIDEODRIVER=KMSDRM
 export SVRT_STEAM_HOME=/home/stearlight
 export SVRT_STEAM_USER=stearlight
+export SVRT_STEAM_PREPARE=/usr/local/libexec/stearlight/steam-firstboot
+export SVRT_STEAMUI_PATCH=/usr/local/libexec/stearlight/patch-steamui-network
+export SVRT_STEAM_LAUNCHER=/usr/local/libexec/stearlight/launch-steam
+export SVRT_STEAM_RUNTIME_SEED=/usr/lib/steam
+export STEARLIGHT_STEAM_BETA=steamdeck_publicbeta
 export SVRT_USE_GAMESCOPE=1
 export SVRT_START_IN_STREAMING_MODE=0
 export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+export STEAM_BOOTSTRAP_CONFIG="${XDG_CONFIG_HOME:-$SVRT_STEAM_HOME/.config}/gamescope/bootstrap.cfg"
+export STEAMOS_STEAM_REBOOT_SENTINEL=/tmp/steamos-reboot-sentinel
+export REBOOT_SENTINEL=$STEAMOS_STEAM_REBOOT_SENTINEL
+export STEAMOS_STEAM_SHUTDOWN_SENTINEL=/tmp/steamos-shutdown-sentinel
+export SHUTDOWN_SENTINEL=$STEAMOS_STEAM_SHUTDOWN_SENTINEL
+export STEAM_GAMESCOPE=1
+export STEAM_GAMESCOPE_WAYLAND=1
+export STEAM_GAMEPADUI=1
+export STEAMOS_OOBE=1
+export STEAMOS_OOBE_IMAGE=1
+export STEAM_GAMESCOPE_VRR_SUPPORTED=1
+export STEAM_GAMESCOPE_HAS_TEARING_SUPPORT=1
+export STEAM_GAMESCOPE_TEARING_SUPPORTED=1
+export STEAM_GAMESCOPE_HDR_SUPPORTED=1
+export STEAM_GAMESCOPE_DYNAMIC_FPSLIMITER=1
+export STEAM_GAMESCOPE_NIS_SUPPORTED=1
+export STEAM_GAMESCOPE_FANCY_SCALING_SUPPORT=1
+export STEAM_GAMESCOPE_COLOR_MANAGED=1
+export STEAM_GAMESCOPE_VIRTUAL_WHITE=1
+export STEAM_MANGOAPP_PRESETS_SUPPORTED=1
+export STEAM_MANGOAPP_HORIZONTAL_SUPPORTED=1
+export STEAM_USE_MANGOAPP=1
+export STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1
+export STEAM_USE_DYNAMIC_VRS=1
+export STEAM_MULTIPLE_XWAYLANDS=1
+export STEAM_ENABLE_VOLUME_HANDLER=1
+export STEAM_ALLOW_DRIVE_UNMOUNT=1
+export STEAM_ALLOW_DRIVE_ADOPT=1
+export SRT_URLOPEN_PREFER_STEAM=1
+export STEAM_DISABLE_AUDIO_DEVICE_SWITCHING=1
+export QT_IM_MODULE=steam
+export GTK_IM_MODULE=Steam
+export XCURSOR_THEME=steam
+export XCURSOR_SCALE=256
+export GAMESCOPE_FALLBACK_APPID=0x41524d41
+export CLIENTCMD="/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck"
+export CURSOR_FILE="$SVRT_STEAM_HOME/.local/share/Steam/tenfoot/resource/images/cursors/arrow.png"
+mkdir -p "$(dirname "$STEAM_BOOTSTRAP_CONFIG")"
+touch "$STEAM_BOOTSTRAP_CONFIG"
+
+# Valve's pressure-vessel uses bubblewrap user namespaces for the Steam
+# runtime.  Set the limits before the session switches to the unprivileged
+# stearlight account; kernels without a compatibility knob simply ignore the
+# corresponding write.
+if command -v sysctl >/dev/null 2>&1; then
+  sysctl -w user.max_user_namespaces=1048576 2>/dev/null || true
+  sysctl -w kernel.unprivileged_userns_clone=1 2>/dev/null || true
+  sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+fi
+
+# pressure-vessel's capsule loader looks for this cache outside the Steam
+# tree. Older images did not carry it, which made WebHelper restart forever
+# before the real Steam welcome page could be mapped. Seed it from the
+# extracted Steam Runtime when the image is upgraded in place.
+if [ ! -s /var/cache/ldconfig/ld.so.cache ]; then
+  steam_cache=$(find "$SVRT_STEAM_HOME/.local/share/Steam" -type f \
+    -path '*/files/etc/ld.so.cache' -print -quit 2>/dev/null || true)
+  if [ -n "$steam_cache" ]; then
+    mkdir -p /var/cache/ldconfig 2>/dev/null || true
+    cp -L "$steam_cache" /var/cache/ldconfig/ld.so.cache 2>/dev/null || true
+  fi
+fi
 
 chown -R stearlight:stearlight "$XDG_RUNTIME_DIR"
+
+# Steam owns the first-run OOBE, but a client update can replace the WebUI
+# bundle between boots. Reapply the tiny optional-network compatibility patch
+# immediately before gamescope starts so the welcome surface is created.
+if [ -x "$SVRT_STEAM_PREPARE" ]; then
+  "$SVRT_STEAM_PREPARE" >>/var/log/stearlight-ui.log 2>&1 || true
+fi
+if [ -x "$SVRT_STEAMUI_PATCH" ]; then
+  "$SVRT_STEAMUI_PATCH" >>/var/log/stearlight-ui.log 2>&1 || true
+fi
+
+# Keep Steam's local IPC/WebUI endpoints available even on a minimal boot
+# where no network manager has initialized loopback yet.
+if command -v ip >/dev/null 2>&1; then
+  ip link set lo up 2>/dev/null || true
+  ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+  ip -6 addr add ::1/128 dev lo 2>/dev/null || true
+fi
 
 {
   printf '%s\n' 'Starting Stearlight display session'
@@ -27,5 +118,20 @@ chown -R stearlight:stearlight "$XDG_RUNTIME_DIR"
 
 su-exec stearlight pipewire >/var/log/pipewire.log 2>&1 &
 su-exec stearlight wireplumber >/var/log/wireplumber.log 2>&1 &
+
+if [ "$STEARLIGHT_SESSION_MODE" = gamescope ] &&
+   command -v gamescope-session-plus >/dev/null 2>&1; then
+  export BACKEND=${STEARLIGHT_GAMESCOPE_BACKEND:-drm}
+  export SCREEN_WIDTH=2880
+  export SCREEN_HEIGHT=1600
+  export INTERNAL_WIDTH=2880
+  export INTERNAL_HEIGHT=1600
+  export NESTED_REFRESH=60
+  exec openvt -c 1 -f -s -w -- su-exec stearlight sh -c \
+    'exec dbus-launch --exit-with-session /usr/bin/gamescope-session-plus steam \
+      2>>/var/log/stearlight-ui.log'
+fi
+
 exec openvt -c 1 -f -s -w -- su-exec stearlight sh -c \
-  'exec /usr/bin/svrt-receiver 2>>/var/log/stearlight-ui.log'
+  'exec dbus-launch --exit-with-session /usr/bin/stearlight-shell \
+    2>>/var/log/stearlight-ui.log'

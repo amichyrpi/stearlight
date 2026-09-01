@@ -1,0 +1,262 @@
+#!/bin/sh
+set -eu
+
+# gamescope itself is a 64-bit host process, while Valve's Linux bootstrap
+# client is 32-bit. Keep the Vulkan ICD selection at the ABI boundary instead
+# of exporting one architecture globally (which makes the other loader report
+# VK_ERROR_INCOMPATIBLE_DRIVER). The seed lives outside Steam's replaceable
+# runtime so a client update cannot swap in an ABI-incompatible Mesa stack.
+seed_root=${SVRT_STEAM_RUNTIME_SEED:-/usr/lib/steam}
+steam_root="${SVRT_STEAM_HOME:-${HOME:-/home/stearlight}}/.local/share/Steam"
+# steam.sh invokes the replaceable Steam Runtime's run.sh in a child shell.
+# Export the seed explicitly so that run.sh can keep the ABI-matched Mesa/XCB
+# directory first in LD_LIBRARY_PATH; relying on a caller's shell variable
+# silently drops it when Steam re-execs the bootstrap.
+export SVRT_STEAM_RUNTIME_SEED="$seed_root"
+# Do not force an ICD in the parent shell.  steam.sh calls the patched
+# runtime wrapper once to calculate its library path (that invocation is
+# intentionally 32-bit), then starts 64-bit WebHelper children from the same
+# environment.  A globally exported i386 ICD makes those children report
+# missing surface extensions or load the wrong ELF class.  The runtime wrapper
+# selects an ABI-specific ICD for direct runtime launches; normal Mesa Vulkan
+# discovery handles the mixed Steam process tree here.
+unset VK_ICD_FILENAMES
+unset VK_DRIVER_FILES
+# Do not export an ABI-specific DRI directory from the parent process. Steam
+# starts both i386 and x86_64 children (bootstrap, WebHelper and pressure
+# vessel); one inherited path makes the other loader open the wrong ELF class.
+# vm-console seeds the standard multiarch DRI directories so Mesa selects the
+# correct module for each child without modifying Valve's replaceable files.
+unset LIBGL_DRIVERS_PATH
+
+# The VM-only direct-client diagnostic bypasses pressure-vessel for the
+# WebHelper so Steam can validate the loopback peer in the host namespace.
+# Keep the alternate entry point opt-in: the normal SteamOS/Pi path continues
+# to use Valve's pressure-vessel runtime unchanged.
+if [ "${SVRT_STEAM_DIRECT_WEBHELPER:-0}" = 1 ] &&
+   [ -x /usr/local/libexec/stearlight/direct-steam-runtime/_v2-entry-point ]; then
+    export STEAM_RUNTIME_STEAMRT=/usr/local/libexec/stearlight/direct-steam-runtime
+fi
+if [ "${SVRT_STEAM_FORCE_DIRECT_CLIENT:-0}" = 1 ] &&
+   [ -x /usr/local/libexec/stearlight/direct-steam-runtime/_v2-entry-point ]; then
+    export STEAM_RUNTIME_STEAMRT=/usr/local/libexec/stearlight/direct-steam-runtime
+fi
+
+# Steam's WebUI transport authenticates a WebHelper by inspecting its PID in
+# /proc.  The normal Steam Runtime entry point may create a private PID
+# namespace, which is fine on SteamOS but cannot be mapped by the minimal VM's
+# host bridge.  Ask pressure-vessel to share the PID namespace explicitly;
+# this retains its glibc/CEF/graphics setup while fixing the VM-only transport
+# handshake.  The variable is scoped to this launcher and is not used by the
+# production Pi session.
+if [ "${SVRT_VM_SHARE_PIDS:-1}" = 1 ]; then
+    export PRESSURE_VESSEL_SHARE_PID=1
+fi
+
+# The first Steam bootstrap window is a 32-bit GLX client.  Its Mesa loader
+# does not reliably honor the multiarch fallback once Valve's glibc runtime
+# is active, so the VM gives that process an explicit i386 DRI directory.  A
+# Bash BASH_ENV hook removes the override when steamwebhelper.sh starts its
+# 64-bit CEF process; the production Pi launcher leaves this variable unset.
+if [ -n "${SVRT_STEAM_BOOTSTRAP_DRI:-}" ]; then
+    export LIBGL_DRIVERS_PATH="$SVRT_STEAM_BOOTSTRAP_DRI"
+fi
+if [ -r /usr/local/libexec/stearlight/steam-webhelper-env ]; then
+    export BASH_ENV=/usr/local/libexec/stearlight/steam-webhelper-env
+fi
+
+# The VM uses Valve's x86 bootstrap.  The bootstrap is deliberately entered
+# through the extracted steam.sh script instead of jumping straight to
+# steamrt64/steam: steam.sh sets STEAM_RUNTIME_LIBRARY_PATH, unpacks/pins the
+# runtime and performs the ABI hand-off before WebHelper is started.  Calling
+# steamrt64/steam directly skips that setup and leaves the updater window alive
+# without ever creating the Gamepad UI surface (the old VM black-screen bug).
+prepare_host_tools() {
+    # Alpine's coreutils are musl-linked. Once steam.sh enters the glibc
+    # runtime it exports an x86 LD_LIBRARY_PATH; an Alpine `mkdir` or `rm`
+    # then tries to load the runtime's libacl/libattr and fails. Put tiny
+    # ABI-resetting shims first in PATH so Valve's scripts can use the host
+    # utilities without changing their files.
+    host_tools=${XDG_RUNTIME_DIR:-/tmp}/stearlight-host-tools
+    mkdir -p "$host_tools"
+    shim="$host_tools/.host-tool"
+    if [ ! -x "$shim" ]; then
+        cat >"$shim" <<'EOF'
+#!/bin/sh
+tool=${0##*/}
+unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT
+if [ -x "/usr/bin/$tool" ]; then
+    exec "/usr/bin/$tool" "$@"
+fi
+exec "/bin/$tool" "$@"
+EOF
+        chmod 0755 "$shim"
+    fi
+    for tool in basename cat chmod cp date dirname find grep gzip id ln mkdir \
+                mktemp mv readlink rm rmdir sed sleep tar touch tr uname which \
+                xz; do
+        ln -sfn .host-tool "$host_tools/$tool"
+    done
+    PATH="$host_tools:${PATH:-/usr/bin:/bin}"
+    export PATH
+}
+
+launch_client() {
+    export STEAM_RUNTIME=1
+    if [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = legacy ]; then
+        # QEMU has no Gamescope protocol. The legacy X11 client is a bounded
+        # diagnostic fallback that gives the VM a real Steam window while the
+        # hardware session continues to use the SteamOS Gamepad UI.
+        unset STEAMOS STEAM_GAMEPADUI STEAM_GAMESCOPE_WAYLAND
+        export STEAM_GAMESCOPE=0
+    else
+        export STEAMOS=1
+        export STEAM_GAMEPADUI=1
+    fi
+    # The VM diagnostic path is an ordinary X11 scanout.  Keep Gamescope's
+    # Wayland advertisement off there; otherwise Steam's Gamepad UI starts
+    # its webhelper successfully but waits for a compositor transport that
+    # does not exist and rejects every steamloopback connection.  Production
+    # DRM sessions retain the SteamOS/Gamescope contract.
+    if [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = legacy ] ||
+       [ "${SVRT_VM_SESSION_MODE:-}" = x11 ] ||
+       [ "${XDG_SESSION_TYPE:-}" = x11 ] ||
+       [ "${SVRT_STEAM_COMPOSITOR:-}" = weston ]; then
+        export STEAM_GAMESCOPE=0
+        export STEAM_GAMESCOPE_WAYLAND=0
+    else
+        export STEAM_GAMESCOPE=1
+        export STEAM_GAMESCOPE_WAYLAND=1
+    fi
+    if [ -x "$steam_root/steam.sh" ] &&
+       [ "${SVRT_STEAM_FORCE_DIRECT_CLIENT:-0}" != 1 ]; then
+        prepare_host_tools
+        if [ "${SVRT_STEAM_FORCE_RUN:-0}" = 1 ]; then
+            # --run makes steam.sh perform its normal runtime/update setup and
+            # then hand the 32-bit binary back through the patched run.sh.
+            # This keeps the ABI-selected seed path in effect at exec time;
+            # the ordinary steam.sh final branch can prepend an old runtime
+            # libgcc before Mesa loads its DRI module.
+            # run.sh receives the platform path through this opt-in variable;
+            # --run bypasses steam.sh's later "$PLATFORM" prepend, so without
+            # it steamui.so cannot resolve its bundled libvpx/libav* payload.
+            export SVRT_STEAM_PLATFORM_LIBRARY_PATH="$steam_root/ubuntu12_32:$steam_root/steamrt32"
+            exec "$steam_root/steam.sh" --run \
+                "$steam_root/ubuntu12_32/steam" "$@"
+        fi
+        # Do not export an ABI-specific DRI directory here.  steam.sh's
+        # bootstrap and its 64-bit WebHelper share this environment, so a
+        # 32-bit path would make WebHelper fail with ELFCLASS32.  Mesa's
+        # standard multiarch DRI directories are ABI-aware and are already
+        # present in the image; the patched run.sh still selects the private
+        # seed when it is explicitly used for a single-ABI child.
+        exec "$steam_root/steam.sh" "$@"
+    fi
+    # The direct SteamRT binary is used in the VM so no Alpine/musl utility is
+    # ever executed with Steam's glibc LD_LIBRARY_PATH.  steam.sh cannot be
+    # used here: after it switches to the x86 runtime, its calls to Alpine's
+    # /bin/mkdir and /bin/rm resolve libacl/libattr from the wrong ABI and the
+    # bootstrap stalls at "Show window" before WebHelper is spawned.
+    platform=$(find "$steam_root/steamrt64/pv-runtime/steam-runtime-steamrt" \
+        -maxdepth 1 -type d -name 'steamrt3c_platform_*' \
+        -print -quit 2>/dev/null || true)
+    runtime_files=${platform:+$platform/files}
+    ld_path="$steam_root/steamrt64:$steam_root/ubuntu12_64"
+    if [ -n "$runtime_files" ]; then
+        ld_path="$ld_path:$runtime_files/lib/x86_64-linux-gnu:$runtime_files/lib:$runtime_files/usr/lib/x86_64-linux-gnu:$runtime_files/usr/lib"
+    fi
+    if [ -d "$seed_root/stearlight_libs_64" ]; then
+        ld_path="$ld_path:$seed_root/stearlight_libs_64"
+    fi
+    export LD_LIBRARY_PATH="$ld_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export STEAM_RUNTIME_LIBRARY_PATH="$ld_path"
+    export PATH="${runtime_files:+$runtime_files/usr/bin:}$steam_root/steamrt64:$PATH"
+    export VK_ICD_FILENAMES="$seed_root/stearlight_libs_64/lvp_icd.json"
+    unset LIBGL_DRIVERS_PATH
+    if [ -x "$steam_root/steamrt64/steam" ]; then
+        exec "$steam_root/steamrt64/steam" "$@"
+    fi
+    exec /usr/bin/steam "$@"
+}
+
+# The VM has no physical DRM/Vulkan presentation device.  Run a tiny
+# software Wayland compositor nested on the private Xvfb display instead of
+# asking Steam's Gamepad UI to create an off-screen surface.  Weston presents
+# one ordinary X11 window, which the shell can capture without changing the
+# production Pi compositor path.  Keep this opt-in so the launcher remains a
+# plain Steam entry point outside the VM.
+if [ "${SVRT_STEAM_COMPOSITOR:-}" = weston ]; then
+    runtime_dir=${XDG_RUNTIME_DIR:-/run/user/1000}
+    socket=${SVRT_STEAM_WAYLAND_SOCKET:-stearlight-wayland-0}
+    mkdir -p "$runtime_dir"
+    # A VM power-off does not run Weston\047s EXIT trap. Remove both the
+    # socket and its lock before starting the next compositor instance, or the
+    # Steam surface is left on a stale/blank Weston window.
+    rm -f "$runtime_dir/$socket"
+    rm -f "$runtime_dir/$socket.lock"
+    # Use the absolute module path because the minimal VM intentionally does
+    # not ship Weston’s desktop config (which normally sets WESTON_MODULE_MAP).
+    # Keep the compositor log in a user-writable path.  The launcher runs as
+    # stearlight, so writing directly to /dev/ttyS0 would fail before Weston
+    # starts and turn into an unexplained black capture.
+    # Weston 16 resolves the backend selector name through its built-in module
+    # search path; an absolute plugin path is rejected as an unknown backend.
+    weston_args="--backend=x11 --renderer=pixman --socket=$socket --width=1024 --height=640 --idle-time=0 --no-config"
+    # Weston and its Xwayland child are native 64-bit Alpine processes.  The
+    # Steam bootstrap below is deliberately started with the 32-bit seed, but
+    # leaking that DRI path into Weston makes Xwayland's GL loader open the
+    # i386 swrast module and fail with ELFCLASS32.  Keep the compositor's
+    # environment ABI-neutral; only the Steam entry point receives the
+    # architecture-specific seed.
+    weston_env() {
+        env -u LIBGL_DRIVERS_PATH -u VK_ICD_FILENAMES -u VK_DRIVER_FILES \
+            -u LD_LIBRARY_PATH -u LD_PRELOAD -u MESA_LOADER_DRIVER_OVERRIDE \
+            -u MESA_GL_VERSION_OVERRIDE weston "$@"
+    }
+    if [ -n "${SVRT_STEAM_WESTON_LOG:-}" ]; then
+        # An explicit log path is useful when the VM is inspected offline.
+        weston_env $weston_args >>"$SVRT_STEAM_WESTON_LOG" 2>&1 &
+    else
+        # Otherwise inherit the launcher's already-open stderr.  Opening
+        # /dev/ttyS0 here would fail because this process is stearlight.
+        weston_env $weston_args &
+    fi
+    weston_pid=$!
+    cleanup_weston() {
+        kill "$weston_pid" 2>/dev/null || true
+        wait "$weston_pid" 2>/dev/null || true
+        rm -f "$runtime_dir/$socket"
+        rm -f "$runtime_dir/$socket.lock"
+    }
+    trap cleanup_weston EXIT INT TERM
+    ready=0
+    for _ in $(seq 1 100); do
+        if [ -S "$runtime_dir/$socket" ]; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$weston_pid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$ready" -ne 1 ]; then
+        printf '%s\n' 'STEARLIGHT: nested Weston failed to start' >&2
+        exit 1
+    fi
+    export WAYLAND_DISPLAY="$socket"
+    # Steam's display manager does not discover an arbitrary Wayland socket
+    # from WAYLAND_DISPLAY alone.  gamescope-session (and Armada's
+    # fake-suspend helper) publish the compositor through
+    # GAMESCOPE_WAYLAND_DISPLAY as well.  Mirror that contract here and mark
+    # the session as Wayland so pressure-vessel forwards the socket into the
+    # Steam Runtime instead of falling back to X11.  Keep DISPLAY for
+    # XWayland/legacy dialogs.
+    export GAMESCOPE_WAYLAND_DISPLAY="$socket"
+    export XDG_SESSION_TYPE=wayland
+    export SDL_VIDEODRIVER=wayland
+    export XDG_CURRENT_DESKTOP=gamescope
+    launch_client "$@"
+fi
+
+launch_client "$@"

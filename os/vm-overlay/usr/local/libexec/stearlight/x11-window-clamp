@@ -1,0 +1,291 @@
+#!/usr/bin/python3
+"""Keep Steam's X11 top-level windows inside the VM display.
+
+The software-VGA QEMU path intentionally does not run a desktop window
+manager.  Chromium/CEF uses INT_MIN as a "let the window manager choose"
+position; without a WM that value is converted to a huge unsigned X11
+coordinate and the Steam login window is mapped completely off-screen.  This
+small VM-only helper provides the one bit of WM policy the test session needs:
+top-level windows outside the root geometry are moved to the centre and
+raised.  It never runs in the production DRM/Gamescope session.
+"""
+
+import ctypes
+import ctypes.util
+import os
+import time
+
+
+Display = ctypes.c_void_p
+Window = ctypes.c_ulong
+Atom = ctypes.c_ulong
+_x11_error_callback = None
+
+
+class XWindowAttributes(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_int),
+        ("y", ctypes.c_int),
+        ("width", ctypes.c_int),
+        ("height", ctypes.c_int),
+        ("border_width", ctypes.c_int),
+        ("depth", ctypes.c_int),
+        ("visual", ctypes.c_void_p),
+        ("root", Window),
+        ("class", ctypes.c_int),
+        ("bit_gravity", ctypes.c_int),
+        ("win_gravity", ctypes.c_int),
+        ("backing_store", ctypes.c_int),
+        ("backing_planes", ctypes.c_ulong),
+        ("backing_pixel", ctypes.c_ulong),
+        ("save_under", ctypes.c_int),
+        ("colormap", ctypes.c_ulong),
+        ("map_installed", ctypes.c_int),
+        ("map_state", ctypes.c_int),
+        ("all_event_masks", ctypes.c_long),
+        ("your_event_masks", ctypes.c_long),
+        ("do_not_propagate_mask", ctypes.c_long),
+        ("override_redirect", ctypes.c_int),
+        ("screen", ctypes.c_void_p),
+    ]
+
+
+def configure_x11():
+    name = ctypes.util.find_library("X11") or "libX11.so.6"
+    x11 = ctypes.CDLL(name)
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = Display
+    x11.XCloseDisplay.argtypes = [Display]
+    x11.XDefaultScreen.argtypes = [Display]
+    x11.XDefaultScreen.restype = ctypes.c_int
+    x11.XRootWindow.argtypes = [Display, ctypes.c_int]
+    x11.XRootWindow.restype = Window
+    x11.XDisplayWidth.argtypes = [Display, ctypes.c_int]
+    x11.XDisplayWidth.restype = ctypes.c_int
+    x11.XDisplayHeight.argtypes = [Display, ctypes.c_int]
+    x11.XDisplayHeight.restype = ctypes.c_int
+    x11.XQueryTree.argtypes = [
+        Display,
+        Window,
+        ctypes.POINTER(Window),
+        ctypes.POINTER(Window),
+        ctypes.POINTER(ctypes.POINTER(Window)),
+        ctypes.POINTER(ctypes.c_uint),
+    ]
+    x11.XQueryTree.restype = ctypes.c_int
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    x11.XFree.restype = ctypes.c_int
+    x11.XGetWindowAttributes.argtypes = [
+        Display,
+        Window,
+        ctypes.POINTER(XWindowAttributes),
+    ]
+    x11.XGetWindowAttributes.restype = ctypes.c_int
+    x11.XMoveResizeWindow.argtypes = [
+        Display,
+        Window,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_uint,
+        ctypes.c_uint,
+    ]
+    x11.XMapRaised.argtypes = [Display, Window]
+    x11.XRaiseWindow.argtypes = [Display, Window]
+    x11.XMoveWindow.argtypes = [Display, Window, ctypes.c_int, ctypes.c_int]
+    x11.XTranslateCoordinates.argtypes = [
+        Display,
+        Window,
+        Window,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(Window),
+    ]
+    x11.XTranslateCoordinates.restype = ctypes.c_int
+    x11.XSync.argtypes = [Display, ctypes.c_int]
+    x11.XSetErrorHandler.argtypes = [ctypes.c_void_p]
+    x11.XSetErrorHandler.restype = ctypes.c_void_p
+    x11.XFlush.argtypes = [Display]
+    return x11
+
+
+def top_level_windows(x11, display, root):
+    root_return = Window()
+    parent_return = Window()
+    children_return = ctypes.POINTER(Window)()
+    count_return = ctypes.c_uint()
+    if not x11.XQueryTree(
+        display,
+        root,
+        ctypes.byref(root_return),
+        ctypes.byref(parent_return),
+        ctypes.byref(children_return),
+        ctypes.byref(count_return),
+    ):
+        return []
+    try:
+        return [children_return[index] for index in range(count_return.value)]
+    finally:
+        if children_return:
+            x11.XFree(children_return)
+
+
+def window_tree(x11, display, root, parent=None, depth=0, seen=None):
+    """Return (window, parent, depth) for every descendant of root."""
+    if seen is None:
+        seen = set()
+    children = top_level_windows(x11, display, parent or root)
+    result = []
+    for window in children:
+        value = int(window)
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append((window, parent or root, depth))
+        if depth < 16:
+            result.extend(window_tree(x11, display, root, window, depth + 1, seen))
+    return result
+
+
+def main():
+    x11 = configure_x11()
+    display_name = os.environ.get("DISPLAY", ":0")
+    # The X socket is created before the server is ready to accept clients.
+    # Do not exit on that short race: Steam can create its first CEF window
+    # only after this helper has connected.
+    display = None
+    for _ in range(int(os.environ.get("SVRT_X11_CLAMP_CONNECT_TRIES", "120"))):
+        display = x11.XOpenDisplay(display_name.encode())
+        if display:
+            break
+        time.sleep(0.25)
+    if not display:
+        print("STEARLIGHT VM X11 CLAMP: unable to open %s" % display_name, flush=True)
+        return 0
+    try:
+        # X clients can destroy a popup between XQueryTree and
+        # XGetWindowAttributes.  Ignore that asynchronous BadWindow instead
+        # of terminating the supervisor before the real Steam window appears.
+        global _x11_error_callback
+        _x11_error_callback = ctypes.CFUNCTYPE(
+            ctypes.c_int, Display, ctypes.c_void_p
+        )(lambda _display, _error: 0)
+        x11.XSetErrorHandler(_x11_error_callback)
+        screen = x11.XDefaultScreen(display)
+        root = x11.XRootWindow(display, screen)
+        display_width = x11.XDisplayWidth(display, screen)
+        display_height = x11.XDisplayHeight(display, screen)
+        verbose = os.environ.get("SVRT_X11_CLAMP_DEBUG", "0") != "0"
+        if verbose:
+            print(
+                "STEARLIGHT VM X11 CLAMP: connected display=%s root=%d size=%dx%d"
+                % (display_name, int(root), display_width, display_height),
+                flush=True,
+            )
+        interval = float(os.environ.get("SVRT_X11_CLAMP_INTERVAL", "0.25"))
+        # A CEF sentinel becomes a coordinate near 2^31.  Keep a generous
+        # margin so a normal window can still be positioned near an edge.
+        margin = 1000
+        deadline = time.monotonic() + float(
+            os.environ.get("SVRT_X11_CLAMP_SECONDS", "0")
+        ) if os.environ.get("SVRT_X11_CLAMP_SECONDS") else None
+        moved = set()
+        while deadline is None or time.monotonic() < deadline:
+            changed = False
+            windows = window_tree(x11, display, root)
+            if verbose and windows:
+                print(
+                    "STEARLIGHT VM X11 CLAMP: tree has %d window(s)"
+                    % len(windows),
+                    flush=True,
+                )
+            for window, parent, depth in windows:
+                attrs = XWindowAttributes()
+                if not x11.XGetWindowAttributes(display, window, ctypes.byref(attrs)):
+                    continue
+                if attrs.width <= 0 or attrs.height <= 0:
+                    continue
+                outside = (
+                    attrs.x > display_width + margin
+                    or attrs.y > display_height + margin
+                    or attrs.x + attrs.width < -margin
+                    or attrs.y + attrs.height < -margin
+                )
+                # X11 coordinates are signed 16-bit values.  The INT_MIN
+                # sentinel used by CEF therefore wraps to (0, 0) when no WM
+                # is present, so checking only for a huge coordinate misses
+                # the exact failure.  Treat every viewable, non-fullscreen
+                # top-level window as managed and centre it as well.
+                viewable = attrs.map_state == 2
+                if verbose and (attrs.width >= 100 or attrs.height >= 100):
+                    print(
+                        "STEARLIGHT VM X11 CLAMP: window=%d parent=%d depth=%d x=%d y=%d size=%dx%d map=%d outside=%s"
+                        % (
+                            int(window),
+                            int(parent),
+                            depth,
+                            attrs.x,
+                            attrs.y,
+                            attrs.width,
+                            attrs.height,
+                            attrs.map_state,
+                            outside,
+                        ),
+                        flush=True,
+                    )
+                needs_policy = outside or (
+                    viewable
+                    and attrs.width >= 100
+                    and attrs.height >= 100
+                    and (attrs.width < display_width or attrs.height < display_height)
+                )
+                if not needs_policy:
+                    continue
+                width = min(max(attrs.width, 1), display_width)
+                height = min(max(attrs.height, 1), display_height)
+                desired_x = max((display_width - width) // 2, 0)
+                desired_y = max((display_height - height) // 2, 0)
+                if parent == root:
+                    x, y = desired_x, desired_y
+                else:
+                    # XMoveWindow takes coordinates relative to the current
+                    # parent.  Translate that parent to the root so nested
+                    # CEF/Xwayland surfaces are centred without resizing.
+                    parent_x = ctypes.c_int()
+                    parent_y = ctypes.c_int()
+                    child = Window()
+                    if not x11.XTranslateCoordinates(
+                        display,
+                        parent,
+                        root,
+                        0,
+                        0,
+                        ctypes.byref(parent_x),
+                        ctypes.byref(parent_y),
+                        ctypes.byref(child),
+                    ):
+                        continue
+                    x = desired_x - parent_x.value
+                    y = desired_y - parent_y.value
+                # Preserve Steam's requested size and only provide the
+                # placement a window manager would normally choose.  Resizing
+                # a CEF surface can trigger a second navigation and blank it.
+                x11.XMoveWindow(display, window, x, y)
+                x11.XMapRaised(display, window)
+                x11.XRaiseWindow(display, window)
+                moved.add(int(window))
+                changed = True
+            if changed:
+                x11.XFlush(display)
+            x11.XSync(display, 0)
+            time.sleep(interval)
+        if moved:
+            print("STEARLIGHT VM X11 CLAMP: centered %d window(s)" % len(moved), flush=True)
+    finally:
+        x11.XCloseDisplay(display)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

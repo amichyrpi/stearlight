@@ -1,0 +1,5 @@
+#!/bin/sh
+# There are no SteamOS image branches on this appliance.  The Steam client
+# branch is selected by package/beta during bootstrap and remains user-owned.
+printf '%s\n' 'SteamOS image branches are not applicable.' >&2
+exit 0
