@@ -117,5 +117,9 @@ SDL_Window *svrt_ui_window(svrt_ui *ui);
 SDL_Renderer *svrt_ui_renderer(svrt_ui *ui);
 void svrt_ui_set_client_frame(svrt_ui *ui, SDL_Texture *frame);
 void svrt_ui_set_streaming_mode(svrt_ui *ui, int enabled);
+/* Return non-zero once the userspace boot movie has reached its final frame.
+ * The standalone OS uses this to hand DRM ownership to gamescope without
+ * skipping the stereo boot animation. */
+int svrt_ui_boot_finished(const svrt_ui *ui);
 int svrt_ui_take_connection_request(svrt_ui *ui);
 svrt_ui_action svrt_ui_take_action(svrt_ui *ui);

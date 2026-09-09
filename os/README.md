@@ -8,8 +8,9 @@ an appliance image, not an in-place conversion of Raspberry Pi OS.
 - Alpine edge with OpenRC and the Raspberry Pi downstream `linux-rpi` kernel.
 - Native aarch64 Mesa/V3DV, Gamescope, PipeWire/WirePlumber, and Monado/OpenXR.
 - A Debian glibc runtime isolated with Bubblewrap for the Steam ARM64 beta.
-- Steam Gamepad UI inside Gamescope, captured by the standalone Stearlight
-  stereo shell (the OS image does not start the Steam Link receiver).
+- Steam Gamepad UI rendered by the standalone Stearlight stereo shell (the OS
+  image does not start the Steam Link receiver). Direct Gamescope remains an
+  explicit `STEARLIGHT_SESSION_MODE=gamescope` diagnostic override.
   The VM build runs Valve's bootstrap once and includes the extracted client
   payload, so VM boots do not repeat the 500 MB client download.
 - A 2880x1600 side-by-side scanout at 60 Hz (1440x1600 per eye), pure black world, and
@@ -101,8 +102,8 @@ sudo reboot
 
 The script preserves all unrelated EEPROM keys and schedules only
 `DISABLE_HDMI=1` and `BOOT_UART=0`. The image itself also sets
-`disable_splash=1`, `quiet`, `loglevel=0`, `logo.nologo`, and moves the hidden
-kernel console to tty12. Local password gettys are disabled, so the screen
+`disable_splash=1`, `quiet`, `loglevel=0`, `logo.nologo`, and removes the
+visible framebuffer console. Local password gettys are disabled, so the screen
 stays black until the startup movie can be shown
 after DRM is ready.
 

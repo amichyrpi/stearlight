@@ -9,6 +9,12 @@
 
 set -euo pipefail
 
+# Match the upstream session's descriptor budget. Steam's WebHelper, CEF
+# children, XWayland and the Gamescope control sockets are all descendants of
+# this shell, so a low inherited limit can break the welcome pipeline after a
+# successful first launch.
+ulimit -n 524288 2>/dev/null || true
+
 client=${1:-steam}
 config_usr=/usr/share/gamescope-session-plus/sessions.d
 config_etc=/etc/gamescope-session-plus/sessions.d
@@ -54,6 +60,12 @@ set +a
 export ENABLE_GAMESCOPE_WSI=1
 export QT_QPA_PLATFORM=xcb
 export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+# These are the common SteamOS session defaults. In particular, do not make
+# the generic WAYLAND_DISPLAY name point at Gamescope's private endpoint: the
+# Steam client uses GAMESCOPE_WAYLAND_DISPLAY for that contract, while CEF
+# should continue to create its WebHelper X11 surface on Gamescope's XWayland.
+export vk_xwayland_wait_ready=false
+export GAMESCOPE_DISABLE_ASYNC_FLIPS=1
 export GAMESCOPE_MODE_SAVE_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/gamescope/modes.cfg"
 export GAMESCOPE_PATCHED_EDID_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/gamescope/edid.bin"
 mkdir -p "$(dirname "$GAMESCOPE_MODE_SAVE_FILE")"
@@ -130,9 +142,27 @@ if [[ -z "$response_x_display" || -z "$response_wl_display" ]]; then
 fi
 export DISPLAY="$response_x_display"
 export GAMESCOPE_WAYLAND_DISPLAY="$response_wl_display"
-export WAYLAND_DISPLAY="$response_wl_display"
+# Pressure-vessel resolves a relative Gamescope name against its own runtime
+# directory before entering the container. Publish the exact host socket too;
+# this remains compatible with wl_display_connect() and lets pressure-vessel
+# bind the socket even when /run/user is a symlink or a separately-mounted
+# runtime directory.
+gamescope_socket="$response_wl_display"
+if [[ "$gamescope_socket" != /* ]]; then
+    gamescope_socket="$runtime_dir/$gamescope_socket"
+fi
+export SVRT_STEAM_XWAYLAND_DISPLAY="$response_x_display"
+export SVRT_STEAM_GAMESCOPE_WAYLAND_DISPLAY="$gamescope_socket"
+export GAMESCOPE_WAYLAND_DISPLAY="$gamescope_socket"
 export XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP=gamescope
+socket_state=missing
+if [[ -S "$gamescope_socket" ]]; then
+    socket_state=present
+fi
+printf 'STEARLIGHT SESSION DISPLAY=%s GAMESCOPE=%s SOCKET=%s SOCKET_STATE=%s XDG_RUNTIME_DIR=%s\n' \
+    "$response_x_display" "$GAMESCOPE_WAYLAND_DISPLAY" "$response_wl_display" \
+    "$socket_state" "$runtime_dir" >&2
 printf 'STEARLIGHT GAMESCOPE READY %sx%s @ %sHz\n' \
     "$SCREEN_WIDTH" "$SCREEN_HEIGHT" "$NESTED_REFRESH" >&2
 

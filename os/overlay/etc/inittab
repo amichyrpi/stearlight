@@ -1,8 +1,8 @@
 # Stearlight OS is an appliance: OpenRC starts the graphical shell. Never
 # expose a password getty on the headset display.
-::sysinit:/sbin/openrc sysinit
-::sysinit:/sbin/openrc boot
-::wait:/sbin/openrc default
+::sysinit:/sbin/openrc -q sysinit
+::sysinit:/sbin/openrc -q boot
+::wait:/sbin/openrc -qq default
 
 ::ctrlaltdel:/sbin/reboot
-::shutdown:/sbin/openrc shutdown
+::shutdown:/sbin/openrc -q shutdown

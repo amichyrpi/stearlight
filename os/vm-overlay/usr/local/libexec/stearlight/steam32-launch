@@ -65,6 +65,19 @@ if [ -r /usr/local/libexec/stearlight/steam-webhelper-env ]; then
     export BASH_ENV=/usr/local/libexec/stearlight/steam-webhelper-env
 fi
 
+# Steam reconstructs the WebHelper environment after this launcher returns;
+# that path drops DISPLAY and GAMESCOPE_WAYLAND_DISPLAY before it invokes
+# steamwebhelper.sh.  BASH_ENV is not reliable across that service boundary.
+# Point only the VM's WebHelper entry point at a small host-side trampoline so
+# the two session values are restored immediately before Valve's real
+# pressure-vessel entry point is called.  Keep the opt-in direct diagnostic
+# entry point above authoritative when it is requested.
+if [ "${SVRT_STEAM_DIRECT_WEBHELPER:-0}" != 1 ] &&
+   [ "${SVRT_STEAM_FORCE_DIRECT_CLIENT:-0}" != 1 ] &&
+   [ -x /usr/local/libexec/stearlight/steamrt-webhelper/_v2-entry-point ]; then
+    export STEAM_RUNTIME_STEAMRT=/usr/local/libexec/stearlight/steamrt-webhelper
+fi
+
 # The VM uses Valve's x86 bootstrap.  The bootstrap is deliberately entered
 # through the extracted steam.sh script instead of jumping straight to
 # steamrt64/steam: steam.sh sets STEAM_RUNTIME_LIBRARY_PATH, unpacks/pins the
@@ -103,7 +116,40 @@ EOF
 
 launch_client() {
     export STEAM_RUNTIME=1
-    if [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = legacy ]; then
+    # su-exec changes the uid/gid but intentionally preserves the caller's
+    # environment. vm-console starts as root, so without these assignments
+    # Steam Runtime propagates USER=root into WebHelper even though the
+    # process is running as stearlight. SteamOS keeps the identity variables
+    # consistent; WebUI transport and CEF both rely on that session contract.
+    export USER="${SVRT_STEAM_USER:-stearlight}"
+    export LOGNAME="$USER"
+    export HOME="${SVRT_STEAM_HOME:-/home/$USER}"
+    # Keep the display handoff explicit at the Steam boundary.  Steam's
+    # bootstrap may reconstruct the WebHelper environment, while these
+    # SVRT_* values are restored by steam-webhelper-env immediately before
+    # pressure-vessel starts the CEF process.
+    if [ -n "${SVRT_STEAM_XWAYLAND_DISPLAY:-}" ]; then
+        export DISPLAY="$SVRT_STEAM_XWAYLAND_DISPLAY"
+    fi
+    if [ -n "${SVRT_STEAM_GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+        export GAMESCOPE_WAYLAND_DISPLAY="$SVRT_STEAM_GAMESCOPE_WAYLAND_DISPLAY"
+    fi
+    # The Windows QEMU VGA device has no accelerated GL implementation. Keep
+    # CEF's compositor enabled, but make its X11/ANGLE path choose llvmpipe so
+    # Steam does not restart the GPU process and then leave WebHelper blank.
+    # This is set only for the Steam process tree; Gamescope itself remains on
+    # its native Vulkan software path.
+    if [ "${SVRT_STEAM_SOFTWARE_GL:-0}" != 0 ]; then
+        export LIBGL_ALWAYS_SOFTWARE=1
+        export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+    fi
+    # The VM supervisor supplies these as an environment string because the
+    # C bridge owns the initial Steam exec.  Expand only this image-controlled
+    # diagnostic option set at the final Steam boundary; the production ARM64
+    # launcher does not define it.
+    vm_cef_args=${SVRT_VM_CEF_ARGS:-}
+    if [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = legacy ] ||
+       [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = classic ]; then
         # QEMU has no Gamescope protocol. The legacy X11 client is a bounded
         # diagnostic fallback that gives the VM a real Steam window while the
         # hardware session continues to use the SteamOS Gamepad UI.
@@ -119,9 +165,11 @@ launch_client() {
     # does not exist and rejects every steamloopback connection.  Production
     # DRM sessions retain the SteamOS/Gamescope contract.
     if [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = legacy ] ||
-       [ "${SVRT_VM_SESSION_MODE:-}" = x11 ] ||
-       [ "${XDG_SESSION_TYPE:-}" = x11 ] ||
-       [ "${SVRT_STEAM_COMPOSITOR:-}" = weston ]; then
+       [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = classic ] ||
+       { [ "${SVRT_VM_SESSION_MODE:-}" = x11 ] &&
+         [ "${SVRT_STEAM_COMPOSITOR:-}" != weston ]; } ||
+       { [ "${XDG_SESSION_TYPE:-}" = x11 ] &&
+         [ "${SVRT_STEAM_COMPOSITOR:-}" != weston ]; }; then
         export STEAM_GAMESCOPE=0
         export STEAM_GAMESCOPE_WAYLAND=0
     else
@@ -142,7 +190,7 @@ launch_client() {
             # it steamui.so cannot resolve its bundled libvpx/libav* payload.
             export SVRT_STEAM_PLATFORM_LIBRARY_PATH="$steam_root/ubuntu12_32:$steam_root/steamrt32"
             exec "$steam_root/steam.sh" --run \
-                "$steam_root/ubuntu12_32/steam" "$@"
+                "$steam_root/ubuntu12_32/steam" "$@" $vm_cef_args
         fi
         # Do not export an ABI-specific DRI directory here.  steam.sh's
         # bootstrap and its 64-bit WebHelper share this environment, so a
@@ -150,7 +198,7 @@ launch_client() {
         # standard multiarch DRI directories are ABI-aware and are already
         # present in the image; the patched run.sh still selects the private
         # seed when it is explicitly used for a single-ABI child.
-        exec "$steam_root/steam.sh" "$@"
+        exec "$steam_root/steam.sh" "$@" $vm_cef_args
     fi
     # The direct SteamRT binary is used in the VM so no Alpine/musl utility is
     # ever executed with Steam's glibc LD_LIBRARY_PATH.  steam.sh cannot be
@@ -174,16 +222,18 @@ launch_client() {
     export VK_ICD_FILENAMES="$seed_root/stearlight_libs_64/lvp_icd.json"
     unset LIBGL_DRIVERS_PATH
     if [ -x "$steam_root/steamrt64/steam" ]; then
-        exec "$steam_root/steamrt64/steam" "$@"
+        exec "$steam_root/steamrt64/steam" "$@" $vm_cef_args
     fi
-    exec /usr/bin/steam "$@"
+    exec /usr/bin/steam "$@" $vm_cef_args
 }
 
 # The VM has no physical DRM/Vulkan presentation device.  Run a tiny
 # software Wayland compositor nested on the private Xvfb display instead of
 # asking Steam's Gamepad UI to create an off-screen surface.  Weston presents
 # one ordinary X11 window, which the shell can capture without changing the
-# production Pi compositor path.  Keep this opt-in so the launcher remains a
+# production Pi compositor path.  XWayland is required here because Steam's
+# CEF/WebHelper still creates X11 windows after Steam itself uses Wayland.
+# Keep this opt-in so the launcher remains a
 # plain Steam entry point outside the VM.
 if [ "${SVRT_STEAM_COMPOSITOR:-}" = weston ]; then
     runtime_dir=${XDG_RUNTIME_DIR:-/run/user/1000}
@@ -201,7 +251,7 @@ if [ "${SVRT_STEAM_COMPOSITOR:-}" = weston ]; then
     # starts and turn into an unexplained black capture.
     # Weston 16 resolves the backend selector name through its built-in module
     # search path; an absolute plugin path is rejected as an unknown backend.
-    weston_args="--backend=x11 --renderer=pixman --socket=$socket --width=1024 --height=640 --idle-time=0 --no-config"
+    weston_args="--backend=x11 --renderer=pixman --xwayland --socket=$socket --width=1024 --height=640 --idle-time=0 --no-config"
     # Weston and its Xwayland child are native 64-bit Alpine processes.  The
     # Steam bootstrap below is deliberately started with the 32-bit seed, but
     # leaking that DRI path into Weston makes Xwayland's GL loader open the
@@ -244,6 +294,15 @@ if [ "${SVRT_STEAM_COMPOSITOR:-}" = weston ]; then
         printf '%s\n' 'STEARLIGHT: nested Weston failed to start' >&2
         exit 1
     fi
+    # Weston owns the parent Xvfb display (:8), but its XWayland server is a
+    # separate X display.  CEF/WebHelper is still an X11 client even when the
+    # Gamepad UI is Wayland-native; leaving DISPLAY at :8 makes that child
+    # paint behind Weston instead of into the compositor surface.  Weston
+    # allocates :1 for the first nested XWayland server in this VM.  Allow an
+    # explicit display override for hosts that already use that display.
+    export DISPLAY="${SVRT_STEAM_XWAYLAND_DISPLAY:-:1}"
+    export SDL_VIDEODRIVER="${SVRT_STEAM_SDL_VIDEODRIVER:-wayland,x11}"
+    printf 'STEARLIGHT XWAYLAND DISPLAY %s\n' "$DISPLAY"
     export WAYLAND_DISPLAY="$socket"
     # Steam's display manager does not discover an arbitrary Wayland socket
     # from WAYLAND_DISPLAY alone.  gamescope-session (and Armada's

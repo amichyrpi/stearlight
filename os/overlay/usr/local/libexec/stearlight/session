@@ -1,11 +1,12 @@
 #!/bin/sh
 set -eu
 
-# The appliance boots into the same gamescope-session contract as Armada so
-# Valve's own Gamepad UI owns the welcome/OOBE flow.  The older stereo shell is
-# retained as an explicit fallback for hardware bring-up (`vr-shell`), not as
-# a second competing compositor.
-export STEARLIGHT_SESSION_MODE=${STEARLIGHT_SESSION_MODE:-gamescope}
+# The appliance renders Valve's real Gamepad UI through the in-tree stereo
+# shell.  This is the normal Pi path: it captures the Steam surface once and
+# presents the same frame in both 1440x1600 eyes.  Direct Gamescope remains an
+# explicit bring-up override (`STEARLIGHT_SESSION_MODE=gamescope`) for boards
+# where the shell's X11 capture path is being diagnosed.
+export STEARLIGHT_SESSION_MODE=${STEARLIGHT_SESSION_MODE:-shell}
 
 export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_SESSION_TYPE=tty
@@ -15,10 +16,22 @@ export SVRT_STEAM_HOME=/home/stearlight
 export SVRT_STEAM_USER=stearlight
 export SVRT_STEAM_PREPARE=/usr/local/libexec/stearlight/steam-firstboot
 export SVRT_STEAMUI_PATCH=/usr/local/libexec/stearlight/patch-steamui-network
+# Steam verifies every WebUI chunk before starting; keep the optional network
+# workaround off by default so it cannot force an update loop.
+export SVRT_STEAMUI_PATCH_ENABLED=${SVRT_STEAMUI_PATCH_ENABLED:-0}
 export SVRT_STEAM_LAUNCHER=/usr/local/libexec/stearlight/launch-steam
 export SVRT_STEAM_RUNTIME_SEED=/usr/lib/steam
 export STEARLIGHT_STEAM_BETA=steamdeck_publicbeta
-export SVRT_USE_GAMESCOPE=1
+# Do not start a second nested Gamescope from stearlight-shell.  The shell's
+# Steam bridge uses a private Xvfb display and maps the captured Valve surface
+# into the two-eye KMS renderer.  The explicit Gamescope session below keeps
+# its native path when selected by the operator.
+if [ "$STEARLIGHT_SESSION_MODE" != gamescope ]; then
+  export SVRT_USE_GAMESCOPE=0
+  export SVRT_STEAM_FORCE_WAYLAND=0
+else
+  export SVRT_USE_GAMESCOPE=${SVRT_USE_GAMESCOPE:-1}
+fi
 export SVRT_START_IN_STREAMING_MODE=0
 export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
 export STEAM_BOOTSTRAP_CONFIG="${XDG_CONFIG_HOME:-$SVRT_STEAM_HOME/.config}/gamescope/bootstrap.cfg"
@@ -86,13 +99,25 @@ fi
 
 chown -R stearlight:stearlight "$XDG_RUNTIME_DIR"
 
+# Render the userspace boot movie before gamescope claims DRM/KMS.  This is a
+# real SDL/KMS surface (not a text splash), and ui.c renders the same frame to
+# both 1440x1600 eyes.  The helper exits at the movie's final frame so
+# gamescope can take DRM ownership without a compositor race.  Set
+# STEARLIGHT_BOOT_SCREEN=0 only for low-level bring-up diagnostics.
+if [ "${STEARLIGHT_BOOT_SCREEN:-1}" = 1 ] &&
+   [ -x /usr/bin/stearlight-shell ]; then
+  openvt -c 1 -f -s -w -- su-exec stearlight env SVRT_BOOT_ONLY=1 \
+    /usr/bin/stearlight-shell >>/var/log/stearlight-ui.log 2>&1 || true
+fi
+
 # Steam owns the first-run OOBE, but a client update can replace the WebUI
 # bundle between boots. Reapply the tiny optional-network compatibility patch
 # immediately before gamescope starts so the welcome surface is created.
 if [ -x "$SVRT_STEAM_PREPARE" ]; then
   "$SVRT_STEAM_PREPARE" >>/var/log/stearlight-ui.log 2>&1 || true
 fi
-if [ -x "$SVRT_STEAMUI_PATCH" ]; then
+if [ "${SVRT_STEAMUI_PATCH_ENABLED:-0}" = 1 ] &&
+   [ -x "$SVRT_STEAMUI_PATCH" ]; then
   "$SVRT_STEAMUI_PATCH" >>/var/log/stearlight-ui.log 2>&1 || true
 fi
 

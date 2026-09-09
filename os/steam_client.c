@@ -1,6 +1,7 @@
 #include "steam_client.h"
 
 #include <X11/Xutil.h>
+#include <X11/extensions/Xcomposite.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -48,6 +49,11 @@ static const char *steam_prepare(void) {
     const char *configured = getenv("SVRT_STEAM_PREPARE");
     if (configured && configured[0]) return configured;
     return "/usr/local/libexec/stearlight/steam-firstboot";
+}
+
+static int steam_has_wayland_compositor(void) {
+    const char *compositor = getenv("SVRT_STEAM_COMPOSITOR");
+    return compositor && strcmp(compositor, "weston") == 0;
 }
 
 static int steam_uses_classic_ui(void) {
@@ -102,7 +108,7 @@ static void child_environment(void) {
                                   strcmp(gamescope, "0") != 0 &&
                                   !steam_uses_classic_ui();
     if ((force_wayland && force_wayland[0] && strcmp(force_wayland, "0") != 0) ||
-        gamescope_enabled)
+        gamescope_enabled || steam_has_wayland_compositor())
         setenv("STEAM_GAMESCOPE_WAYLAND", "1", 1);
     else
         setenv("STEAM_GAMESCOPE_WAYLAND", "0", 1);
@@ -255,7 +261,8 @@ static pid_t start_display(void) {
     const char *glx = getenv("SVRT_STEAM_XVFB_GLX");
     if (!glx || !glx[0] || strcmp(glx, "0") != 0) {
         execlp("Xvfb", "Xvfb", STEARLIGHT_STEAM_DISPLAY, "-screen", "0",
-               "1024x640x24", "+extension", "GLX", "-ac",
+               "1024x640x24", "+extension", "GLX", "+extension",
+               "Composite", "-ac",
                "-nolisten", "tcp", "-noreset", NULL);
     } else {
         execlp("Xvfb", "Xvfb", STEARLIGHT_STEAM_DISPLAY, "-screen", "0",
@@ -414,6 +421,7 @@ static uint32_t ximage_channel(unsigned long pixel, unsigned long mask) {
  */
 typedef struct steam_window_candidate {
     unsigned long window;
+    unsigned long parent;
     int width;
     int height;
     int area;
@@ -434,6 +442,112 @@ static int capture_x_error_handler(Display *display, XErrorEvent *event) {
     return 0;
 }
 
+/* XQueryTree returns handles that may be destroyed by Chromium before the
+ * following XGetWindowAttributes call.  Xlib reports that race
+ * asynchronously; using its default handler would terminate the stereo shell
+ * and OpenRC would restart it, leaving a black framebuffer.  Keep each small
+ * query behind a scoped handler so a stale child is simply skipped. */
+static int query_tree_safe(Display *display, Window parent, Window *root,
+                           Window *returned_parent, Window **children,
+                           unsigned int *child_count) {
+    if (!display || !root || !returned_parent || !children || !child_count)
+        return 0;
+    XSync(display, False);
+    capture_x_error_code = 0;
+    int (*previous_handler)(Display *, XErrorEvent *) =
+        XSetErrorHandler(capture_x_error_handler);
+    const Bool queried = XQueryTree(display, parent, root, returned_parent,
+                                    children, child_count);
+    XSync(display, False);
+    XSetErrorHandler(previous_handler);
+    if (capture_x_error_code) {
+        if (*children) XFree(*children);
+        *children = NULL;
+        *child_count = 0;
+        return 0;
+    }
+    return queried ? 1 : 0;
+}
+
+static int get_window_attributes_safe(Display *display, Window window,
+                                      XWindowAttributes *attributes) {
+    if (!display || !window || !attributes) return 0;
+    XSync(display, False);
+    capture_x_error_code = 0;
+    int (*previous_handler)(Display *, XErrorEvent *) =
+        XSetErrorHandler(capture_x_error_handler);
+    const int got_attributes =
+        XGetWindowAttributes(display, window, attributes);
+    XSync(display, False);
+    XSetErrorHandler(previous_handler);
+    return got_attributes && !capture_x_error_code;
+}
+
+static XImage *get_window_image_safe(Display *display, Window window,
+                                     int width, int height, int depth) {
+    if (!display || !window || width <= 0 || height <= 0) return NULL;
+    /* XGetImage's plane mask is validated against the drawable depth by a
+       few Xvfb/GLX combinations.  AllPlanes is normally equivalent, but the
+       server rejects the 64-bit Xlib value for a depth-24 drawable with
+       BadMatch.  Restrict the mask to the actual visual width. */
+    unsigned long plane_mask = AllPlanes;
+    if (depth > 0 && depth < (int)(sizeof(unsigned long) * 8U))
+        plane_mask = (1UL << (unsigned int)depth) - 1UL;
+    XSync(display, False);
+    capture_x_error_code = 0;
+    int (*previous_handler)(Display *, XErrorEvent *) =
+        XSetErrorHandler(capture_x_error_handler);
+    XImage *image = XGetImage(display, window, 0, 0, (unsigned int)width,
+                              (unsigned int)height, plane_mask, ZPixmap);
+    XSync(display, False);
+    XSetErrorHandler(previous_handler);
+    if (capture_x_error_code) {
+        if (image) XDestroyImage(image);
+        return NULL;
+    }
+    return image;
+}
+
+/* GLX/CEF top-level windows can be valid, viewable InputOutput drawables but
+   still reject XGetImage because their pixels live in a compositor-owned
+   buffer.  Name the server-side Composite pixmap and read that pixmap
+   instead.  Xvfb exposes Composite even when it cannot present GLX directly,
+   so this also keeps the VM path deterministic. */
+static XImage *get_window_composite_image_safe(Display *display, Window window,
+                                               int width, int height,
+                                               int depth) {
+    if (!display || !window || width <= 0 || height <= 0) return NULL;
+    int event_base = 0;
+    int error_base = 0;
+    if (!XCompositeQueryExtension(display, &event_base, &error_base))
+        return NULL;
+    XSync(display, False);
+    capture_x_error_code = 0;
+    int (*previous_handler)(Display *, XErrorEvent *) =
+        XSetErrorHandler(capture_x_error_handler);
+    Pixmap pixmap = XCompositeNameWindowPixmap(display, window);
+    XSync(display, False);
+    if (capture_x_error_code || !pixmap) {
+        XSetErrorHandler(previous_handler);
+        if (pixmap) XFreePixmap(display, pixmap);
+        return NULL;
+    }
+    unsigned long plane_mask = AllPlanes;
+    if (depth > 0 && depth < (int)(sizeof(unsigned long) * 8U))
+        plane_mask = (1UL << (unsigned int)depth) - 1UL;
+    capture_x_error_code = 0;
+    XImage *image = XGetImage(display, pixmap, 0, 0, (unsigned int)width,
+                              (unsigned int)height, plane_mask, ZPixmap);
+    XSync(display, False);
+    XFreePixmap(display, pixmap);
+    XSetErrorHandler(previous_handler);
+    if (capture_x_error_code) {
+        if (image) XDestroyImage(image);
+        return NULL;
+    }
+    return image;
+}
+
 static void find_content_window(Display *display, Window parent,
                                 steam_window_candidate *best) {
     if (!display || !best) return;
@@ -442,8 +556,8 @@ static void find_content_window(Display *display, Window parent,
     Window returned_parent = 0;
     Window *children = NULL;
     unsigned int child_count = 0;
-    if (!XQueryTree(display, parent, &root, &returned_parent, &children,
-                    &child_count))
+    if (!query_tree_safe(display, parent, &root, &returned_parent, &children,
+                         &child_count))
         return;
 
     static Window diagnostic_windows[128];
@@ -452,8 +566,8 @@ static void find_content_window(Display *display, Window parent,
 
     for (unsigned int index = 0; index < child_count; ++index) {
         XWindowAttributes attributes;
-        const int got_attributes =
-            XGetWindowAttributes(display, children[index], &attributes);
+        const int got_attributes = get_window_attributes_safe(
+            display, children[index], &attributes);
         if (got_attributes && trace_x11 && trace_x11[0] != '0' &&
             diagnostic_count < 128U) {
             int already_reported = 0;
@@ -479,6 +593,7 @@ static void find_content_window(Display *display, Window parent,
             if (area > best->area ||
                 (area == best->area && attributes.depth > best->depth)) {
                 best->window = children[index];
+                best->parent = parent;
                 best->width = attributes.width;
                 best->height = attributes.height;
                 best->area = area;
@@ -499,17 +614,17 @@ static XImage *capture_steam_window(stearlight_steam_client *client) {
         Window tree_parent = 0;
         Window *tree_children = NULL;
         unsigned int tree_count = 0;
-        const Bool queried = XQueryTree(display, (Window)client->root,
-                                         &tree_root, &tree_parent,
-                                         &tree_children, &tree_count);
+        const Bool queried = query_tree_safe(
+            display, (Window)client->root, &tree_root, &tree_parent,
+            &tree_children, &tree_count);
         fprintf(stderr,
                 "STEARLIGHT STEAM: initial X11 tree query=%s children=%u\n",
                 queried ? "ok" : "failed", queried ? tree_count : 0);
         if (queried) {
             for (unsigned int index = 0; index < tree_count; ++index) {
                 XWindowAttributes attributes;
-                if (!XGetWindowAttributes(display, tree_children[index],
-                                          &attributes))
+                if (!get_window_attributes_safe(display, tree_children[index],
+                                                &attributes))
                     continue;
                 fprintf(stderr,
                         "STEARLIGHT STEAM: X11 child=0x%lx map=%d size=%dx%d depth=%d\n",
@@ -527,8 +642,8 @@ static XImage *capture_steam_window(stearlight_steam_client *client) {
         Window parent = 0;
         Window *children = NULL;
         unsigned int count = 0;
-        const Bool queried = XQueryTree(display, (Window)client->root, &root,
-                                         &parent, &children, &count);
+        const Bool queried = query_tree_safe(display, (Window)client->root,
+                                             &root, &parent, &children, &count);
         fprintf(stderr,
                 "STEARLIGHT STEAM: X11 root=0x%lx query=%s children=%u\n",
                 client->root, queried ? "ok" : "failed", queried ? count : 0);
@@ -547,8 +662,8 @@ static XImage *capture_steam_window(stearlight_steam_client *client) {
             Window parent = 0;
             Window *children = NULL;
             unsigned int count = 0;
-            if (XQueryTree(display, (Window)client->root, &root, &parent,
-                           &children, &count)) {
+            if (query_tree_safe(display, (Window)client->root, &root, &parent,
+                                &children, &count)) {
                 fprintf(stderr,
                         "STEARLIGHT STEAM: X11 content tree empty (root=0x%lx children=%u)\n",
                         (unsigned long)client->root, count);
@@ -571,28 +686,69 @@ static XImage *capture_steam_window(stearlight_steam_client *client) {
                 best.window, best.width, best.height);
         client->content_window = best.window;
     }
-    /* X requests are asynchronous.  Flush the tree query before installing
-       the scoped handler so an unrelated earlier error is not attributed to
-       this capture. */
-    XSync(display, False);
-    capture_x_error_code = 0;
-    int (*previous_handler)(Display *, XErrorEvent *) =
-        XSetErrorHandler(capture_x_error_handler);
-    XImage *image = XGetImage(display, (Window)best.window, 0, 0,
-                              (unsigned int)best.width,
-                              (unsigned int)best.height, AllPlanes, ZPixmap);
-    XSync(display, False);
-    XSetErrorHandler(previous_handler);
-    if (capture_x_error_code) {
+    XImage *image = get_window_image_safe(display, (Window)best.window,
+                                          best.width, best.height, best.depth);
+    const int initial_image_error = capture_x_error_code;
+    if (!image) {
+        XImage *composite_image = get_window_composite_image_safe(
+            display, (Window)best.window, best.width, best.height, best.depth);
+        if (composite_image) {
+            fprintf(stderr,
+                    "STEARLIGHT STEAM: using Composite pixmap for window 0x%lx (%dx%d)\n",
+                    best.window, best.width, best.height);
+            image = composite_image;
+        }
+    }
+    /* Chromium frequently places its visible pixels in an ARGB child that
+       has no server-side backing store.  XGetImage then returns BadMatch even
+       though the mapped frame immediately above it is capturable.  Retry the
+       nearest parent before giving up; this keeps the Steam welcome surface
+       visible while WebHelper swaps its child windows. */
+    if (!image && best.parent && best.parent != (unsigned long)client->root) {
+        XWindowAttributes parent_attributes;
+        if (get_window_attributes_safe(display, (Window)best.parent,
+                                       &parent_attributes) &&
+            parent_attributes.map_state == IsViewable &&
+            parent_attributes.class != InputOnly &&
+            parent_attributes.depth >= 16 && parent_attributes.width >= 160 &&
+            parent_attributes.height >= 100) {
+            XImage *parent_image = get_window_image_safe(
+                display, (Window)best.parent, parent_attributes.width,
+                parent_attributes.height, parent_attributes.depth);
+            if (!parent_image)
+                parent_image = get_window_composite_image_safe(
+                    display, (Window)best.parent, parent_attributes.width,
+                    parent_attributes.height, parent_attributes.depth);
+            if (parent_image) {
+                fprintf(stderr,
+                        "STEARLIGHT STEAM: using capturable parent 0x%lx for child 0x%lx (%dx%d)\n",
+                        best.parent, best.window, parent_attributes.width,
+                        parent_attributes.height);
+                best.window = best.parent;
+                best.width = parent_attributes.width;
+                best.height = parent_attributes.height;
+                client->content_window = best.window;
+                image = parent_image;
+            }
+        }
+    }
+    if (!image) {
         static unsigned int error_reports;
         if (error_reports < 8U) {
+            XWindowAttributes failed_attributes;
+            const int got_failed_attributes = get_window_attributes_safe(
+                display, (Window)best.window, &failed_attributes);
             fprintf(stderr,
-                    "STEARLIGHT STEAM: XGetImage rejected window 0x%lx (error=%d)\n",
-                    best.window, capture_x_error_code);
+                    "STEARLIGHT STEAM: XGetImage rejected window 0x%lx parent=0x%lx (%dx%d depth=%d map=%d class=%d attrs=%s error=%d)\n",
+                    best.window, best.parent, best.width, best.height,
+                    got_failed_attributes ? failed_attributes.depth : 0,
+                    got_failed_attributes ? failed_attributes.map_state : 0,
+                    got_failed_attributes ? failed_attributes.class : 0,
+                    got_failed_attributes ? "ok" : "failed",
+                    initial_image_error ? initial_image_error
+                                        : capture_x_error_code);
             ++error_reports;
         }
-        if (image) XDestroyImage(image);
-        return NULL;
     }
     return image;
 }
@@ -660,14 +816,16 @@ void stearlight_steam_client_update(stearlight_steam_client *client,
         client->frame_height = image->height;
     }
     if (client->frame) {
+        int texture_updated = 0;
         const int native_argb8888 =
             image->bits_per_pixel == 32 && image->byte_order == LSBFirst &&
             image->red_mask == 0x00ff0000UL &&
             image->green_mask == 0x0000ff00UL &&
             image->blue_mask == 0x000000ffUL;
         if (native_argb8888) {
-            SDL_UpdateTexture(client->frame, NULL, image->data,
-                              image->bytes_per_line);
+            texture_updated = SDL_UpdateTexture(client->frame, NULL,
+                                                image->data,
+                                                image->bytes_per_line) == 0;
         } else {
             /* Xvfb normally exposes 32 bpp for a depth-24 window.  Keep a
                mask-aware fallback for real Pi X servers that expose 16/24
@@ -688,10 +846,19 @@ void stearlight_steam_client_update(stearlight_steam_client *client,
                     }
                 }
                 SDL_UnlockTexture(client->frame);
+                texture_updated = 1;
             }
         }
-        client->state = STEARLIGHT_STEAM_CLIENT_RUNNING;
-        client->detail[0] = '\0';
+        if (texture_updated) {
+            if (!client->frame_announced) {
+                fprintf(stderr,
+                        "STEARLIGHT STEAM FRAME READY %dx%d window=0x%lx\n",
+                        image->width, image->height, client->content_window);
+                client->frame_announced = 1;
+            }
+            client->state = STEARLIGHT_STEAM_CLIENT_RUNNING;
+            client->detail[0] = '\0';
+        }
     }
     XDestroyImage(image);
 }

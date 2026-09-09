@@ -102,19 +102,43 @@ launch_steam
 deadline=$((SECONDS + timeout_seconds))
 ready=0
 steam_exit_seen=''
+ready_candidate_seen=''
 while [ "$SECONDS" -lt "$deadline" ]; do
-    # The bootstrap creates steam.sh and ubuntu12_32/steam first.  The Gamepad UI
-    # payload is only considered complete once steamui has a non-empty file.
+    # The bootstrap creates steam.sh and ubuntu12_32/steam first.  A few small
+    # steamui files appear before Valve has finished installing the client, so
+    # do not bake the image at that point.  The installed manifest is written
+    # only after the pending client archive has been extracted and is the
+    # marker Steam itself uses to compare the local client with the CDN.
     steamui_file=''
     if [ -d "$steam_root/steamui" ]; then
         steamui_file=$(find "$steam_root/steamui" -type f -size +1c \
             -print -quit 2>/dev/null || true)
     fi
+    installed_manifest=''
+    if [ -d "$steam_root/package" ]; then
+        installed_manifest=$(find "$steam_root/package" -maxdepth 1 -type f \
+            -name 'steam_client_*.installed' -size +1c \
+            -print -quit 2>/dev/null || true)
+    fi
     if { [ -x "$steam_root/steam.sh" ] ||
          [ -x "$steam_root/ubuntu12_32/steam" ]; } &&
-       [ -n "$steamui_file" ]; then
-        ready=1
-        break
+       [ -n "$steamui_file" ] && [ -n "$installed_manifest" ]; then
+        # Give Steam a short grace period to finish its -exitsteam shutdown.
+        # This avoids copying a tree while the final updater/restart still has
+        # files open, but also prevents a stuck UI process from consuming the
+        # whole build timeout after the durable install marker is present.
+        if [ -z "$ready_candidate_seen" ]; then
+            ready_candidate_seen=$SECONDS
+            printf 'Steam client install marker appeared: %s\n' \
+                "$installed_manifest" >>"$log_file"
+        fi
+        if ! kill -0 "$steam_pid" 2>/dev/null ||
+           [ $((SECONDS - ready_candidate_seen)) -ge 30 ]; then
+            ready=1
+            break
+        fi
+    else
+        ready_candidate_seen=''
     fi
     if ! kill -0 "$steam_pid" 2>/dev/null; then
         # The launcher can exit once while installing the bootstrap.  Retry
@@ -158,6 +182,16 @@ if [ "$ready" -ne 1 ]; then
     restore_userns_probe
     exit 1
 fi
+
+installed_manifest=$(find "$steam_root/package" -maxdepth 1 -type f \
+    -name 'steam_client_*.installed' -size +1c -print -quit \
+    2>/dev/null || true)
+if [ -z "$installed_manifest" ]; then
+    echo 'Steam client install marker disappeared before image cleanup.' >&2
+    exit 1
+fi
+printf 'Steam client install complete: %s\n' "$installed_manifest" \
+    >>"$log_file"
 
 # Downloaded update archives are not needed after installation and can be
 # hundreds of megabytes.  Keep metrics and the beta choice so Steam can still

@@ -29,7 +29,7 @@ target_compile_definitions(stearlight-shell PRIVATE
   SVRT_ENFORCE_DISPLAY_MODE=1)
 target_compile_features(stearlight-shell PRIVATE c_std_11)
 target_link_libraries(stearlight-shell PRIVATE
-  X11::X11 PkgConfig::SVRT_SDL_TTF PkgConfig::SVRT_AVCODEC m)
+  X11::X11 Xcomposite PkgConfig::SVRT_SDL_TTF PkgConfig::SVRT_AVCODEC m)
 
 install(TARGETS stearlight-shell RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../assets/

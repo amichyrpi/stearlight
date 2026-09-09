@@ -8,6 +8,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -61,6 +62,22 @@ int main(void) {
         return 1;
     }
     fprintf(stderr, "SVRT UI INITIALIZED\n");
+
+    /* The DRM/KMS boot hand-off runs the same shell for the short userspace
+       splash, then gives the device back to gamescope.  Do not start Steam
+       during this phase: starting it would keep the first compositor alive
+       and either skip the movie or race the gamescope DRM takeover. */
+    const char *boot_only = getenv("SVRT_BOOT_ONLY");
+    if (boot_only && boot_only[0] && strcmp(boot_only, "0") != 0) {
+        uint64_t deadline_ns = 0;
+        while (!quitting && !svrt_ui_boot_finished(&ui)) {
+            const uint32_t now = SDL_GetTicks();
+            svrt_ui_draw(&ui, SVRT_UI_SEARCHING, NULL, NULL, NULL, now);
+            sleep_frame(&deadline_ns);
+        }
+        svrt_ui_close(&ui);
+        return 0;
+    }
 
     stearlight_steam_client steam;
     if (stearlight_steam_client_start(&steam, svrt_ui_renderer(&ui))) {

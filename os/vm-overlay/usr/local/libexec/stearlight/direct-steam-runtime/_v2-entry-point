@@ -12,16 +12,53 @@ if [ "${1-}" = -- ]; then
 fi
 [ "$#" -gt 0 ] || exit 64
 
+# Steam's runtime launch service preserves the SVRT session contract but may
+# omit the generic display variables while recreating WebHelper. The direct
+# VM path has no pressure-vessel layer to restore them, so do it here before
+# the CEF binary is exec'd in the host PID namespace.
+if [ -n "${SVRT_STEAM_XWAYLAND_DISPLAY:-}" ]; then
+    export DISPLAY="$SVRT_STEAM_XWAYLAND_DISPLAY"
+fi
+if [ -n "${SVRT_STEAM_GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+    export GAMESCOPE_WAYLAND_DISPLAY="$SVRT_STEAM_GAMESCOPE_WAYLAND_DISPLAY"
+fi
+# Steam reconstructs the WebHelper environment before it reaches this
+# VM-only entry point. Restore the software GL contract at the same boundary
+# so the X11 browser composer cannot select a hardware/GLX context that QEMU's
+# XWayland output does not provide.
+export LIBGL_ALWAYS_SOFTWARE=1
+export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+export GALLIUM_DRIVER=llvmpipe
+# The VM's XWayland exposes GLX but not a usable DRI3 present path.  Keep the
+# WebHelper on the DRI2 software path; Gamescope still receives its Wayland
+# surface through the native Vulkan WSI layer.
+export LIBGL_DRI3_DISABLE=1
+if [ "${SVRT_TRACE_STEAM_RUNTIME:-0}" != 0 ]; then
+    printf 'STEARLIGHT WEBHELPER DIRECT DISPLAY=%s GAMESCOPE=%s\n' \
+        "${DISPLAY-}" "${GAMESCOPE_WAYLAND_DISPLAY-}" >&2
+fi
+
 # steamwebhelper.sh normally invokes the pressure-vessel entry point with the
-# small sniper wrapper as its command.  Executing that wrapper directly from
-# the Alpine host fails because its relative `./steamwebhelper` lookup is
-# resolved from the wrong working directory.  Resolve it here and launch the
-# real helper binary in the caller's PID namespace.  This keeps the VM-only
-# transport workaround narrow while preserving Steam's generated arguments.
+# small sniper wrapper as its command.  Resolve its directory and launch the
+# real helper binary from the caller's PID namespace.  The wrapper itself is a
+# bash script and cannot inherit the glibc runtime path on Alpine: its musl
+# interpreter would bind to the Steam Runtime's glibc readline libraries.
+# Bypassing only this shell layer keeps the VM-only transport workaround
+# narrow while preserving Steam's generated arguments and helper identity.
 command=$1
 shift
 case "${command##*/}" in
-    steamwebhelper_sniper_wrap.sh|steamwebhelper.sh)
+    *steamwebhelper*)
+        # QEMU exposes XWayland without a GBM/EGL device. Chromium's default
+        # ANGLE probe therefore restarts the GPU process until WebHelper exits.
+        # Steam rebuilds the WebHelper environment before invoking this
+        # VM-only entry point, so SVRT_STEAM_SOFTWARE_GL may be absent here.
+        # Force CPU compositing at the final argv boundary instead; the
+        # production ARM session does not use this direct VM path.
+        case " $* " in
+            *" --disable-gpu "*) ;;
+            *) set -- "$@" --disable-gpu ;;
+        esac
         helper_dir=$(CDPATH= cd -- "$(dirname -- "$command")" && pwd)
         steam_root=${helper_dir%/ubuntu12_64}
         runtime_root="$steam_root/steamrt64/pv-runtime/steam-runtime-steamrt"
@@ -45,7 +82,50 @@ case "${command##*/}" in
                 break
             fi
         done
+        # A pressure-vessel container normally materializes the runtime's
+        # soname links in var/tmp. The VM-only direct path has no container,
+        # and the immutable Steam Runtime payload intentionally contains only
+        # fully-versioned files (for example libatspi.so.0.0.1). Without the
+        # links, the loader falls through to Alpine's musl GTK stack; that
+        # stack is not ABI-compatible with the Steam Runtime's GLib. Build a
+        # small per-user link farm instead of modifying either payload.
+        runtime_links=${XDG_RUNTIME_DIR:-/tmp}/stearlight-steamrt-links
+        if [ -n "$runtime_files" ]; then
+            mkdir -p "$runtime_links"
+            for library_dir in \
+                "$runtime_files/lib/x86_64-linux-gnu" \
+                "$runtime_files/usr/lib/x86_64-linux-gnu" \
+                "$runtime_files/lib" \
+                "$runtime_files/usr/lib"; do
+                [ -d "$library_dir" ] || continue
+                for library in "$library_dir"/*.so.*; do
+                    [ -f "$library" ] || continue
+                    filename=${library##*/}
+                    prefix=${filename%%.so.*}
+                    version=${filename#*.so.}
+                    version=${version%%.*}
+                    [ "$prefix" != "$filename" ] || continue
+                    [ -n "$version" ] || continue
+                    ln -sf "$library" "$runtime_links/$prefix.so.$version"
+                done
+            done
+        else
+            runtime_links=
+        fi
+        # The VM seeds swrast_dri.so outside Valve's replaceable SteamRT
+        # tree. That module was built with the newer C++ ABI in the matching
+        # seed; placing the old SteamRT libstdc++ first makes Mesa reject it
+        # with a missing GLIBCXX symbol and leaves GLX with a dead context.
+        seed_root=${SVRT_STEAM_RUNTIME_SEED:-/usr/lib/steam}
+        seed_libs="$seed_root/stearlight_libs_64"
         library_path="$helper_dir"
+        if [ -d "$seed_libs" ]; then
+            library_path="$library_path:$seed_libs"
+            export LIBGL_DRIVERS_PATH="$seed_libs/dri"
+        fi
+        if [ -n "$runtime_links" ]; then
+            library_path="$library_path:$runtime_links"
+        fi
         if [ -n "$runtime_tmp" ]; then
             library_path="$library_path:$runtime_tmp"
         fi
@@ -54,8 +134,11 @@ case "${command##*/}" in
         fi
         library_path="$library_path:/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib64:/usr/lib"
         export LD_LIBRARY_PATH="$library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-        if [ -x /lib64/ld-linux-x86-64.so.2 ]; then
-            exec /lib64/ld-linux-x86-64.so.2 --library-path "$LD_LIBRARY_PATH" "$helper_dir/steamwebhelper" "$@"
+        if [ "${SVRT_TRACE_STEAM_RUNTIME:-0}" != 0 ]; then
+            printf 'STEARLIGHT WEBHELPER DIRECT EXEC=%s ARGV=' \
+                "$helper_dir/steamwebhelper" >&2
+            printf '%s ' "$@" >&2
+            printf '\n' >&2
         fi
         exec "$helper_dir/steamwebhelper" "$@"
         ;;

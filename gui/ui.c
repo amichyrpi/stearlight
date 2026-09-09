@@ -1343,6 +1343,9 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
 
 SDL_Window *svrt_ui_window(svrt_ui *ui) { return ui ? ui->window : NULL; }
 SDL_Renderer *svrt_ui_renderer(svrt_ui *ui) { return ui ? ui->renderer : NULL; }
+int svrt_ui_boot_finished(const svrt_ui *ui) {
+    return !ui || !ui->boot || ui->boot->ended;
+}
 void svrt_ui_set_client_frame(svrt_ui *ui, SDL_Texture *frame) {
     if (ui) ui->client_frame = frame;
 }

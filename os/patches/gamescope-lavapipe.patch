@@ -1,0 +1,121 @@
+diff --git a/src/rendervulkan.hpp b/src/rendervulkan.hpp
+--- a/src/rendervulkan.hpp
++++ b/src/rendervulkan.hpp
+@@ -804,6 +804,7 @@ public:
+ 	inline int drmRenderFd() {return m_drmRendererFd;}
+ 	inline bool supportsModifiers() {return m_bSupportsModifiers;}
+ 	inline bool hasDrmPrimaryDevId() {return m_bHasDrmPrimaryDevId;}
++	inline bool supportsPresentWait() {return m_bSupportsPresentWait;}
+ 	inline dev_t primaryDevId() {return m_drmPrimaryDevId;}
+ 	inline bool supportsFp16() {return m_bSupportsFp16;}
+ 	inline std::vector<VkExtensionProperties>& supportedExtensions() {return m_supportedExts;}
+@@ -870,5 +870,6 @@ protected:
+ 	bool m_bSupportsFp16 = false;
+ 	bool m_bHasDrmPrimaryDevId = false;
+ 	bool m_bSupportsModifiers = false;
++	bool m_bSupportsPresentWait = false;
+ 	bool m_bInitialized = false;
+ 
+diff --git a/src/rendervulkan.cpp b/src/rendervulkan.cpp
+--- a/src/rendervulkan.cpp
++++ b/src/rendervulkan.cpp
+@@ -447,1 +447,3 @@ bool CVulkanDevice::createDevice()
+ 	bool hasDrmProps = vulkan_has_drm_props();
++	bool supportsPresentId = false;
++	bool supportsPresentWait = false;
+@@ -455,1 +457,7 @@ bool CVulkanDevice::createDevice()
+ 			supportsForeignQueue = true;
++
++		if ( strcmp(ext.extensionName, VK_KHR_PRESENT_ID_EXTENSION_NAME) == 0 )
++			supportsPresentId = true;
++
++		if ( strcmp(ext.extensionName, VK_KHR_PRESENT_WAIT_EXTENSION_NAME) == 0 )
++			supportsPresentWait = true;
+@@ -459,2 +467,9 @@ bool CVulkanDevice::createDevice()
+ 			supportsHDRMetadata = true;
+ 	}
++
++	// Present-id and present-wait are an optimization for accurate vblank
++	// accounting. They are not part of the Vulkan WSI contract, and software
++	// Vulkan implementations such as lavapipe commonly expose neither.
++	m_bSupportsPresentWait = supportsPresentId && supportsPresentWait;
++	if ( GetBackend()->UsesVulkanSwapchain() && !m_bSupportsPresentWait )
++		vk_log.infof( "present-id/present-wait unavailable; using ordinary WSI presents" );
+@@ -564,2 +578,5 @@ bool CVulkanDevice::createDevice()
+-		enabledExtensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
+-		enabledExtensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
++		if ( m_bSupportsPresentWait )
++		{
++			enabledExtensions.push_back( VK_KHR_PRESENT_ID_EXTENSION_NAME );
++			enabledExtensions.push_back( VK_KHR_PRESENT_WAIT_EXTENSION_NAME );
++		}
+@@ -575,1 +592,14 @@ bool CVulkanDevice::createDevice()
+-	enabledExtensions.push_back( VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME );
++	// lavapipe has no kernel DMA-BUF device to expose. It can still provide
++	// an ordinary Vulkan swapchain for the nested SDL backend, so do not make
++	// the optional DMA-BUF extension a device-creation requirement.
++	bool supportsExternalMemoryDmaBuf = false;
++	for ( const auto &ext : m_supportedExts )
++	{
++		if ( strcmp( ext.extensionName, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME ) == 0 )
++		{
++			supportsExternalMemoryDmaBuf = true;
++			break;
++		}
++	}
++	if ( supportsExternalMemoryDmaBuf )
++		enabledExtensions.push_back( VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME );
+@@ -577,1 +607,11 @@ bool CVulkanDevice::createDevice()
+-	enabledExtensions.push_back( VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME );
++	bool supportsExternalSemaphoreFd = false;
++	for ( const auto &ext : m_supportedExts )
++	{
++		if ( strcmp( ext.extensionName, VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME ) == 0 )
++		{
++			supportsExternalSemaphoreFd = true;
++			break;
++		}
++	}
++	if ( supportsExternalSemaphoreFd )
++		enabledExtensions.push_back( VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME );
+@@ -635,2 +676,6 @@ bool CVulkanDevice::createDevice()
+ 		.presentId = VK_TRUE,
+ 	};
++
++	void *featureChain = &features13;
++	if ( m_bSupportsPresentWait )
++		featureChain = &presentIdFeatures;
+@@ -640,1 +685,1 @@ bool CVulkanDevice::createDevice()
+-		.pNext = &presentIdFeatures,
++		.pNext = featureChain,
+@@ -2030,2 +2030,10 @@ bool CVulkanTexture::BInit( uint32_t width, uint32_t height, uint32_t depth, uint32_t drmFormat, createFlags flags, wlr_dmabuf_attributes *pDMA /* = nullptr */,  uint32_t contentWidth /* = 0 */, uint32_t contentHeight /* =  0 */, CVulkanTexture *pExistingImageToReuseMemory, gamescope::OwningRc<gamescope::IBackendFb> pBackendFb )
+ 	m_drmFormat = drmFormat;
+ 	VkResult res = VK_ERROR_INITIALIZATION_FAILED;
++
++	// A nested SDL backend has no DRM scanout target.  Flippable textures are
++	// otherwise promoted to DMA-BUF/WSI scanout allocations, which lavapipe
++	// cannot provide and which makes ordinary software Vulkan image allocation
++	// fail with VK_ERROR_OUT_OF_DEVICE_MEMORY.  The SDL swapchain images are
++	// already owned by WSI and do not pass through this path.
++	if ( flags.bFlippable && g_device.drmRenderFd() < 0 )
++		flags.bFlippable = false;
+@@ -2954,1 +3007,2 @@ static void present_wait_thread_func( void )
+-				g_device.vk.WaitForPresentKHR( g_device.device(), g_output.swapChain, present_wait_id, 1'000'000'000lu );
++				if ( g_device.supportsPresentWait() )
++					g_device.vk.WaitForPresentKHR( g_device.device(), g_output.swapChain, present_wait_id, 1'000'000'000lu );
+@@ -3027,1 +3073,1 @@ void vulkan_present_to_window( void )
+-		.pNext = &presentIdInfo,
++		.pNext = g_device.supportsPresentWait() ? &presentIdInfo : nullptr,
+@@ -3035,2 +3081,5 @@ void vulkan_present_to_window( void )
+-		g_currentPresentWaitId = presentId;
+-		g_currentPresentWaitId.notify_all();
++		if ( g_device.supportsPresentWait() )
++		{
++			g_currentPresentWaitId = presentId;
++			g_currentPresentWaitId.notify_all();
++		}
+@@ -3564,2 +3613,2 @@ bool vulkan_init( VkInstance instance, VkSurfaceKHR surface )
+-		std::thread present_wait_thread( present_wait_thread_func );
+-		present_wait_thread.detach();
++		if ( g_device.supportsPresentWait() )
++			std::thread( present_wait_thread_func ).detach();

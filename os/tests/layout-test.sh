@@ -36,7 +36,13 @@ grep -q 'STEARLIGHT_BUILD_DATE' "${base}/build.sh"
 grep -q 'ExpectedSerial' "${base}/flash-windows.ps1"
 grep -q 'supervisor="supervise-daemon"' \
   "${base}/overlay/etc/init.d/stearlight-session"
-grep -q 'SVRT_USE_GAMESCOPE=1' \
+grep -q 'SVRT_USE_GAMESCOPE=' \
+  "${base}/overlay/usr/local/libexec/stearlight/session"
+grep -q 'STEARLIGHT_SESSION_MODE=\${STEARLIGHT_SESSION_MODE:-shell}' \
+  "${base}/overlay/usr/local/libexec/stearlight/session"
+grep -q 'export SVRT_USE_GAMESCOPE=0' \
+  "${base}/overlay/usr/local/libexec/stearlight/session"
+grep -q 'export SVRT_STEAM_FORCE_WAYLAND=0' \
   "${base}/overlay/usr/local/libexec/stearlight/session"
 grep -q 'STEARLIGHT_EYE_WIDTH="1440"' \
   "${base}/overlay/etc/conf.d/stearlight"
@@ -48,24 +54,53 @@ grep -q 'SVRT_DISPLAY_WIDTH=2880' "${base}/CMakeLists.txt"
 grep -q 'SVRT_DISPLAY_HEIGHT=1600' "${base}/CMakeLists.txt"
 grep -q 'SVRT_DISPLAY_REFRESH_HZ=60' "${base}/CMakeLists.txt"
 grep -q 'SVRT_ENFORCE_DISPLAY_MODE=1' "${base}/CMakeLists.txt"
+grep -q 'svrt_ui_boot_finished' "${base}/shell.c" "${repo}/gui/ui.c" "${repo}/gui/ui.h"
+grep -q 'SVRT_BOOT_ONLY=1' \
+  "${base}/overlay/usr/local/libexec/stearlight/session"
 grep -q 'disable_splash=1' "${base}/boot/config.txt"
 grep -q 'logo.nologo' "${base}/boot/cmdline.txt"
-grep -q 'console=tty12' "${base}/boot/cmdline.txt"
+if grep -q 'console=tty12' "${base}/boot/cmdline.txt"; then
+  echo "visible tty12 console would expose boot logs" >&2
+  exit 1
+fi
+! grep -q 'console=tty12' "${base}/vm-systemd-entry.conf"
+grep -q 'quiet loglevel=0' "${base}/vm-systemd-entry.conf"
+! grep -q 'console=tty12' "${base}/grub-vm.cfg"
+grep -q 'quiet loglevel=0' "${base}/grub-vm.cfg"
+grep -q 'SDL_RENDER_DRIVER' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -Fq 'SVRT_STEAM_FORCE_WAYLAND' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -Fq 'SVRT_USE_GAMESCOPE' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -Fq '"$SVRT_STEAM_HOME/.config"' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -Fq 'SVRT_STEAMUI_PATCH_ENABLED=${SVRT_STEAMUI_PATCH_ENABLED:-0}' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -Fq 'SVRT_STEAMUI_PATCH_ENABLED=${SVRT_STEAMUI_PATCH_ENABLED:-0}' \
+  "${base}/overlay/usr/local/libexec/stearlight/session"
 grep -q 'os/vm-overlay/' "${base}/Dockerfile.vm"
 grep -q 'os/overlay/etc/steamos-oobe-image' "${base}/Dockerfile.vm"
 grep -q 'gamescope' "${base}/Dockerfile.vm"
+grep -q 'gamescope-build' "${base}/Dockerfile.vm"
+grep -q 'gamescope-lavapipe.patch' "${base}/Dockerfile.vm"
+grep -q 'gamescope-svrt' "${base}/Dockerfile.vm"
 grep -q 'weston-backend-x11' "${base}/Dockerfile.vm"
 grep -q 'weston-shell-desktop' "${base}/Dockerfile.vm"
 grep -q 'mesa-vulkan-swrast' "${base}/Dockerfile.vm"
+grep -q 'mesa-vulkan-virtio' "${base}/Dockerfile.vm"
+grep -q 'libxscrnsaver' "${base}/Dockerfile.vm"
 grep -q 'vulkan-loader' "${base}/Dockerfile.vm" "${base}/Dockerfile"
 grep -q 'steam_latest.deb' "${base}/Dockerfile.vm"
 grep -q 'bubblewrap' "${base}/Dockerfile.vm"
+grep -q 'lsof' "${base}/Dockerfile.vm"
 grep -q 'chmod 4755 /usr/bin/bwrap' "${base}/Dockerfile.vm"
 grep -q 'SVRT_BUILD_RECEIVER=OFF' "${base}/Dockerfile.vm"
 grep -q 'SVRT_BUILD_OS_SHELL=ON' "${base}/Dockerfile.vm"
 test -f "${base}/steam_client.c"
 test -f "${base}/steam_client.h"
 test -f "${base}/vm-overlay/usr/local/libexec/stearlight/steam32-launch"
+test -f "${base}/vm-overlay/usr/local/libexec/stearlight/steamrt-webhelper/_v2-entry-point"
 test -f "${base}/overlay/usr/local/libexec/stearlight/launch-steam"
 grep -q 'SVRT_STEAM_COMPOSITOR' \
   "${base}/vm-overlay/usr/local/libexec/stearlight/steam32-launch"
@@ -73,6 +108,16 @@ grep -q 'SVRT_STEAM_WESTON_LOG' \
   "${base}/vm-overlay/usr/local/libexec/stearlight/steam32-launch"
 grep -q 'steamrt64/steam' \
   "${base}/vm-overlay/usr/local/libexec/stearlight/steam32-launch"
+grep -q 'STEAM_RUNTIME_STEAMRT=/usr/local/libexec/stearlight/steamrt-webhelper' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/steam32-launch"
+grep -q 'runtime_root/_v2-entry-point' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/steamrt-webhelper/_v2-entry-point"
+grep -q 'STEARLIGHT WEBHELPER DIRECT' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/direct-steam-runtime/_v2-entry-point"
+grep -q -- '--disable-gpu' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/direct-steam-runtime/_v2-entry-point"
+grep -q 'SVRT_STEAM_DIRECT_WEBHELPER=\${SVRT_STEAM_DIRECT_WEBHELPER:-1}' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
 ! grep -q '\.\./pi-receiver/steam_client' "${base}/CMakeLists.txt"
 # Xvfb must be started without Steam's ABI-specific Mesa environment.  Keep
 # this invariant covered because inheriting LIBGL_DRIVERS_PATH makes the
@@ -96,6 +141,8 @@ grep -q 'STEAM_USE_MANGOAPP=1' \
   "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
 grep -q 'initial X11 tree query' "${base}/steam_client.c"
 grep -q 'bridge heartbeat' "${base}/steam_client.c"
+grep -q 'STEARLIGHT STEAM FRAME READY' "${base}/steam_client.c"
+grep -q 'STEARLIGHT STEAM FRAME READY' "${base}/test-vm.ps1"
 ! grep -q '/usr/lib/i386-linux-gnu/dri' "${base}/steam_client.c"
 grep -q 'stearlight_steam_client_start' "${base}/shell.c"
 ! grep -q 'SVRT_VM_RECEIVER_ONLY' "${base}/Dockerfile.vm" \
@@ -179,6 +226,10 @@ grep -q 'STEARLIGHT_SESSION_MODE' \
   "${base}/overlay/usr/local/libexec/stearlight/session"
 grep -q 'SVRT_VM_SESSION_MODE' \
   "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -q 'vm_has_software_gamescope' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -q 'GAMESCOPE_BIN=/usr/bin/gamescope-svrt' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
 test -f "${base}/overlay/usr/share/gamescope-session-plus/gamescope-session-plus"
 test -f "${base}/overlay/usr/share/gamescope-session-plus/sessions.d/steam"
 test -f "${base}/overlay/usr/bin/gamescope-session-plus"
@@ -213,6 +264,8 @@ grep -q 'Read-PpmToken' "${base}/test-vm.ps1"
 grep -q 'stearlight-vm.ppm' "${base}/test-vm.ps1"
 grep -q 'zoom-to-fit=on' "${base}/test-vm.ps1"
 grep -q 'gtk,gl=on' "${base}/test-vm.ps1"
+grep -q 'VGA,xres=' "${base}/test-vm.ps1"
+! grep -q 'virtio-vga-gl.*venus=on' "${base}/test-vm.ps1"
 grep -q "'-accel', 'whpx'" "${base}/test-vm.ps1"
 grep -q "'-accel', 'tcg,thread=multi'" "${base}/test-vm.ps1"
 grep -q 'Set-QemuWindowAspect' "${base}/test-vm.ps1"
@@ -259,6 +312,7 @@ for script in \
   "${base}/scripts/preextract-steam-client.sh" \
   "${base}/scripts/sanitize-steam-profile.sh" \
   "${base}/tests/steam-firstboot-test.sh" \
+  "${base}/tests/steam-runtime-patch-test.sh" \
   "${base}/steam-firstboot" \
   "${base}/overlay/usr/bin/jupiter-biosupdate" \
   "${base}/overlay/usr/bin/jupiter-dock-updater" \
@@ -289,6 +343,7 @@ for script in \
 done
 
 "${base}/tests/steam-firstboot-test.sh"
+bash "${base}/tests/steam-runtime-patch-test.sh"
 
 for documentation in \
   "${base}/README.md" "${base}/VM.md" \

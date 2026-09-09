@@ -140,7 +140,7 @@ USER root
 
 FROM alpine:${ALPINE_TAG} AS shell-build
 RUN apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
-    libx11-dev ninja pkgconf sdl2-dev sdl2_ttf-dev
+    libx11-dev libxcomposite-dev ninja pkgconf sdl2-dev sdl2_ttf-dev
 WORKDIR /src
 COPY . .
 RUN cmake -S . -B /build -G Ninja \
@@ -153,13 +153,46 @@ RUN cmake -S . -B /build -G Ninja \
     && cmake --build /build --parallel \
     && DESTDIR=/staging cmake --install /build
 
+FROM alpine:${ALPINE_TAG} AS gamescope-build
+ARG GAMESCOPE_VERSION=3.16.24
+RUN apk add --no-cache \
+      benchmark-dev build-base cmake git glm-dev glslang-dev hwdata-dev \
+      libavif-dev libcap-dev libdecor-dev libdisplay-info-dev libdrm-dev \
+      libei-dev libinput-dev libseat-dev libx11-dev libxcomposite-dev \
+      libxcursor-dev libxdamage-dev libxkbcommon-dev libxmu-dev \
+      libxrender-dev libxres-dev libxtst-dev libxxf86vm-dev luajit-dev \
+      meson ninja pipewire-dev pixman-dev pkgconf sdl2-dev spirv-headers \
+      stb vulkan-loader-dev wayland-protocols xcb-util-errors-dev \
+      xcb-util-wm-dev xwayland-dev
+WORKDIR /src
+RUN git clone --depth 1 --branch "${GAMESCOPE_VERSION}" \
+      --recurse-submodules --shallow-submodules \
+      https://github.com/ValveSoftware/gamescope.git .
+COPY os/patches/gamescope-lavapipe.patch /tmp/gamescope-lavapipe.patch
+RUN git apply --unidiff-zero --whitespace=nowarn /tmp/gamescope-lavapipe.patch \
+    && meson setup /build \
+         -Ddefault_library=static \
+         -Davif_screenshots=disabled \
+         -Ddrm_backend=enabled \
+         -Dinput_emulation=disabled \
+         -Dpipewire=disabled \
+         -Drt_cap=disabled \
+         -Dsdl2_backend=enabled \
+         -Denable_openvr_support=false \
+         -Denable_gamescope_wsi_layer=false \
+         -Denable_tests=false \
+         -Dbenchmark=disabled \
+    && meson compile -C /build gamescope \
+    && install -Dm0755 /build/src/gamescope /out/usr/bin/gamescope-svrt
+
 FROM alpine:${ALPINE_TAG} AS rootfs
 RUN apk add --no-cache \
       alpine-base alsa-lib bash bubblewrap coreutils dbus dbus-glib dhcpcd e2fsprogs eudev ffmpeg \
-      ca-certificates fontconfig font-dejavu gcompat linux-virt mesa-dri-gallium mesa-egl mesa-gbm mesa-gles \
-      mesa-vulkan-swrast vulkan-loader dbus-x11 gamescope mbedtls3 openrc sdl2 sdl2_ttf shadow \
-      weston weston-backend-x11 weston-shell-desktop \
-      pciutils python3 su-exec tar tzdata util-linux-misc xauth xf86-input-libinput \
+      ca-certificates fontconfig font-dejavu gcompat ibus linux-virt mesa-dri-gallium mesa-egl mesa-gbm mesa-gles \
+      mesa-vulkan-swrast mesa-vulkan-virtio vulkan-loader dbus-x11 gamescope mbedtls3 openrc sdl2 sdl2_ttf shadow \
+      libxcb libxcomposite libxscrnsaver \
+      weston weston-backend-x11 weston-shell-desktop weston-xwayland \
+      lsof pciutils python3 su-exec tar tzdata util-linux-misc xauth xf86-input-libinput \
       xf86-video-vmware xorg-server xrandr xwayland xwininfo xvfb \
       xz
 RUN if [ -x /usr/bin/xwininfo ] && [ ! -e /usr/bin/xwininfo.real ]; then \
@@ -175,6 +208,7 @@ RUN for group in audio input render tty video wheel; do \
        done \
     && mkdir -p /var/lib/stearlight
 COPY --from=shell-build /staging/ /
+COPY --from=gamescope-build /out/ /
 COPY --from=steam-bootstrap /out/ /
 COPY --from=steam-bootstrap --chown=1000:1000 \
      /home/steam/.local/share/Steam /home/stearlight/.local/share/Steam
@@ -206,6 +240,7 @@ RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
                    /usr/local/libexec/stearlight/steam32-launch \
                    /usr/local/libexec/stearlight/steam-webhelper-env \
                    /usr/local/libexec/stearlight/direct-steam-runtime/_v2-entry-point \
+                   /usr/local/libexec/stearlight/steamrt-webhelper/_v2-entry-point \
                    /usr/local/libexec/stearlight/steam-firstboot \
                    /usr/local/libexec/stearlight/patch-steamui-network \
                    /usr/local/libexec/stearlight/patch-steam-runtime \
@@ -240,12 +275,15 @@ RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
     && rc-update add stearlight-vm-session default
 
 FROM alpine:${ALPINE_TAG} AS image-build
-RUN apk add --no-cache dosfstools e2fsprogs genimage mtools qemu-img systemd-boot
+RUN apk add --no-cache dosfstools e2fsprogs genimage mtools systemd-boot
 WORKDIR /work
 COPY --from=rootfs / /work/rootfs/
 COPY os/genimage-vm.cfg /work/genimage.cfg
 COPY os/vm-systemd-loader.conf /work/loader.conf
 COPY os/vm-systemd-entry.conf /work/stearlight.conf
+# Keep the raw disk as the only image-build output. Converting it to VDI
+# inside Docker duplicates a multi-gigabyte file on the F:-backed data disk
+# and can exhaust Docker Desktop's ext4 layer while it is read back.
 RUN mkdir -p /work/input/efi/EFI/BOOT /work/input/efi/loader/entries \
              /work/output /work/tmp \
     && cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi \
@@ -257,12 +295,7 @@ RUN mkdir -p /work/input/efi/EFI/BOOT /work/input/efi/loader/entries \
     && genimage --config /work/genimage.cfg --rootpath /work/rootfs \
          --inputpath /work/input --outputpath /work/output \
          --tmppath /work/tmp \
-    && qemu-img convert -f raw -O vdi /work/output/stearlight-vm.raw \
-         /work/output/stearlight-os-vm-x86_64.vdi \
-    && sha256sum /work/output/stearlight-os-vm-x86_64.vdi \
-         > /work/output/stearlight-os-vm-x86_64.vdi.sha256 \
-    && rm -f /work/output/efi.vfat /work/output/root.ext4 \
-             /work/output/stearlight-vm.raw
+    && rm -f /work/output/efi.vfat /work/output/root.ext4
 
 FROM scratch AS image
 COPY --from=image-build /work/output/ /

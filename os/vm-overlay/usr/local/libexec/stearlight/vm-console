@@ -1,16 +1,38 @@
 #!/bin/sh
 set -eu
 
+# QEMU's Bochs/VGA scanout is backed by llvmpipe.  SDL's OpenGL renderer can
+# create a context there but does not reliably present its swapchain to the
+# Xorg framebuffer, leaving the guest black after the boot movie.  Use SDL's
+# X11 software present path for the VM shell; the Pi production session never
+# sources this VM-only supervisor and keeps its accelerated renderer.
+export SDL_RENDER_DRIVER=${SVRT_VM_SDL_RENDER_DRIVER:-software}
+# Select X11 explicitly for the SDL outer window.  A stale WAYLAND_DISPLAY can
+# make SDL choose its Wayland driver even though the VM session is owned by
+# Xorg :0; that creates a valid context but leaves QEMU's VGA scanout black.
+export SDL_VIDEODRIVER=${SVRT_VM_SDL_VIDEODRIVER:-x11}
+unset WAYLAND_DISPLAY
+
 export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_SESSION_TYPE=x11
 export XDG_CURRENT_DESKTOP=gamescope
 export DISPLAY=:0
+# Steam WebHelper initializes X/GTK input-method state before it creates the
+# Gamepad UI surface.  The appliance has no login manager to provide a locale;
+# use the libc-provided UTF-8 locale so XOpenIM and font setup are deterministic
+# on every boot.
+export LANG=${LANG:-C.UTF-8}
+export LC_ALL=${LC_ALL:-C.UTF-8}
+export LC_CTYPE=${LC_CTYPE:-C.UTF-8}
 export SVRT_STEAM_HOME=/home/stearlight
 export SVRT_STEAM_USER=stearlight
 export SVRT_STEAM_BINARY=/usr/bin/steam
 export SVRT_STEAM_LAUNCHER=/usr/local/libexec/stearlight/steam32-launch
 export SVRT_STEAM_PREPARE=/usr/local/libexec/stearlight/steam-firstboot
 export SVRT_STEAMUI_PATCH=/usr/local/libexec/stearlight/patch-steamui-network
+# Steam verifies every WebUI chunk before starting; keep the optional network
+# workaround off by default so it cannot force an update loop.
+export SVRT_STEAMUI_PATCH_ENABLED=${SVRT_STEAMUI_PATCH_ENABLED:-0}
 export SVRT_STEAM_RUNTIME_SEED=/usr/lib/steam
 export SVRT_STEAM_RUNTIME_WATCH=/usr/local/libexec/stearlight/steam-runtime-watch
 export SVRT_STEAM_SOFTWARE_GL=1
@@ -37,7 +59,12 @@ export SVRT_STEAM_BOOTSTRAP_DRI=${SVRT_STEAM_BOOTSTRAP_DRI:-}
 # verification; the steamrt64 binary is only an explicit diagnostic path for
 # non-stable beta branches.
 export SVRT_STEAM_FORCE_DIRECT_CLIENT=${SVRT_STEAM_FORCE_DIRECT_CLIENT:-0}
-export SVRT_STEAM_DIRECT_WEBHELPER=${SVRT_STEAM_DIRECT_WEBHELPER:-0}
+# QEMU's software VGA session has no SteamOS portal broker for the private PID
+# namespace used by pressure-vessel. That makes the Gamepad UI WebSocket peer
+# fail its PID check even though CEF itself is healthy. Keep the VM on the
+# host-PID WebHelper entry point by default; the production ARM session never
+# sources vm-console and keeps Valve's normal pressure-vessel path.
+export SVRT_STEAM_DIRECT_WEBHELPER=${SVRT_STEAM_DIRECT_WEBHELPER:-1}
 # The x86 VM uses the same SteamRT3 client entry point as Armada's native
 # launcher.  The public-beta tree contains the Gamepad UI and OOBE assets;
 # opt into it explicitly instead of allowing the bootstrap's stable beta file
@@ -46,43 +73,78 @@ export SVRT_STEAM_DIRECT_WEBHELPER=${SVRT_STEAM_DIRECT_WEBHELPER:-0}
 # preextract-steam-client.sh.  Rewriting this to publicbeta on every boot
 # forces a full client update before the OOBE can create a surface.
 export STEARLIGHT_STEAM_BETA=${STEARLIGHT_STEAM_BETA:-steamdeck_stable}
-# The C bridge owns the private X display, but Steam itself must be hosted by
-# a real nested gamescope Wayland compositor.  The previous Weston fallback
-# only painted its checkerboard window; Steam's Gamepad UI never became the
-# captured surface.  Leave the compositor selector unset so steam32-launch
-# connects to gamescope's socket instead of starting another compositor.
-unset SVRT_STEAM_COMPOSITOR
-export SVRT_STEAM_FORCE_WAYLAND=1
-# Use gamescope's SDL/X11 nested backend for a deterministic VM display. It
-# presents a single host window while preserving the real Gamepad UI/Wayland
-# handshake inside it. A virtio-gpu node alone is not enough to select DRM:
-# QEMU's non-GL virtio adapter exposes lavapipe, which intentionally has no
-# VK_EXT_physical_device_drm properties. Set SVRT_VM_USE_DRM=1 only when the
-# hypervisor provides a Vulkan device tied to the DRM node (for example Venus).
-export SVRT_USE_GAMESCOPE=${SVRT_USE_GAMESCOPE:-1}
 export SVRT_STEAM_UI_MODE=${SVRT_STEAM_UI_MODE:-gamepad}
-# QEMU's software VGA path cannot provide a Vulkan/DRM presentation device to
-# gamescope.  Use the real Steam Gamepad UI on the guest X11 scanout by
-# default; hardware/DRM test runs can opt into the full gamescope session with
-# SVRT_VM_SESSION_MODE=gamescope.
-export SVRT_VM_SESSION_MODE=${SVRT_VM_SESSION_MODE:-x11}
-# QEMU's software VGA backend cannot expose the Gamescope Wayland protocol
-# required by the Gamepad UI.  Keep the VM's default on the classic Steam
-# ten-foot surface so the first-boot welcome flow remains visible in a normal
-# X11 window.  Hardware/DRM images leave this unset and use Gamepad UI.
-export SVRT_VM_STEAM_UI_MODE=${SVRT_VM_STEAM_UI_MODE:-classic}
-# Load the guest DRM module so it is available to an explicit DRM test, but do
-# not infer a usable Vulkan/DRM pair from the existence of /dev/dri/card*.
+# Load the guest DRM module before selecting the session.  A virtio-GPU device
+# can use the DRM backend on a Linux host with a working Venus device.  Windows
+# QEMU uses the deterministic VGA/SDL path below, which still runs the same
+# SteamOS welcome pipeline through the software Gamescope build.
 if command -v modprobe >/dev/null 2>&1; then
-  # The VM test harness uses QEMU's standard VGA device (`-device VGA`).
-  # linux-virt ships its DRM driver as `bochs.ko`; without loading it the
-  # modesetting X server has no /dev/dri/card0 and every Steam surface stays
-  # black even though Xorg itself starts successfully.  Keep the virtio path
-  # too, since alternate QEMU runs may select virtio-gpu-pci instead.
   modprobe drm 2>/dev/null || true
   modprobe bochs 2>/dev/null || modprobe bochs_drm 2>/dev/null || true
   modprobe virtio_pci 2>/dev/null || true
   modprobe virtio_gpu 2>/dev/null || true
+fi
+
+# Detect the actual DRM driver, not merely the presence of /dev/dri.  The
+# Alpine lavapipe ICD is valid for Gamescope's nested SDL backend, but it is
+# not a DRM scanout driver.  Prefer the real DRM path only when QEMU exposes a
+# virtio GPU; otherwise use the bundled lavapipe-compatible Gamescope build.
+# Explicit environment overrides remain authoritative for diagnostics.
+vm_has_virtio_gpu=0
+for drm_driver in /sys/class/drm/card*/device/driver; do
+  [ -e "$drm_driver" ] || continue
+  case "$(readlink "$drm_driver" 2>/dev/null || true)" in
+    *virtio*) vm_has_virtio_gpu=1; break ;;
+  esac
+done
+vm_has_software_gamescope=0
+[ -x /usr/bin/gamescope-svrt ] && vm_has_software_gamescope=1
+if [ -z "${SVRT_STEAM_COMPOSITOR:-}" ]; then
+  if [ "$vm_has_virtio_gpu" = 1 ] &&
+     [ -r /usr/share/vulkan/icd.d/virtio_icd.x86_64.json ]; then
+    export SVRT_STEAM_COMPOSITOR=gamescope
+  elif [ "$vm_has_software_gamescope" = 1 ]; then
+    export SVRT_STEAM_COMPOSITOR=gamescope
+  else
+    export SVRT_STEAM_COMPOSITOR=weston
+  fi
+fi
+if [ -z "${SVRT_STEAM_FORCE_WAYLAND:-}" ]; then
+  if [ "$SVRT_STEAM_COMPOSITOR" = gamescope ]; then
+    export SVRT_STEAM_FORCE_WAYLAND=1
+  else
+    export SVRT_STEAM_FORCE_WAYLAND=0
+  fi
+fi
+if [ -z "${SVRT_VM_SESSION_MODE:-}" ]; then
+  if [ "$SVRT_STEAM_COMPOSITOR" = gamescope ] &&
+     [ "$vm_has_virtio_gpu" = 1 ]; then
+    export SVRT_VM_SESSION_MODE=gamescope
+  elif [ "$SVRT_STEAM_COMPOSITOR" = gamescope ] &&
+       [ "$vm_has_software_gamescope" = 1 ]; then
+    # Windows QEMU's Bochs/VGA device exposes a DRM node but not a Vulkan
+    # physical device.  Nested Gamescope can therefore initialize Steam but
+    # cannot present its SDL swapchain to the guest scanout.  Use the real
+    # Gamepad UI on X11 by default for that VM path; an explicit
+    # SVRT_VM_SESSION_MODE=gamescope remains available for host diagnostics.
+    export SVRT_VM_SESSION_MODE=x11
+  else
+    export SVRT_VM_SESSION_MODE=shell
+  fi
+fi
+if [ -z "${SVRT_USE_GAMESCOPE:-}" ]; then
+  if [ "$SVRT_STEAM_COMPOSITOR" = gamescope ]; then
+    export SVRT_USE_GAMESCOPE=1
+  else
+    export SVRT_USE_GAMESCOPE=0
+  fi
+fi
+if [ -z "${SVRT_VM_USE_DRM:-}" ]; then
+  if [ "$vm_has_virtio_gpu" = 1 ]; then
+    export SVRT_VM_USE_DRM=1
+  else
+    export SVRT_VM_USE_DRM=0
+  fi
 fi
 if [ "${SVRT_TRACE_VM_GPU:-0}" != 0 ]; then
   printf 'STEARLIGHT VM GPU DEVICES: ' >>/dev/ttyS0
@@ -105,10 +167,25 @@ elif [ "${SVRT_VM_USE_DRM:-0}" = 1 ] && ls /dev/dri/card* >/dev/null 2>&1; then
 else
   gamescope_backend=sdl
 fi
-# gamescope itself is the native Alpine/musl process.  Its ICD must point to
-# Alpine's native software driver; steam32-launch selects the glibc/i386 ICD
-# only after gamescope has spawned the Valve client.
-export SVRT_GAMESCOPE_VK_ICD=/usr/share/vulkan/icd.d/stearlight-alpine-lvp.json
+# gamescope itself is the native Alpine/musl process. Select the ICD matching
+# the DRM device; Steam's mixed 32/64-bit children choose their own runtime
+# libraries only after gamescope has spawned the Valve client.
+if [ "$vm_has_virtio_gpu" = 1 ] &&
+   [ -r /usr/share/vulkan/icd.d/virtio_icd.x86_64.json ]; then
+  export SVRT_GAMESCOPE_VK_ICD=/usr/share/vulkan/icd.d/virtio_icd.x86_64.json
+else
+  export SVRT_GAMESCOPE_VK_ICD=/usr/share/vulkan/icd.d/stearlight-alpine-lvp.json
+fi
+# The distro package is useful for hardware/DRM sessions, but the Windows
+# QEMU fallback needs the lavapipe-compatible build.  Keep an explicit caller
+# override intact so the Pi and Linux-host diagnostic paths can select another
+# Gamescope binary.
+if [ "$SVRT_STEAM_COMPOSITOR" = gamescope ] &&
+   [ "$vm_has_virtio_gpu" != 1 ] &&
+   [ "$vm_has_software_gamescope" = 1 ] &&
+   [ -z "${GAMESCOPE_BIN:-}" ]; then
+  export GAMESCOPE_BIN=/usr/bin/gamescope-svrt
+fi
 # Do not export a Steam ICD from the session supervisor. Steam starts a mixed
 # 32/64-bit process tree (bootstrap, WebHelper and pressure-vessel); a single
 # inherited manifest is ABI-specific and makes one side fail with
@@ -152,23 +229,45 @@ export GTK_IM_MODULE=Steam
 export XCURSOR_THEME=steam
 export XCURSOR_SCALE=256
 export GAMESCOPE_FALLBACK_APPID=0x41524d41
-# The VM's lavapipe/XWayland path has no hardware CEF context.  Keep the
-# welcome pipeline and Gamepad UI intact, but disable CEF's optional GPU
-# process so its 32-bit bootstrap does not try to load a host DRI module that
-# belongs to the other ABI.  The variable is an override for diagnostics; the
-# production Pi keeps hardware CEF enabled.
-export SVRT_VM_CEF_ARGS="${SVRT_VM_CEF_ARGS:--cef-disable-gpu -cef-disable-gpu-sandbox -no-cef-sandbox -cef-disable-gpu-compositing}"
-# The VM test overlay patches the replaceable WebUI bundle to provide the
-# optional System.Network methods that are absent from its minimal bridge.
-# Avoid Steam's checksum repair immediately undoing that diagnostic patch;
-# production sessions leave these flags unset and retain normal updates.
-export SVRT_VM_STEAM_UPDATE_ARGS="${SVRT_VM_STEAM_UPDATE_ARGS:--noverifyfiles -nobootstrapupdate -skipinitialbootstrap -norepairfiles}"
-export CLIENTCMD="/usr/local/libexec/stearlight/steam32-launch -gamepadui -steamos3 -steampal -steamdeck ${SVRT_VM_STEAM_UPDATE_ARGS} ${SVRT_VM_CEF_ARGS}"
+# QEMU's standard VGA/Bochs path cannot initialize Chromium's accelerated GPU
+# process with the normal driver selection.  Keep Steam's compositor enabled,
+# but use Steam's native `-cef-disable-gpu` option: the direct VM WebHelper
+# entry point also adds Chromium's `--disable-gpu` after Steam reconstructs its
+# child argv.  This is VM-only; the production Pi launcher never sources it.
+# Keep the variable as an explicit override so a hardware test can still
+# supply its own flags.
+export SVRT_VM_CEF_ARGS="${SVRT_VM_CEF_ARGS:--cef-no-linux-angle -cef-disable-gpu -cef-disable-gpu-sandbox -cef-disable-sandbox -no-cef-sandbox -cef-disable-seccomp-sandbox}"
+# Keep the VM's Steam client update path enabled.  The previous diagnostic
+# defaults disabled bootstrap updates, so Steam downloaded the WebUI package
+# but never applied it; after the next boot it was still running the old
+# client and WebHelper could not complete the Gamepad UI handshake.  The
+# network bridge patch is applied before launch and is deliberately kept
+# outside Valve's replaceable tree, so normal Steam verification/update logic
+# can run here.
+export SVRT_VM_STEAM_UPDATE_ARGS="${SVRT_VM_STEAM_UPDATE_ARGS:-}"
+# steam32-launch appends the VM CEF options at the final Steam boundary. Keep
+# them out of CLIENTCMD so Steam does not receive every CEF switch twice.
+# Match the SteamOS/Armada session contract exactly.  The old VM-only
+# -720p/-fasthtml/VR switches were useful while debugging the updater, but
+# they select a different WebUI bootstrap path and are not part of a normal
+# Steam Deck welcome session.
+export CLIENTCMD="/usr/local/libexec/stearlight/steam32-launch -gamepadui -steamos3 -steampal -steamdeck ${SVRT_VM_STEAM_UPDATE_ARGS}"
 export CURSOR_FILE="$SVRT_STEAM_HOME/.local/share/Steam/tenfoot/resource/images/cursors/arrow.png"
 # Keep a bounded X11 tree trace in the serial log while the standalone Steam
 # bridge is being validated.  It is disabled for normal users by setting the
 # variable to 0 in the service environment.
-export SVRT_TRACE_STEAM_X11=${SVRT_TRACE_STEAM_X11:-0}
+export SVRT_TRACE_STEAM_X11=${SVRT_TRACE_STEAM_X11:-1}
+# Keep the small set of WebHelper logs visible on the VM serial console. This
+# is VM-only diagnostics and is useful because the guest has no SSH session.
+export SVRT_TRACE_STEAM_LOGS=${SVRT_TRACE_STEAM_LOGS:-1}
+export SVRT_TRACE_STEAM_RUNTIME=${SVRT_TRACE_STEAM_RUNTIME:-1}
+if [ "${SVRT_TRACE_STEAM_RUNTIME}" != 0 ]; then
+  # Keep the pressure-vessel decision visible in the serial log while the VM
+  # path is being brought up. These are no-op diagnostics when the runtime is
+  # already healthy and are disabled by production callers.
+  export PRESSURE_VESSEL_VERBOSE=1
+  export STEAM_LINUX_RUNTIME_VERBOSE=1
+fi
 
 # Keep the optional SteamRT marker available for beta diagnostics.  The normal
 # stable launch below intentionally goes through steam.sh, which chooses the
@@ -324,11 +423,13 @@ seed_host_dri 64 /usr/lib/x86_64-linux-gnu/dri
 # tree normally.
 if [ -x "$SVRT_STEAM_PREPARE" ]; then
   "$SVRT_STEAM_PREPARE" >>/dev/ttyS0 2>&1 || true
-  if [ -x "$SVRT_STEAMUI_PATCH" ]; then
+  if [ "${SVRT_STEAMUI_PATCH_ENABLED:-0}" = 1 ] &&
+     [ -x "$SVRT_STEAMUI_PATCH" ]; then
     "$SVRT_STEAMUI_PATCH" >>/dev/ttyS0 2>&1 || true
   fi
   chown -R stearlight:stearlight "$SVRT_STEAM_HOME/.local/share/Steam" \
-    "$SVRT_STEAM_HOME/.steam" 2>/dev/null || true
+    "$SVRT_STEAM_HOME/.steam" "$SVRT_STEAM_HOME/.config" \
+    "$SVRT_STEAM_HOME/.cache" 2>/dev/null || true
 fi
 
 # Steam's IPC and WebUI bind loopback sockets (including the local remote
@@ -338,6 +439,12 @@ if command -v ip >/dev/null 2>&1; then
   ip link set lo up 2>/dev/null || true
   ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
   ip -6 addr add ::1/128 dev lo 2>/dev/null || true
+fi
+# Valve's WebUI transport uses this hostname for the local-only websocket.
+# Public DNS normally maps it to loopback, but a minimal/offline Alpine boot
+# must not depend on DNS being ready before Steam starts.
+if [ -w /etc/hosts ] && ! grep -Eq '^[[:space:]]*127\.0\.0\.1[[:space:]].*([[:space:]]|^)steamloopback\.host([[:space:]]|$)' /etc/hosts; then
+  printf '%s\n' '127.0.0.1 steamloopback.host' >>/etc/hosts
 fi
 
 mkdir -p /home/stearlight/.steam /home/stearlight/.local/share
@@ -383,6 +490,7 @@ if [ "$SVRT_VM_SESSION_MODE" = x11 ] &&
   su-exec stearlight env DISPLAY=:0 \
     SVRT_X11_CLAMP_SECONDS="${SVRT_VM_X11_CLAMP_SECONDS:-0}" \
     SVRT_X11_CLAMP_DEBUG="${SVRT_VM_X11_CLAMP_DEBUG:-0}" \
+    SVRT_X11_CLAMP_FULLSCREEN="${SVRT_VM_X11_CLAMP_FULLSCREEN:-1}" \
     /usr/local/libexec/stearlight/x11-window-clamp >>/dev/ttyS0 2>&1 &
   window_clamp_pid=$!
 fi
@@ -426,6 +534,8 @@ done
 # the correct order before OpenRC retries.
 shell_pid=
 watcher_pid=
+steam_log_tail_pid=
+steam_process_trace_pid=
 cleanup_session() {
   if [ -n "${shell_pid:-}" ]; then
     kill "$shell_pid" 2>/dev/null || true
@@ -434,6 +544,14 @@ cleanup_session() {
   if [ -n "${watcher_pid:-}" ]; then
     kill "$watcher_pid" 2>/dev/null || true
     wait "$watcher_pid" 2>/dev/null || true
+  fi
+  if [ -n "${steam_log_tail_pid:-}" ]; then
+    kill "$steam_log_tail_pid" 2>/dev/null || true
+    wait "$steam_log_tail_pid" 2>/dev/null || true
+  fi
+  if [ -n "${steam_process_trace_pid:-}" ]; then
+    kill "$steam_process_trace_pid" 2>/dev/null || true
+    wait "$steam_process_trace_pid" 2>/dev/null || true
   fi
   if [ -n "${window_clamp_pid:-}" ]; then
     kill "$window_clamp_pid" 2>/dev/null || true
@@ -469,22 +587,21 @@ if [ "$SVRT_VM_SESSION_MODE" = gamescope ] &&
   export BACKEND=$gamescope_backend
 export SCREEN_WIDTH=2880
 export SCREEN_HEIGHT=1600
-# Keep the guest's logical stereo surface at 2880x1600, but use a smaller
-# nested SDL swapchain in the x86 VM.  lavapipe cannot reliably allocate the
-# three full-size presentation images; Gamescope scales this output into the
-# same 2880x1600 VGA scanout.  The production Pi leaves these unset and uses
-# the native 2880x1600 DRM output.
-export SVRT_GAMESCOPE_OUTPUT_WIDTH=${SVRT_VM_OUTPUT_WIDTH:-1440}
-export SVRT_GAMESCOPE_OUTPUT_HEIGHT=${SVRT_VM_OUTPUT_HEIGHT:-800}
-# Keep the software renderer's internal allocation independently tunable. A
-# full 2880x1600 triple-buffered Vulkan swapchain exceeds lavapipe's device
-# memory in the QEMU test; the production DRM path defaults to the native
-# logical size, while VM runs can select a smaller internal surface that is
-# scaled into the exact 2880x1600 scanout.
+  # Both QEMU modes use the native target size.  The VGA/SDL fallback is
+  # software-rendered, but the host VM has enough memory for the full surface
+  # and this keeps the captured image aligned with the SteamOS reference UI.
+  if [ "$gamescope_backend" = drm ]; then
+    export SVRT_GAMESCOPE_OUTPUT_WIDTH=${SVRT_VM_OUTPUT_WIDTH:-2880}
+    export SVRT_GAMESCOPE_OUTPUT_HEIGHT=${SVRT_VM_OUTPUT_HEIGHT:-1600}
+  else
+    export SVRT_GAMESCOPE_OUTPUT_WIDTH=${SVRT_VM_OUTPUT_WIDTH:-2880}
+    export SVRT_GAMESCOPE_OUTPUT_HEIGHT=${SVRT_VM_OUTPUT_HEIGHT:-1600}
+  fi
 export INTERNAL_WIDTH=${SVRT_VM_INTERNAL_WIDTH:-$SVRT_GAMESCOPE_OUTPUT_WIDTH}
 export INTERNAL_HEIGHT=${SVRT_VM_INTERNAL_HEIGHT:-$SVRT_GAMESCOPE_OUTPUT_HEIGHT}
 export NESTED_REFRESH=60
-  su-exec stearlight dbus-launch --exit-with-session \
+  su-exec stearlight env USER=stearlight LOGNAME=stearlight HOME="$SVRT_STEAM_HOME" \
+    dbus-launch --exit-with-session \
     /usr/bin/gamescope-session-plus steam \
     2>>/dev/ttyS0 &
 elif [ "$SVRT_VM_SESSION_MODE" = x11 ]; then
@@ -516,19 +633,95 @@ elif [ "$SVRT_VM_SESSION_MODE" = x11 ]; then
     steam_ui_args='-vgui'
   fi
   printf '%s\n' 'STEARLIGHT STEAM SESSION STARTING' >>/dev/ttyS0
-  su-exec stearlight dbus-launch --exit-with-session \
+  su-exec stearlight env USER=stearlight LOGNAME=stearlight HOME="$SVRT_STEAM_HOME" \
+    dbus-launch --exit-with-session \
     "$SVRT_STEAM_LAUNCHER" $steam_ui_args \
     ${SVRT_VM_STEAM_UPDATE_ARGS} \
-    ${SVRT_VM_CEF_ARGS} \
     2>>/dev/ttyS0 &
 else
   # Explicit diagnostic fallback: the standalone shell captures an X11
   # surface into its stereo renderer when gamescope cannot run on a host.
-  su-exec stearlight dbus-launch --exit-with-session \
+  su-exec stearlight env USER=stearlight LOGNAME=stearlight HOME="$SVRT_STEAM_HOME" \
+    dbus-launch --exit-with-session \
     /usr/bin/stearlight-shell \
     2>>/dev/ttyS0 &
 fi
 shell_pid=$!
+if [ "${SVRT_TRACE_STEAM_PROCESSES:-0}" != 0 ]; then
+  # The WebUI transport log reports the PID that owns the connecting socket.
+  # Keep a short process/namespace sample in the serial log so a VM-only
+  # transport failure can be diagnosed without attaching a debugger.  Do not
+  # dump the full environment: Steam tokens and account data may be present.
+  (
+    trace_remaining=${SVRT_TRACE_STEAM_PROCESS_SECONDS:-20}
+    while [ "$trace_remaining" -gt 0 ] && kill -0 "$shell_pid" 2>/dev/null; do
+      printf '%s\n' 'STEARLIGHT STEAM PROCESS TRACE BEGIN' >>/dev/ttyS0
+      for process_dir in /proc/[0-9]*; do
+        [ -r "$process_dir/cmdline" ] || continue
+        process_pid=${process_dir##*/}
+        process_cmd=$(tr '\000' ' ' <"$process_dir/cmdline" 2>/dev/null || true)
+        case "$process_cmd" in
+          *steamwebhelper*|*steamrt64/steam*|*steam.sh*)
+            process_ppid=$(awk '/^PPid:/ {print $2; exit}' \
+              "$process_dir/status" 2>/dev/null || true)
+            process_nspid=$(awk '/^NSpid:/ {$1=""; sub(/^[[:space:]]+/, ""); print; exit}' \
+              "$process_dir/status" 2>/dev/null || true)
+            process_uid=$(awk '/^Uid:/ {print $2; exit}' \
+              "$process_dir/status" 2>/dev/null || true)
+            process_pid_ns=$(readlink "$process_dir/ns/pid" 2>/dev/null || true)
+            process_net_ns=$(readlink "$process_dir/ns/net" 2>/dev/null || true)
+            process_sockets=$(find "$process_dir/fd" -maxdepth 1 -type l \
+              -exec readlink {} \; 2>/dev/null |
+              grep -o 'socket:\[[0-9]*\]' | tr '\n' ',' || true)
+            printf 'STEARLIGHT PROCESS pid=%s ppid=%s nspid=%s uid=%s pidns=%s netns=%s sockets=%s cmd=%s\n' \
+              "$process_pid" "$process_ppid" "$process_nspid" "$process_uid" \
+              "$process_pid_ns" "$process_net_ns" "$process_sockets" "$process_cmd" >>/dev/ttyS0
+            ;;
+        esac
+      done
+      printf '%s\n' 'STEARLIGHT STEAM PROCESS TRACE END' >>/dev/ttyS0
+      trace_remaining=$((trace_remaining - 1))
+      sleep 1
+    done
+  ) &
+  steam_process_trace_pid=$!
+fi
+if [ "${SVRT_TRACE_STEAM_LOGS:-0}" != 0 ]; then
+  # Steam creates these files only after the updater hands off to WebHelper.
+  # Report appended log data without making logging part of the launch path.
+  (
+    trace_state=/tmp/stearlight-steam-log-tail
+    mkdir -p "$trace_state"
+    while kill -0 "$shell_pid" 2>/dev/null; do
+      for steam_log in \
+        "$steam_data/logs/steamwebhelper.log" \
+        "$steam_data/logs/webhelper-linux.txt" \
+        "$steam_data/logs/webhelper.txt" \
+        "$steam_data/logs/transport_steamui.txt" \
+        "$steam_data/logs/steamui.txt" \
+        "$steam_data/logs/steamui_login.txt" \
+        "$steam_data/logs/connection_log.txt" \
+        "$steam_data/logs/cef_log.txt" \
+        "$steam_data/logs/bootstrap_log.txt" \
+        "$steam_data/logs/transport_client.txt" \
+        "$steam_data/logs/webhelper_js.txt"; do
+        [ -f "$steam_log" ] || continue
+        steam_log_name=${steam_log##*/}
+        steam_log_size=$(wc -c <"$steam_log" 2>/dev/null | tr -d '[:space:]')
+        steam_log_state="$trace_state/$steam_log_name.size"
+        previous_size=$(cat "$steam_log_state" 2>/dev/null || true)
+        if [ "$steam_log_size" != "$previous_size" ]; then
+          printf 'STEARLIGHT STEAM LOG %s BEGIN\n' "$steam_log_name" >>/dev/ttyS0
+          tail -n 100 "$steam_log" >>/dev/ttyS0 2>&1 || true
+          printf 'STEARLIGHT STEAM LOG %s END\n' "$steam_log_name" >>/dev/ttyS0
+          printf '%s\n' "$steam_log_size" >"$steam_log_state"
+        fi
+      done
+      sleep 5
+    done
+  ) &
+  steam_log_tail_pid=$!
+fi
 wait "$shell_pid"
 shell_status=$?
 set -e

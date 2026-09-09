@@ -23,6 +23,7 @@ typedef struct stearlight_steam_client {
     SDL_Texture *frame;
     int frame_width;
     int frame_height;
+    int frame_announced;
     uint32_t next_connect_ms;
     uint32_t next_capture_ms;
     stearlight_steam_client_state state;

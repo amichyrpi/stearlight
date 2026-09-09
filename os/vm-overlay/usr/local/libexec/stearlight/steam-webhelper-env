@@ -5,7 +5,23 @@
 # trees from loading each other's swrast module without modifying Valve's
 # checksum-protected wrapper files.
 case "${BASH_SOURCE[1]-$0}" in
-  *steamwebhelper.sh|*steamwebhelper_sniper_wrap.sh)
+  *steamwebhelper.sh)
+    # This is the last host-side shell before pressure-vessel constructs its
+    # bwrap container. Steam can omit the session display variables while
+    # recreating WebHelper, so restore the values published by
+    # gamescope-session-plus here. The Gamescope value is an absolute host
+    # socket path on the VM, which pressure-vessel knows how to bind.
+    if [ -n "${SVRT_STEAM_XWAYLAND_DISPLAY:-}" ]; then
+      export DISPLAY="$SVRT_STEAM_XWAYLAND_DISPLAY"
+    fi
+    if [ -n "${SVRT_STEAM_GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+      export GAMESCOPE_WAYLAND_DISPLAY="$SVRT_STEAM_GAMESCOPE_WAYLAND_DISPLAY"
+    fi
+    unset LIBGL_DRIVERS_PATH
+    unset VK_ICD_FILENAMES VK_DRIVER_FILES
+    unset SVRT_STEAM_PLATFORM_LIBRARY_PATH
+    ;;
+  *steamwebhelper_sniper_wrap.sh)
     unset LIBGL_DRIVERS_PATH
     unset VK_ICD_FILENAMES VK_DRIVER_FILES
     unset SVRT_STEAM_PLATFORM_LIBRARY_PATH

@@ -3,8 +3,16 @@ param(
     [string]$ImagePath = (Join-Path $PSScriptRoot '..\out\stearlight-vm\stearlight-os-vm-x86_64.vdi'),
     [string]$Name = 'Stearlight-OS-Test',
     [int]$BootSeconds = 45,
-    [int]$CaptureDelaySeconds = 8,
+    # Take the screenshot only after the C bridge has captured a real Steam
+    # window.  A small optional settle delay remains useful for manual runs.
+    [int]$CaptureDelaySeconds = 0,
+    # The first SteamOS client update can finish after the compositor marker;
+    # use the same bounded boot budget for the framebuffer wait instead of
+    # declaring a healthy but still-updating client black after 120 seconds.
+    [int]$VisibleTimeoutSeconds = 0,
     [int]$MemoryMB = 3072,
+    [ValidateSet('vga', 'virtio-gl')]
+    [string]$QemuGpu = 'vga',
     [switch]$MeasureFps,
     [switch]$SecondaryMonitor,
     [switch]$KeepRunning,
@@ -47,13 +55,21 @@ function Wait-SerialReady {
         if ($serial -match '(?i)active mode is|could not open user') {
             throw "Stearlight session reported a display/runtime error. Serial log: $Path`n$serial"
         }
-        # VM diagnostic mode uses an X11 scanout when gamescope cannot use a
-        # software Vulkan presentation device.  It still guarantees the same
-        # guest framebuffer dimensions and refresh rate, so accept its marker
-        # as a display-ready result as well.
+        if ($serial -match '(?im)(syntax error near unexpected token|STEARLIGHT STEAM: client exited|Steam exited unexpectedly|first-boot setup did not complete)') {
+            throw "Steam failed before producing a frame. Serial log: $Path`n$serial"
+        }
+        # Both the real Gamescope session and the legacy Weston diagnostic
+        # guarantee the same guest framebuffer dimensions and refresh rate.
         $displayReady = $serial -match "(?i)(SVRT UI READY|STEARLIGHT GAMESCOPE READY|STEARLIGHT VM DISPLAY READY) $expectedWidth`x$expectedHeight @ $expectedRefresh`Hz"
-        $steamSessionReady = $serial -match "(?i)STEARLIGHT STEAM SESSION STARTING"
-        if ($displayReady -and $steamSessionReady) {
+        # The standalone shell announces a captured Steam frame. Gamescope
+        # owns the output directly, so its ready marker is followed by a
+        # framebuffer visibility poll before the screenshot is accepted.
+        $steamSessionReady = $serial -match "(?i)(STEARLIGHT STEAM SESSION STARTING|STEARLIGHT STEAM SHELL STARTING)"
+        $steamFrameReady = $serial -match '(?i)STEARLIGHT STEAM FRAME READY [0-9]+x[0-9]+'
+        $gamescopeSessionReady = $serial -match '(?i)STEARLIGHT GAMESCOPE READY [0-9]+x[0-9]+ @ [0-9]+Hz'
+        $x11SessionReady = $serial -match '(?i)STEARLIGHT STEAM SESSION STARTING'
+        if ($displayReady -and $steamSessionReady -and
+            ($steamFrameReady -or $gamescopeSessionReady -or $x11SessionReady)) {
             return $serial
         }
         if ($Process -and $Process.HasExited) { break }
@@ -62,7 +78,7 @@ function Wait-SerialReady {
     $exitCode = if ($Process -and $Process.HasExited) {
         $Process.ExitCode
     } else { 'timeout' }
-    throw "VM did not report a ready gamescope/Steam session at ${expectedWidth}x${expectedHeight}@${expectedRefresh}Hz (code $exitCode). Serial log: $Path`n$serial"
+    throw "VM did not report a captured Steam frame at ${expectedWidth}x${expectedHeight}@${expectedRefresh}Hz (code $exitCode). Serial log: $Path`n$serial"
 }
 
 function Invoke-QemuMonitor {
@@ -148,6 +164,103 @@ function Read-PpmFingerprint {
     }
 }
 
+function Wait-PpmComplete {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $pixelBytes = [int64]$expectedWidth * [int64]$expectedHeight * 3
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if (Test-Path -LiteralPath $Path) {
+            try {
+                # QEMU writes screendump asynchronously.  Sharing the read
+                # handle is safe, but do not parse until the complete pixel
+                # payload is present; otherwise a short PPM is mistaken for
+                # a failed/black framebuffer while QEMU is still writing it.
+                $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
+                                          [IO.FileAccess]::Read,
+                                          [IO.FileShare]::ReadWrite)
+                try {
+                    if ($stream.Length -ge ($pixelBytes + 16)) {
+                        $stream.Dispose()
+                        if (Read-PpmFingerprint -Path $Path) { return $true }
+                        continue
+                    }
+                } finally {
+                    if ($stream) { $stream.Dispose() }
+                }
+            } catch { }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    return $false
+}
+
+function Test-PpmVisible {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
+                                  [IO.FileAccess]::Read,
+                                  [IO.FileShare]::ReadWrite)
+    } catch {
+        return $false
+    }
+    try {
+        if ((Read-PpmToken -Stream $stream) -ne 'P6') { return $false }
+        $width = 0; $height = 0; $maxValue = 0
+        if (-not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$width) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$height) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$maxValue) -or
+            $width -ne $expectedWidth -or $height -ne $expectedHeight -or
+            $maxValue -ne 255) { return $false }
+        $pixelBytes = [int64]$width * [int64]$height * 3
+        if ($stream.Length -lt $pixelBytes) { return $false }
+        $pixelOffset = $stream.Length - $pixelBytes
+        $pixel = New-Object byte[] 3
+        for ($y = 0; $y -lt $height; $y += 64) {
+            for ($x = 0; $x -lt $width; $x += 64) {
+                [void]$stream.Seek($pixelOffset + (([int64]$y * $width + $x) * 3),
+                                   [IO.SeekOrigin]::Begin)
+                if ($stream.Read($pixel, 0, 3) -eq 3 -and
+                    ([int]$pixel[0] + [int]$pixel[1] + [int]$pixel[2]) -gt 18) {
+                    return $true
+                }
+            }
+        }
+        return $false
+    } catch {
+        return $false
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Wait-QemuVisibleScreenshot {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$TimeoutSeconds = 120
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try {
+            [void](Invoke-QemuMonitor -Port $Port -Command 'screendump stearlight-vm.ppm')
+            if ((Wait-PpmComplete -Path $Path -TimeoutSeconds 5) -and
+                (Test-PpmVisible -Path $Path)) {
+                return $true
+            }
+        } catch { }
+        Start-Sleep -Seconds 1
+    }
+    throw "QEMU framebuffer stayed black after Steam session start: $Path"
+}
+
 function Wait-QemuUiInitialized {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -227,7 +340,9 @@ function Assert-VisibleScreenshot {
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "VM framebuffer screenshot was not created: $Path"
     }
-    $stream = [IO.File]::OpenRead($Path)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
+                               [IO.FileAccess]::Read,
+                               [IO.FileShare]::ReadWrite)
     $header = New-Object byte[] 2
     $headerRead = $stream.Read($header, 0, 2)
     $isPpm = $headerRead -eq 2 -and $header[0] -eq [byte][char]'P' -and
@@ -305,15 +420,69 @@ function Assert-VisibleScreenshot {
     Write-Host "Framebuffer check: $visibleSamples visible samples ($expectedWidth`x$expectedHeight)"
 }
 
+function Assert-StereoScreenshot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
+                               [IO.FileAccess]::Read,
+                               [IO.FileShare]::ReadWrite)
+    try {
+        if ((Read-PpmToken -Stream $stream) -ne 'P6') {
+            throw "Stereo check requires a binary PPM screenshot: $Path"
+        }
+        $width = 0; $height = 0; $maxValue = 0
+        if (-not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$width) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$height) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$maxValue) -or
+            $width -ne $expectedWidth -or $height -ne $expectedHeight -or
+            $maxValue -ne 255) {
+            throw "Stereo check received a ${width}x${height} PPM; expected ${expectedWidth}x${expectedHeight}."
+        }
+        $pixelBytes = [int64]$width * [int64]$height * 3
+        if ($stream.Length -lt $pixelBytes) { throw "Stereo screenshot is truncated: $Path" }
+        $pixelOffset = $stream.Length - $pixelBytes
+        $half = [int]($width / 2)
+        $leftSamples = 0; $rightSamples = 0
+        $pixel = New-Object byte[] 3
+        for ($y = 0; $y -lt $height; $y += 64) {
+            for ($x = 0; $x -lt $half; $x += 64) {
+                [void]$stream.Seek($pixelOffset + (([int64]$y * $width + $x) * 3),
+                                   [IO.SeekOrigin]::Begin)
+                if ($stream.Read($pixel, 0, 3) -eq 3 -and
+                    ([int]$pixel[0] + [int]$pixel[1] + [int]$pixel[2]) -gt 18) {
+                    $leftSamples++
+                }
+                $rightX = $x + $half
+                [void]$stream.Seek($pixelOffset + (([int64]$y * $width + $rightX) * 3),
+                                   [IO.SeekOrigin]::Begin)
+                if ($stream.Read($pixel, 0, 3) -eq 3 -and
+                    ([int]$pixel[0] + [int]$pixel[1] + [int]$pixel[2]) -gt 18) {
+                    $rightSamples++
+                }
+            }
+        }
+        if ($leftSamples -lt 1 -or $rightSamples -lt 1) {
+            throw "Stereo framebuffer is incomplete (left $leftSamples, right $rightSamples samples)."
+        }
+        Write-Host "Stereo check: left $leftSamples, right $rightSamples visible samples"
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 # QEMU is the supported fallback on machines without VirtualBox.  Keep all
 # firmware, logs and temporary state beside the VM image so a test never uses
 # the system drive for VM data.
 if (-not [IO.File]::Exists($vbox)) {
     $qemu = 'C:\Program Files\qemu\qemu-system-x86_64.exe'
+    $qemuImg = 'C:\Program Files\qemu\qemu-img.exe'
     $qemuCode = 'C:\Program Files\qemu\share\edk2-x86_64-code.fd'
     $qemuVarsSource = 'C:\Program Files\qemu\share\edk2-i386-vars.fd'
     if (-not [IO.File]::Exists($qemu)) {
         throw 'Neither VirtualBox 7.x nor QEMU was found. Install QEMU to run the VM test.'
+    }
+    if (-not $PersistDisk -and -not [IO.File]::Exists($qemuImg)) {
+        throw 'qemu-img.exe is required for the disposable writable VM overlay.'
     }
     if (-not [IO.File]::Exists($qemuCode) -or -not [IO.File]::Exists($qemuVarsSource)) {
         throw 'QEMU EFI firmware files are missing.'
@@ -330,6 +499,33 @@ if (-not [IO.File]::Exists($vbox)) {
         '.img' { 'raw'; break }
         '.qcow2' { 'qcow2'; break }
         default { 'vdi' }
+    }
+
+    # QEMU's global -snapshot flag made the ext4 root appear read-only to
+    # Steam's updater on this image.  Steam needs a writable home and package
+    # directory while it completes its first client update.  Use an explicit
+    # qcow2 copy-on-write overlay instead: the base VDI remains untouched, the
+    # update can finish normally, and the overlay is removed after the VM has
+    # shut down.  PersistDisk is the deliberate inspection mode and boots the
+    # supplied image directly.
+    $temporaryOverlay = $null
+    $testImage = $image
+    $testDiskFormat = $diskFormat
+    if (-not $PersistDisk) {
+        $temporaryOverlay = Join-Path $output 'stearlight-vm-overlay.qcow2'
+        $outputRoot = [IO.Path]::GetFullPath($output).TrimEnd('\') + '\'
+        $overlayFullPath = [IO.Path]::GetFullPath($temporaryOverlay)
+        if (-not $overlayFullPath.StartsWith($outputRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Refusing to create the disposable VM overlay outside the image output directory.'
+        }
+        Remove-Item -LiteralPath $temporaryOverlay -Force -ErrorAction SilentlyContinue
+        & $qemuImg create -f qcow2 -F $diskFormat -b $image $temporaryOverlay
+        if ($LASTEXITCODE -ne 0) {
+            throw "qemu-img could not create the writable VM overlay: $temporaryOverlay"
+        }
+        $testImage = $temporaryOverlay
+        $testDiskFormat = 'qcow2'
+        Write-Host "QEMU writable overlay: $temporaryOverlay"
     }
 
     # QEMU's GTK backend keeps the non-client (title-bar/border) height from
@@ -464,6 +660,22 @@ public static class StearlightQemuWindow {
     $monitorPort = ([Net.IPEndPoint]$portProbe.LocalEndpoint).Port
     $portProbe.Stop()
 
+    $qemuVideoArgs = if ($QemuGpu -eq 'virtio-gl') {
+        @(
+            '-vga', 'none',
+            '-device', "virtio-gpu-gl-pci,venus=on,blob=on,hostmem=512M,xres=$expectedWidth,yres=$expectedHeight"
+        )
+    } else {
+        @(
+            '-vga', 'none',
+            '-device', "VGA,xres=$expectedWidth,yres=$expectedHeight,vgamem_mb=32,edid=on"
+        )
+    }
+    $qemuDisplay = if ($QemuGpu -eq 'virtio-gl') {
+        'gtk,gl=on,zoom-to-fit=on,show-menubar=off,window-close=on'
+    } else {
+        'none'
+    }
     $qemuArgs = @(
         '-machine', 'q35',
         # Steam's 32-bit bootstrap, 64-bit WebHelper and lavapipe each keep
@@ -484,28 +696,22 @@ public static class StearlightQemuWindow {
         # deliberately used here because the minimal EFI path has no virtio
         # firmware driver; the guest kernel still exposes the fixed target
         # mode and framebuffer below.
-        '-drive', "file=$image,format=$diskFormat,if=ide",
+        '-drive', "file=$testImage,format=$testDiskFormat,if=ide",
         # Steam's first-run client downloads the Gamepad UI/bootstrap payload.
         # Give the appliance a private user-mode NAT interface so this works
         # in a VM without exposing or depending on a host bridge.
-        '-nic', 'user,model=e1000',
-        # The classic VGA device is intentionally used for the software VM.
-        # Unlike virtio-vga on hosts without GL/DMABUF support, it exposes a
-        # deterministic 2880x1600 EDID mode.  gamescope still runs in its SDL
-        # nested backend and its Wayland surface is the Steam session tested.
-        '-vga', 'none',
-        '-device', "VGA,xres=$expectedWidth,yres=$expectedHeight,vgamem_mb=32,edid=on",
+        '-nic', 'user,model=e1000'
+    ) + $qemuVideoArgs + @(
+        # VGA is the deterministic fallback.  virtio-gl is an optional host
+        # path for QEMU builds that can provide Venus/DRM to the guest.
         # Keep the guest scanout at 2880x1600, but let GTK scale it into a
         # normal desktop window instead of opening a 2880-pixel-wide host
         # window.  zoom-to-fit preserves the stereo aspect ratio.
-        '-display', 'gtk,gl=on,zoom-to-fit=on,show-menubar=off,window-close=on',
+        '-display', $qemuDisplay,
         '-serial', "file:$serialLog",
         '-monitor', "tcp:127.0.0.1:$monitorPort,server=on,wait=off",
         '-no-reboot'
     )
-    if (-not $PersistDisk) {
-        $qemuArgs += '-snapshot'
-    }
     $qemuProcess = $null
     $testSucceeded = $false
     try {
@@ -514,14 +720,14 @@ public static class StearlightQemuWindow {
         [void](Set-QemuWindowAspect -Process $qemuProcess `
             -FramebufferWidth $expectedWidth -FramebufferHeight $expectedHeight)
         [void](Move-QemuWindowToSecondaryMonitor -Process $qemuProcess)
-        Write-Host "QEMU started (PID $($qemuProcess.Id)); waiting for the ${expectedWidth}x${expectedHeight}@${expectedRefresh}Hz UI..."
+        Write-Host "QEMU started (PID $($qemuProcess.Id)); waiting for the Steam frame..."
         if ($MeasureFps) {
             Measure-QemuBootFps -Port $monitorPort -Process $qemuProcess `
                 -Path $serialLog
         }
         [void](Wait-SerialReady -Path $serialLog -Process $qemuProcess `
             -TimeoutSeconds $BootSeconds)
-        Write-Host "QEMU UI readiness passed. Serial log: $serialLog"
+        Write-Host "Steam frame readiness passed. Serial log: $serialLog"
 
         # The guest mode switch can recreate the GTK drawing area.  Apply the
         # same correction once more after the exact display mode is ready.
@@ -529,27 +735,20 @@ public static class StearlightQemuWindow {
             -FramebufferWidth $expectedWidth -FramebufferHeight $expectedHeight)
         [void](Move-QemuWindowToSecondaryMonitor -Process $qemuProcess)
 
-        # The first boot frame is decoded lazily.  Allow the 4.6 s boot movie
-        # (and TCG's initial FFmpeg setup) to reach a visible frame before
-        # taking the framebuffer sample.
+        # For Gamescope, the serial marker means the compositor and Steam have
+        # started but does not itself mean Steam has presented a frame. Poll
+        # the guest framebuffer until a visible image exists; only then take
+        # the one final screenshot used by the assertions below.
         Start-Sleep -Seconds ([Math]::Max(0, $CaptureDelaySeconds))
-        $dumped = $false
-        $dumpResponse = ''
-        Remove-Item -LiteralPath $qemuScreenshot -Force -ErrorAction SilentlyContinue
-        for ($attempt = 0; $attempt -lt 10 -and -not $dumped; $attempt++) {
-            try {
-                $dumpResponse = Invoke-QemuMonitor -Port $monitorPort `
-                    -Command 'screendump stearlight-vm.ppm'
-            } catch {
-                $dumpResponse = $_.Exception.Message
-            }
-            $dumped = Test-Path -LiteralPath $qemuScreenshot
-            if (-not $dumped) { Start-Sleep -Milliseconds 500 }
+        $visibleTimeout = if ($VisibleTimeoutSeconds -gt 0) {
+            $VisibleTimeoutSeconds
+        } else {
+            [Math]::Max(120, $BootSeconds)
         }
-        if (-not $dumped) {
-            throw "QEMU screendump failed: $dumpResponse"
-        }
+        [void](Wait-QemuVisibleScreenshot -Port $monitorPort -Path $qemuScreenshot `
+            -TimeoutSeconds $visibleTimeout)
         Assert-VisibleScreenshot -Path $qemuScreenshot
+        Assert-StereoScreenshot -Path $qemuScreenshot
         Write-Host "QEMU framebuffer screenshot: $qemuScreenshot"
         $testSucceeded = $true
     } finally {
@@ -581,6 +780,10 @@ public static class StearlightQemuWindow {
             Write-Host 'QEMU stopped.'
         } elseif ($qemuProcess -and $KeepRunning) {
             Write-Host "QEMU remains running (PID $($qemuProcess.Id))."
+        }
+        if ($temporaryOverlay -and -not $KeepRunning) {
+            Remove-Item -LiteralPath $temporaryOverlay -Force -ErrorAction SilentlyContinue
+            Write-Host 'QEMU writable overlay removed.'
         }
     }
     return
