@@ -3,13 +3,25 @@
     <img src="/assets/stearlight_small.svg#gh-light-mode-only">
 </p>
 
-[![Build](https://github.com/amichyrpi/H.265-SVRT/actions/workflows/build.yml/badge.svg)](https://github.com/amichyrpi/H.265-SVRT/actions/workflows/build.yml)
+[![Build](https://github.com/amichyrpi/stearlight/actions/workflows/build.yml/badge.svg)](https://github.com/amichyrpi/stearlight/actions/workflows/build.yml)
 
 # H.265 SVRT
 
 This is a **work in progress**. SteamVR driver and Raspberry Pi 4 receiver. This project is in development and is not stable, consider it as **alpha**.
 
+# Naming comvention
+
+In this project, naming convention can be really confusing, But here some usefull informations to understand them:
+
+- The `H.265` prefix is used to indicate that the project is using the H.265 video codec.
+
+- The `SVRT` prefix is used to indicate that the project is using the SteamVR runtime.
+
+- The `Stearlight` prefix is used to indicate that the project is using our SteamOS based distro.
+
 ## TODO
+
+**This project is shifting from the `H.265-SVRT` runtime to the `SteamOS` distro, so the TODO list is not up to date.**
 
 - [ ] Create the SVRT Utility App
   - [ ] Framerate and latency measurements
@@ -23,14 +35,15 @@ This is a **work in progress**. SteamVR driver and Raspberry Pi 4 receiver. This
 
 ## Usage/Installing
 
-Builds and driver are available on the [Releases](https://github.com/amichyrpi/H.265-SVRT/releases) page.
+Builds and driver are available on the [Releases](https://github.com/amichyrpi/stearlight/releases) page.
 
 ### Stearlight OS appliance image
 
-The custom Alpine aarch64 image, silent Raspberry Pi boot configuration,
-native Gamescope/Monado stack, isolated Steam glibc runtime, and 1440x1600 per
-eye shell are documented in [os/README.md](os/README.md). The
-builder creates an image file only; it never flashes or alters a connected Pi.
+Stearlight OS is a custom Alpine aarch64 distro, it uses native Gamescope stack, isolated Steam glibc runtime, and 1440x1600 per eye shell.
+
+We use a separated build and test environment for the aarch64 distro and the VM.
+
+For any informations about the aarch64 distro and the VM, please refer to the [os/README.md](os/README.md) and [os/VM.md](os/VM.md) files.
 
 ### Compiling on Raspberry Pi
 
@@ -111,8 +124,8 @@ H.265 SVRT requires the following libraries to be installed:
 The build process is otherwise normal for a CMake program:
 
 ```sh
-git clone https://github.com/amichyrpi/H.265-SVRT.git
-cd H.265-SVRT
+git clone https://github.com/amichyrpi/stearlight.git
+cd stearlight
 mkdir build && cd build
 cmake .. -G Ninja -DSVRT_BUILD_DRIVER=OFF \
   -DSVRT_BUILD_VENDORED_SDL=ON \
@@ -146,14 +159,14 @@ systems that must retain the old automatic streaming startup, can set
 
 ### SteamVR driver setup
 
-You can easily install the driver by using the SVRT Utility App on both Windows and Linux, you can find the app in the [Releases](https://github.com/amichyrpi/H.265-SVRT/releases) page.
+You can easily install the driver by using the SVRT Utility App on both Windows and Linux, you can find the app in the [Releases](https://github.com/amichyrpi/stearlight/releases) page.
 
 You can also build and install the driver manually by using the following commands:
 
 - **Windows**
   ```powershell
-  git clone https://github.com/amichyrpi/H.265-SVRT.git
-  Set-Location H.265-SVRT
+  git clone https://github.com/amichyrpi/stearlight.git
+  Set-Location stearlight
   cmake -S . -B build -A x64 `
     -DSVRT_BUILD_PI_LIBRARY=OFF `
     -DSVRT_BUILD_RECEIVER=OFF `
@@ -190,7 +203,7 @@ To run it directly without the systemd service:
 
 ```sh
 sudo systemctl stop svrt-receiver.service
-cd ~/H.265-SVRT/build
+cd ~/stearlight/build
 sudo env SDL_VIDEODRIVER=kmsdrm ./pi-receiver/svrt-receiver 9944
 ```
 

@@ -917,7 +917,10 @@ static float rounded_corner_inset(float u) {
 
 static void draw_curved_panel_eye(svrt_ui *ui, int eye_x, int eye_width,
                                   int height, int eye) {
-    enum { slices = 32 };
+    /* Keep the curved silhouette smooth even on renderers that have to use
+       the RenderCopy fallback below.  The geometry path still submits the
+       whole panel in one draw call. */
+    enum { slices = 96 };
 #if SDL_VERSION_ATLEAST(2, 0, 18)
     SDL_Vertex vertices[(slices + 1) * 2];
     int indices[slices * 6];
