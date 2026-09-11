@@ -5,7 +5,7 @@
 
 [![Build](https://github.com/amichyrpi/stearlight/actions/workflows/build.yml/badge.svg)](https://github.com/amichyrpi/stearlight/actions/workflows/build.yml)
 
-# H.265 SVRT
+# Stearlight
 
 This is a **work in progress**. SteamVR driver and Raspberry Pi 4 receiver. This project is in development and is not stable, consider it as **alpha**.
 
