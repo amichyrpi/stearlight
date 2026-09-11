@@ -28,6 +28,10 @@ unset VK_DRIVER_FILES
 # vm-console seeds the standard multiarch DRI directories so Mesa selects the
 # correct module for each child without modifying Valve's replaceable files.
 unset LIBGL_DRIVERS_PATH
+if [ -r "${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}" ]; then
+    export FONTCONFIG_FILE="${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}"
+    export FONTCONFIG_PATH="${SVRT_FONTCONFIG_PATH:-/etc/fonts}"
+fi
 
 # The VM-only direct-client diagnostic bypasses pressure-vessel for the
 # WebHelper so Steam can validate the loopback peer in the host namespace.

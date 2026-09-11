@@ -34,4 +34,5 @@ Use `-MeasureFps` to sample the boot movie while diagnosing host rendering
 performance.
 The test rejects the wrong dimensions, a black framebuffer, or a display/runtime
 error.
-Pass `-KeepRunning` to leave the QEMU window running.
+Pass `-KeepRunning` to leave the visible QEMU window running. Use `-Headless`
+when only the automated framebuffer checks are desired.

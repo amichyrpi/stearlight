@@ -704,8 +704,11 @@ static void draw_panel_content(svrt_ui *ui, svrt_ui_state state,
         if (ui->loop)
             draw_panel_video(ui, ui->loop, elapsed_ms, 1440, 1600, 0, 1);
         if (ui->loop && ui->loop->playback_started &&
-            !ui->loop_first_frame_ms)
+            !ui->loop_first_frame_ms) {
             ui->loop_first_frame_ms = SDL_GetTicks();
+            fprintf(stderr, "STEARLIGHT LOOP STARTING %s\n",
+                    SVRT_GUI_LOOP_PATH);
+        }
     } else if (state == SVRT_UI_AUTHORIZING || state == SVRT_UI_STARTING) {
         draw_loading_content(ui, state, code, detail, elapsed_ms, alpha);
     } else if (state == SVRT_UI_FAILED) {
@@ -1065,10 +1068,13 @@ static void draw_scene(svrt_ui *ui) {
     if (!SVRT_UI_MINIMAL_STEAMOS)
         draw_environment(ui);
     const int eye_count = SVRT_ENABLE_DEBUG_LEFT_EYE_UI ? 1 : 2;
-    /* A standalone boot with no Steam frame is intentionally pitch black.
-       Do not draw the old local panel/loading card while Valve's OOBE is
-       still extracting or negotiating its compositor surface. */
-    if (!(SVRT_UI_MINIMAL_STEAMOS && !ui->client_frame))
+    /* During the standalone SteamOS transition, the local panel is hidden
+       while Steam is still negotiating its surface.  SEARCHING is different:
+       it owns loop.mkv and must be presented after boot.mkv until Steam's
+       first real frame is ready. */
+    const int show_panel = !(SVRT_UI_MINIMAL_STEAMOS && !ui->client_frame &&
+                             ui->state != SVRT_UI_SEARCHING);
+    if (show_panel)
         for (int eye = 0; eye < eye_count; ++eye)
             draw_curved_panel_eye(ui, eye * (width / 2),
                                   eye ? width - width / 2 : width / 2,
@@ -1295,6 +1301,7 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
         ui->state = state; ui->state_started_ms = now_ms;
         if (state == SVRT_UI_SEARCHING) {
             ui->loop_first_frame_ms = 0;
+            ui->loop_presented = 0;
             video_close(&ui->steam_loading);
             video_rewind(ui->loop);
         }
@@ -1304,6 +1311,12 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
             video_close(&ui->loop);
             video_rewind(ui->steam_loading);
             if (ui->steam_loading) ui->steam_loading->loops_completed = 0;
+        }
+        if (state == SVRT_UI_HOME) {
+            /* The first captured Steam frame replaces the transition scene;
+               release its decoder before the steady-state UI continues. */
+            video_close(&ui->loop);
+            video_close(&ui->steam_loading);
         }
     }
     uint32_t elapsed = now_ms - ui->state_started_ms;
@@ -1326,7 +1339,11 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
         trace_render_present(ui, "boot");
         return;
     } else {
-        if (ui->boot) video_close(&ui->boot);
+        if (ui->boot) {
+            fprintf(stderr, "STEARLIGHT BOOT COMPLETE %s\n",
+                    SVRT_GUI_BOOT_PATH);
+            video_close(&ui->boot);
+        }
         draw_panel_content(ui, state, code, detail, elapsed, 255);
     }
     /* Keep the previous status frame on scanout while the loop decoder is
@@ -1337,6 +1354,12 @@ void svrt_ui_draw(svrt_ui *ui, svrt_ui_state state, const char code[5],
     SDL_SetRenderDrawColor(ui->renderer, 0, 0, 0, 255);
     SDL_RenderClear(ui->renderer);
     draw_scene(ui);
+    if (state == SVRT_UI_SEARCHING && ui->loop && ui->loop->texture &&
+        !ui->loop_presented) {
+        ui->loop_presented = 1;
+        fprintf(stderr, "STEARLIGHT LOOP PRESENTED %s\n",
+                SVRT_GUI_LOOP_PATH);
+    }
     SDL_RenderPresent(ui->renderer);
     trace_render_present(ui, "scene");
 }
@@ -1345,6 +1368,17 @@ SDL_Window *svrt_ui_window(svrt_ui *ui) { return ui ? ui->window : NULL; }
 SDL_Renderer *svrt_ui_renderer(svrt_ui *ui) { return ui ? ui->renderer : NULL; }
 int svrt_ui_boot_finished(const svrt_ui *ui) {
     return !ui || !ui->boot || ui->boot->ended;
+}
+int svrt_ui_loop_transition_ready(const svrt_ui *ui, uint32_t now_ms) {
+#if SVRT_UI_MINIMAL_STEAMOS
+    return ui && ui->loop_presented && ui->loop_first_frame_ms &&
+           (uint32_t)(now_ms - ui->loop_first_frame_ms) >=
+               SVRT_STEAM_LOOP_HOLD_MS;
+#else
+    (void)ui;
+    (void)now_ms;
+    return 1;
+#endif
 }
 void svrt_ui_set_client_frame(svrt_ui *ui, SDL_Texture *frame) {
     if (ui) ui->client_frame = frame;

@@ -7,6 +7,10 @@
 
 set -eu
 
+if [ -r "${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}" ]; then
+    export FONTCONFIG_FILE="${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}"
+    export FONTCONFIG_PATH="${SVRT_FONTCONFIG_PATH:-/etc/fonts}"
+fi
 if [ "${1-}" = -- ]; then
     shift
 fi
@@ -34,8 +38,9 @@ export GALLIUM_DRIVER=llvmpipe
 # surface through the native Vulkan WSI layer.
 export LIBGL_DRI3_DISABLE=1
 if [ "${SVRT_TRACE_STEAM_RUNTIME:-0}" != 0 ]; then
-    printf 'STEARLIGHT WEBHELPER DIRECT DISPLAY=%s GAMESCOPE=%s\n' \
-        "${DISPLAY-}" "${GAMESCOPE_WAYLAND_DISPLAY-}" >&2
+    printf 'STEARLIGHT WEBHELPER DIRECT DISPLAY=%s GAMESCOPE=%s FONTCONFIG=%s CACHE=%s\n' \
+        "${DISPLAY-}" "${GAMESCOPE_WAYLAND_DISPLAY-}" \
+        "${FONTCONFIG_FILE-}" "${XDG_CACHE_HOME-}" >&2
 fi
 
 # steamwebhelper.sh normally invokes the pressure-vessel entry point with the

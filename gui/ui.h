@@ -34,6 +34,9 @@
 #ifndef SVRT_SHOW_STEAM_STARTING_FALLBACK
 #define SVRT_SHOW_STEAM_STARTING_FALLBACK 1
 #endif
+#ifndef SVRT_STEAM_LOOP_HOLD_MS
+#define SVRT_STEAM_LOOP_HOLD_MS 0
+#endif
 
 /* The headset scanout is a side-by-side stereo surface.  Keep the geometry
  * in one place so the renderer, the VM display and the Pi KMS session agree
@@ -101,6 +104,7 @@ typedef struct svrt_ui {
     /* Monotonic UI trace points.  They are intentionally public so the Pi
        transition test and the receiver log can verify ordering/timing. */
     uint32_t loop_first_frame_ms;
+    int loop_presented;
     /* Optional one-line-per-second render-rate trace for hardware/VM
        profiling. It is disabled unless SVRT_TRACE_UI_FPS is set. */
     uint32_t trace_window_start_ms;
@@ -121,5 +125,9 @@ void svrt_ui_set_streaming_mode(svrt_ui *ui, int enabled);
  * The standalone OS uses this to hand DRM ownership to gamescope without
  * skipping the stereo boot animation. */
 int svrt_ui_boot_finished(const svrt_ui *ui);
+/* Return non-zero after the loop movie has been presented for the configured
+ * transition hold.  Steam may have a captured frame before boot.mkv ends; the
+ * shell still needs to show loop.mkv after boot before handing off to Steam. */
+int svrt_ui_loop_transition_ready(const svrt_ui *ui, uint32_t now_ms);
 int svrt_ui_take_connection_request(svrt_ui *ui);
 svrt_ui_action svrt_ui_take_action(svrt_ui *ui);

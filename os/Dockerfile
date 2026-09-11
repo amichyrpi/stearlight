@@ -40,7 +40,9 @@ RUN printf '%s\n' \
       > /etc/apk/repositories \
     && apk add --no-cache \
       alpine-base alsa-lib bash bubblewrap ca-certificates chrony dbus dbus-glib dbus-x11 dhcpcd \
-      e2fsprogs-extra ffmpeg gamescope iwd linux-rpi \
+      e2fsprogs-extra ffmpeg fontconfig font-dejavu font-noto font-noto-all \
+      font-noto-cjk font-noto-emoji \
+      gamescope iwd linux-rpi \
       linux-firmware-cypress mesa-dri-gallium \
       mesa-egl mesa-gbm mesa-gles mesa-vulkan-broadcom vulkan-loader mbedtls3 monado openrc \
       pipewire pipewire-alsa pipewire-pulse raspberrypi-bootloader tzdata \
@@ -67,6 +69,14 @@ COPY --from=steam-runtime / /opt/stearlight/steam-runtime/
 COPY --from=steam-runtime --chown=1000:1000 /home/stearlight/ /home/stearlight/
 COPY os/overlay/ /
 COPY os/steam-firstboot /usr/local/libexec/stearlight/steam-firstboot
+RUN cp /etc/fonts/stearlight-fonts.conf /etc/fonts/fonts.conf \
+    && cp /etc/fonts/stearlight-fonts.conf /usr/share/fontconfig/fonts.conf \
+    && rm -f /etc/fonts/conf.d/48-guessfamily.conf \
+             /etc/fonts/conf.d/49-sansserif.conf \
+             /usr/share/fontconfig/conf.avail/48-guessfamily.conf \
+             /usr/share/fontconfig/conf.avail/49-sansserif.conf \
+    && FONTCONFIG_FILE=/etc/fonts/stearlight-fonts.conf \
+    FONTCONFIG_PATH=/etc/fonts fc-cache -f
 RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
     && chmod 0700 /var/lib/stearlight \
     && mkdir -p /etc/first-boot \

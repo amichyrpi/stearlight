@@ -15,8 +15,9 @@ an appliance image, not an in-place conversion of Raspberry Pi OS.
   payload, so VM boots do not repeat the 500 MB client download.
 - A 2880x1600 side-by-side scanout at 60 Hz (1440x1600 per eye), pure black world, and
   one smaller curved floating Steam surface.
-- `assets/os/os_boot.mp4` as the first userspace splash and
-  `steam_loading.mkv` for Steam/connection transitions.
+- `assets/boot.mkv` as the first userspace splash, followed by the looping
+  `assets/loop.mkv` transition until Steam's first Gamepad UI frame appears.
+  `steam_loading.mkv` remains available for Steam/connection transitions.
 - SteamOS compatibility helpers (`timedatectl`, `localectl`, timezone,
   developer-mode, update/branch and firmware probes) are included so the
   native Gamepad UI can complete its first-run setup without a desktop
@@ -76,8 +77,9 @@ them from the optional `STEARLIGHT_STEAM_USERNAME` and
 
 ## First boot welcome
 
-After the startup movie, the standalone shell immediately displays the real
-Steam first-run experience from the Steam Gamepad UI client. The small
+After `boot.mkv`, the standalone shell shows `loop.mkv` while it waits for
+the first real Steam Gamepad UI frame, then displays the real Steam first-run
+experience from the Steam Gamepad UI client. The small
   `steam-firstboot` helper prepares the per-user bootstrap tree and repairs its
   ABI-specific Mesa seed; it never draws a replacement welcome page or writes
   account credentials. The SteamOS helper commands satisfy the timezone,

@@ -27,6 +27,11 @@ if [ ! -x "${steam_arm}" ]; then
     exit 127
 fi
 
+if [ -r "${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}" ]; then
+    export FONTCONFIG_FILE="${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}"
+    export FONTCONFIG_PATH="${SVRT_FONTCONFIG_PATH:-/etc/fonts}"
+fi
+
 ld_path=${steam_arm_dir}
 if [ -d "${steam_shim_dir}" ]; then
     ld_path=${ld_path}:${steam_shim_dir}

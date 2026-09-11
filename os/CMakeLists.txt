@@ -5,7 +5,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SVRT_SDL_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
 pkg_check_modules(SVRT_AVCODEC REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil)
 
-set(SVRT_OS_BOOT_ASSET "os/os_boot.mp4")
+set(SVRT_OS_BOOT_ASSET "boot.mkv")
 add_executable(stearlight-shell
   shell.c
   steam_client.c steam_client.h
@@ -22,6 +22,7 @@ target_compile_definitions(stearlight-shell PRIVATE
   SVRT_UI_MINIMAL_STEAMOS=1
   SVRT_UI_FORCE_PANEL_STRIPS=1
   SVRT_SHOW_STEAM_STARTING_FALLBACK=0
+  SVRT_STEAM_LOOP_HOLD_MS=1500
   SVRT_STEAM_CAPTURE_INTERVAL_MS=16
   SVRT_DISPLAY_WIDTH=2880
   SVRT_DISPLAY_HEIGHT=1600
@@ -34,5 +35,7 @@ target_link_libraries(stearlight-shell PRIVATE
 install(TARGETS stearlight-shell RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../assets/
   DESTINATION ${CMAKE_INSTALL_DATADIR}/svrt/assets
-  FILES_MATCHING PATTERN "*.mkv" PATTERN "*.mp4" PATTERN "*.otf"
+  FILES_MATCHING PATTERN "*.mkv" PATTERN "*.otf"
                  PATTERN "transition_background.png")
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/../assets/D-DINExp-Bold.otf
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/fonts/stearlight)

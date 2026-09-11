@@ -91,9 +91,20 @@ int main(void) {
     while (!quitting) {
         const uint32_t now = SDL_GetTicks();
         stearlight_steam_client_update(&steam, svrt_ui_renderer(&ui), now);
-        svrt_ui_set_client_frame(&ui,
-                                 stearlight_steam_client_frame(&steam));
-        svrt_ui_draw(&ui, SVRT_UI_HOME, NULL, NULL,
+        SDL_Texture *client_frame = stearlight_steam_client_frame(&steam);
+        svrt_ui_set_client_frame(&ui, client_frame);
+#if SVRT_UI_MINIMAL_STEAMOS
+        /* The Steam window can become capturable while boot.mkv is still
+           playing.  Keep SEARCHING until loop.mkv has actually been presented
+           for one complete transition interval, then hand off to the first
+           real Steam Gamepad UI frame. */
+        const svrt_ui_state ui_state =
+            client_frame && svrt_ui_loop_transition_ready(&ui, now) ?
+                SVRT_UI_HOME : SVRT_UI_SEARCHING;
+#else
+        const svrt_ui_state ui_state = SVRT_UI_HOME;
+#endif
+        svrt_ui_draw(&ui, ui_state, NULL, NULL,
                      stearlight_steam_client_detail(&steam), now);
         open_steam_page(&steam, svrt_ui_take_action(&ui));
         sleep_frame(&deadline_ns);

@@ -44,6 +44,8 @@ grep -q 'export SVRT_USE_GAMESCOPE=0' \
   "${base}/overlay/usr/local/libexec/stearlight/session"
 grep -q 'export SVRT_STEAM_FORCE_WAYLAND=0' \
   "${base}/overlay/usr/local/libexec/stearlight/session"
+grep -q 'export LC_ALL=\${LC_ALL:-C.UTF-8}' \
+  "${base}/overlay/usr/local/libexec/stearlight/session"
 grep -q 'STEARLIGHT_EYE_WIDTH="1440"' \
   "${base}/overlay/etc/conf.d/stearlight"
 grep -q 'STEARLIGHT_EYE_HEIGHT="1600"' \
@@ -54,9 +56,45 @@ grep -q 'SVRT_DISPLAY_WIDTH=2880' "${base}/CMakeLists.txt"
 grep -q 'SVRT_DISPLAY_HEIGHT=1600' "${base}/CMakeLists.txt"
 grep -q 'SVRT_DISPLAY_REFRESH_HZ=60' "${base}/CMakeLists.txt"
 grep -q 'SVRT_ENFORCE_DISPLAY_MODE=1' "${base}/CMakeLists.txt"
+grep -q 'set(SVRT_OS_BOOT_ASSET "boot.mkv")' "${base}/CMakeLists.txt"
+grep -q 'PATTERN "\*\.mkv"' "${base}/CMakeLists.txt"
+! grep -q 'PATTERN "\*\.mp4"' "${base}/CMakeLists.txt"
 grep -q 'svrt_ui_boot_finished' "${base}/shell.c" "${repo}/gui/ui.c" "${repo}/gui/ui.h"
 grep -q 'SVRT_BOOT_ONLY=1' \
   "${base}/overlay/usr/local/libexec/stearlight/session"
+grep -q 'STEARLIGHT_SESSION_MODE" = gamescope' \
+  "${base}/overlay/usr/local/libexec/stearlight/session"
+grep -q 'svrt_ui_loop_transition_ready' "${base}/shell.c" "${repo}/gui/ui.c" "${repo}/gui/ui.h"
+grep -q 'SVRT_STEAM_LOOP_HOLD_MS=1500' "${base}/CMakeLists.txt"
+grep -q 'state != SVRT_UI_SEARCHING' "${repo}/gui/ui.c"
+grep -q 'STEARLIGHT LOOP STARTING' "${repo}/gui/ui.c"
+grep -q 'STEARLIGHT LOOP PRESENTED' "${repo}/gui/ui.c"
+grep -q 'STEARLIGHT BOOT COMPLETE' "${repo}/gui/ui.c"
+grep -q 'font-noto-all' "${base}/Dockerfile" "${base}/Dockerfile.vm"
+grep -q 'font-noto-emoji' "${base}/Dockerfile" "${base}/Dockerfile.vm"
+test -f "${base}/overlay/etc/fonts/stearlight-fonts.conf"
+test -f "${base}/vm-overlay/etc/fonts/stearlight-fonts.conf"
+grep -q 'SVRT_FONTCONFIG_FILE' \
+  "${base}/overlay/usr/local/libexec/stearlight/session" \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -q 'FONTCONFIG_PATH' \
+  "${base}/overlay/usr/local/libexec/stearlight/session" \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console" \
+  "${base}/overlay/usr/local/libexec/stearlight/launch-steam" \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/steam32-launch"
+grep -q 'XDG_CACHE_HOME' \
+  "${base}/overlay/usr/local/libexec/stearlight/session" \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -q '/home/stearlight/.cache/fontconfig' \
+  "${base}/overlay/etc/fonts/stearlight-fonts.conf" \
+  "${base}/vm-overlay/etc/fonts/stearlight-fonts.conf"
+grep -q 'cp /etc/fonts/stearlight-fonts.conf /etc/fonts/fonts.conf' \
+  "${base}/Dockerfile" "${base}/Dockerfile.vm"
+grep -q '48-guessfamily.conf' "${base}/Dockerfile" "${base}/Dockerfile.vm"
+grep -q '49-sansserif.conf' "${base}/Dockerfile" "${base}/Dockerfile.vm"
+grep -q 'fontconfig_file = getenv' "${repo}/os/steam_client.c"
+grep -q 'WEBHELPER DIRECT.*FONTCONFIG' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/direct-steam-runtime/_v2-entry-point"
 grep -q 'disable_splash=1' "${base}/boot/config.txt"
 grep -q 'logo.nologo' "${base}/boot/cmdline.txt"
 if grep -q 'console=tty12' "${base}/boot/cmdline.txt"; then

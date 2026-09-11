@@ -11,9 +11,27 @@ export STEARLIGHT_SESSION_MODE=${STEARLIGHT_SESSION_MODE:-shell}
 export XDG_RUNTIME_DIR=/run/user/1000
 export XDG_SESSION_TYPE=tty
 export XDG_CURRENT_DESKTOP=Stearlight
+# Alpine has no login manager to seed a UTF-8 locale.  Steam's Chromium UI
+# otherwise falls back to an incomplete ASCII-only font selection, especially
+# on the CJK language choices in the first-run welcome flow.
+export LANG=${LANG:-C.UTF-8}
+export LC_ALL=${LC_ALL:-C.UTF-8}
+export LC_CTYPE=${LC_CTYPE:-C.UTF-8}
+export SVRT_FONTCONFIG_FILE=${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}
+if [ -r "$SVRT_FONTCONFIG_FILE" ]; then
+  export FONTCONFIG_FILE="$SVRT_FONTCONFIG_FILE"
+  export FONTCONFIG_PATH=${SVRT_FONTCONFIG_PATH:-/etc/fonts}
+fi
 export SDL_VIDEODRIVER=KMSDRM
 export SVRT_STEAM_HOME=/home/stearlight
 export SVRT_STEAM_USER=stearlight
+if [ -z "${XDG_CACHE_HOME:-}" ]; then
+  export XDG_CACHE_HOME="$SVRT_STEAM_HOME/.cache"
+fi
+mkdir -p "$XDG_CACHE_HOME/fontconfig"
+if [ "$XDG_CACHE_HOME" = "$SVRT_STEAM_HOME/.cache" ]; then
+  chown stearlight:stearlight "$XDG_CACHE_HOME" "$XDG_CACHE_HOME/fontconfig"
+fi
 export SVRT_STEAM_PREPARE=/usr/local/libexec/stearlight/steam-firstboot
 export SVRT_STEAMUI_PATCH=/usr/local/libexec/stearlight/patch-steamui-network
 # Steam verifies every WebUI chunk before starting; keep the optional network
@@ -99,12 +117,13 @@ fi
 
 chown -R stearlight:stearlight "$XDG_RUNTIME_DIR"
 
-# Render the userspace boot movie before gamescope claims DRM/KMS.  This is a
-# real SDL/KMS surface (not a text splash), and ui.c renders the same frame to
-# both 1440x1600 eyes.  The helper exits at the movie's final frame so
-# gamescope can take DRM ownership without a compositor race.  Set
+# A native Gamescope/DRM session must show the boot movie before Gamescope
+# claims DRM/KMS.  The standalone shell session owns boot.mkv and loop.mkv in
+# one process, so do not run a second boot-only shell for that path.  Set
 # STEARLIGHT_BOOT_SCREEN=0 only for low-level bring-up diagnostics.
 if [ "${STEARLIGHT_BOOT_SCREEN:-1}" = 1 ] &&
+   [ "$STEARLIGHT_SESSION_MODE" = gamescope ] &&
+   [ "${STEARLIGHT_GAMESCOPE_BACKEND:-drm}" = drm ] &&
    [ -x /usr/bin/stearlight-shell ]; then
   openvt -c 1 -f -s -w -- su-exec stearlight env SVRT_BOOT_ONLY=1 \
     /usr/bin/stearlight-shell >>/var/log/stearlight-ui.log 2>&1 || true

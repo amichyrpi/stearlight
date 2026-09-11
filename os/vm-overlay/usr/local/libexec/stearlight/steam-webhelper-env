@@ -4,6 +4,10 @@
 # the ABI-specific DRI override at that script boundary keeps the two process
 # trees from loading each other's swrast module without modifying Valve's
 # checksum-protected wrapper files.
+if [ -r "${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}" ]; then
+  export FONTCONFIG_FILE="${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}"
+  export FONTCONFIG_PATH="${SVRT_FONTCONFIG_PATH:-/etc/fonts}"
+fi
 case "${BASH_SOURCE[1]-$0}" in
   *steamwebhelper.sh)
     # This is the last host-side shell before pressure-vessel constructs its

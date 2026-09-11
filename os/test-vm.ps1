@@ -13,6 +13,9 @@ param(
     [int]$MemoryMB = 3072,
     [ValidateSet('vga', 'virtio-gl')]
     [string]$QemuGpu = 'vga',
+    # Keep QEMU visible by default so a successful SteamOS session can be
+    # inspected manually. Use -Headless for CI or framebuffer-only runs.
+    [switch]$Headless,
     [switch]$MeasureFps,
     [switch]$SecondaryMonitor,
     [switch]$KeepRunning,
@@ -269,7 +272,7 @@ function Wait-QemuUiInitialized {
     )
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $deadline) {
-        if ((Read-SerialLog -Path $Path) -match '(?i)(SVRT UI INITIALIZED|STEARLIGHT GAMESCOPE READY|STEARLIGHT VM DISPLAY READY)') { return $true }
+        if ((Read-SerialLog -Path $Path) -match '(?i)(SVRT UI INITIALIZED|STEARLIGHT GAMESCOPE READY)') { return $true }
         if ($Process.HasExited) { return $false }
         Start-Sleep -Milliseconds 100
     }
@@ -671,10 +674,10 @@ public static class StearlightQemuWindow {
             '-device', "VGA,xres=$expectedWidth,yres=$expectedHeight,vgamem_mb=32,edid=on"
         )
     }
-    $qemuDisplay = if ($QemuGpu -eq 'virtio-gl') {
-        'gtk,gl=on,zoom-to-fit=on,show-menubar=off,window-close=on'
-    } else {
+    $qemuDisplay = if ($Headless) {
         'none'
+    } else {
+        'gtk,gl=on,zoom-to-fit=on,show-menubar=off,window-close=on'
     }
     $qemuArgs = @(
         '-machine', 'q35',

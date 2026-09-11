@@ -80,6 +80,27 @@ static void child_environment(void) {
     setenv("HOME", steam_home(), 1);
     setenv("USER", user, 1);
     setenv("LOGNAME", user, 1);
+    /* Steam can rebuild its WebHelper environment after the initial
+       launcher. Reassert the compatibility-safe Fontconfig file here so
+       every child, including first-boot and the native client, keeps the
+       complete Noto fallback set instead of parsing Alpine's conf.d files. */
+    const char *fontconfig_file = getenv("SVRT_FONTCONFIG_FILE");
+    if (fontconfig_file && fontconfig_file[0] &&
+        access(fontconfig_file, R_OK) == 0) {
+        setenv("FONTCONFIG_FILE", fontconfig_file, 1);
+        const char *fontconfig_path = getenv("SVRT_FONTCONFIG_PATH");
+        setenv("FONTCONFIG_PATH",
+               fontconfig_path && fontconfig_path[0] ? fontconfig_path
+                                                     : "/etc/fonts",
+               1);
+    }
+    const char *xdg_cache = getenv("XDG_CACHE_HOME");
+    char default_cache[512];
+    if (!xdg_cache || !xdg_cache[0]) {
+        snprintf(default_cache, sizeof(default_cache), "%s/.cache",
+                 steam_home());
+        setenv("XDG_CACHE_HOME", default_cache, 1);
+    }
     setenv("DISPLAY", STEARLIGHT_STEAM_DISPLAY, 1);
     setenv("XDG_SESSION_TYPE", "x11", 1);
     setenv("XDG_CURRENT_DESKTOP", "gamescope", 1);

@@ -6,6 +6,10 @@
 
 set -eu
 
+if [ -r "${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}" ]; then
+    export FONTCONFIG_FILE="${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}"
+    export FONTCONFIG_PATH="${SVRT_FONTCONFIG_PATH:-/etc/fonts}"
+fi
 if [ -n "${SVRT_STEAM_XWAYLAND_DISPLAY:-}" ]; then
     export DISPLAY="$SVRT_STEAM_XWAYLAND_DISPLAY"
 fi
@@ -14,8 +18,9 @@ if [ -n "${SVRT_STEAM_GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
 fi
 
 if [ "${SVRT_TRACE_STEAM_RUNTIME:-0}" != 0 ]; then
-    printf 'STEARLIGHT WEBHELPER TRAMPOLINE DISPLAY=%s GAMESCOPE=%s\n' \
-        "${DISPLAY-}" "${GAMESCOPE_WAYLAND_DISPLAY-}" >&2
+    printf 'STEARLIGHT WEBHELPER TRAMPOLINE DISPLAY=%s GAMESCOPE=%s FONTCONFIG=%s CACHE=%s\n' \
+        "${DISPLAY-}" "${GAMESCOPE_WAYLAND_DISPLAY-}" \
+        "${FONTCONFIG_FILE-}" "${XDG_CACHE_HOME-}" >&2
 fi
 
 steam_home=${SVRT_STEAM_HOME:-${HOME:-/home/stearlight}}

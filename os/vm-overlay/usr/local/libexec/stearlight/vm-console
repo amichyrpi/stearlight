@@ -24,8 +24,20 @@ export DISPLAY=:0
 export LANG=${LANG:-C.UTF-8}
 export LC_ALL=${LC_ALL:-C.UTF-8}
 export LC_CTYPE=${LC_CTYPE:-C.UTF-8}
+export SVRT_FONTCONFIG_FILE=${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}
+if [ -r "$SVRT_FONTCONFIG_FILE" ]; then
+  export FONTCONFIG_FILE="$SVRT_FONTCONFIG_FILE"
+  export FONTCONFIG_PATH=${SVRT_FONTCONFIG_PATH:-/etc/fonts}
+fi
 export SVRT_STEAM_HOME=/home/stearlight
 export SVRT_STEAM_USER=stearlight
+if [ -z "${XDG_CACHE_HOME:-}" ]; then
+  export XDG_CACHE_HOME="$SVRT_STEAM_HOME/.cache"
+fi
+mkdir -p "$XDG_CACHE_HOME/fontconfig"
+if [ "$XDG_CACHE_HOME" = "$SVRT_STEAM_HOME/.cache" ]; then
+  chown stearlight:stearlight "$XDG_CACHE_HOME" "$XDG_CACHE_HOME/fontconfig"
+fi
 export SVRT_STEAM_BINARY=/usr/bin/steam
 export SVRT_STEAM_LAUNCHER=/usr/local/libexec/stearlight/steam32-launch
 export SVRT_STEAM_PREPARE=/usr/local/libexec/stearlight/steam-firstboot
@@ -124,10 +136,12 @@ if [ -z "${SVRT_VM_SESSION_MODE:-}" ]; then
        [ "$vm_has_software_gamescope" = 1 ]; then
     # Windows QEMU's Bochs/VGA device exposes a DRM node but not a Vulkan
     # physical device.  Nested Gamescope can therefore initialize Steam but
-    # cannot present its SDL swapchain to the guest scanout.  Use the real
-    # Gamepad UI on X11 by default for that VM path; an explicit
-    # SVRT_VM_SESSION_MODE=gamescope remains available for host diagnostics.
-    export SVRT_VM_SESSION_MODE=x11
+    # cannot present its SDL swapchain to the guest scanout.  Use the native
+    # Stearlight shell bridge by default: Steam still runs the real Gamepad UI
+    # on a private X11 display, while the shell presents the captured frame to
+    # both stereo eyes.  An explicit SVRT_VM_SESSION_MODE=x11 remains available
+    # for the flat direct-X11 diagnostic path.
+    export SVRT_VM_SESSION_MODE=shell
   else
     export SVRT_VM_SESSION_MODE=shell
   fi
@@ -138,6 +152,15 @@ if [ -z "${SVRT_USE_GAMESCOPE:-}" ]; then
   else
     export SVRT_USE_GAMESCOPE=0
   fi
+fi
+# The shell bridge is the VM's software stereo compositor.  Do not start a
+# second nested Gamescope inside its private Xvfb display: that would either
+# lose the X11 surface that the bridge captures or hit the same lavapipe
+# presentation failure as the direct SDL path.  The explicit `gamescope`
+# session mode remains available when a host provides real Vulkan/DRM.
+if [ "$SVRT_VM_SESSION_MODE" = shell ]; then
+  export SVRT_USE_GAMESCOPE=0
+  export SVRT_STEAM_FORCE_WAYLAND=0
 fi
 if [ -z "${SVRT_VM_USE_DRM:-}" ]; then
   if [ "$vm_has_virtio_gpu" = 1 ]; then
@@ -267,6 +290,8 @@ if [ "${SVRT_TRACE_STEAM_RUNTIME}" != 0 ]; then
   # already healthy and are disabled by production callers.
   export PRESSURE_VESSEL_VERBOSE=1
   export STEAM_LINUX_RUNTIME_VERBOSE=1
+  printf 'STEARLIGHT FONTCONFIG FILE=%s PATH=%s CACHE=%s\n' \
+    "${FONTCONFIG_FILE:-}" "${FONTCONFIG_PATH:-}" "$XDG_CACHE_HOME" >>/dev/ttyS0
 fi
 
 # Keep the optional SteamRT marker available for beta diagnostics.  The normal
@@ -478,6 +503,20 @@ if [ "$SVRT_VM_SESSION_MODE" != gamescope ] || [ "$gamescope_backend" != drm ]; 
   [ -S /tmp/.X11-unix/X0 ] || exit 1
 fi
 
+# A native Gamescope/DRM diagnostic must show the boot movie before Gamescope
+# takes DRM ownership.  The normal VM shell owns boot.mkv and loop.mkv in one
+# process; running a boot-only shell there would show the boot movie twice.
+if [ "${STEARLIGHT_BOOT_SCREEN:-1}" = 1 ] &&
+   [ "$SVRT_VM_SESSION_MODE" = gamescope ] &&
+   [ "$gamescope_backend" = drm ] &&
+   [ -x /usr/bin/stearlight-shell ]; then
+  printf '%s\n' 'STEARLIGHT VM BOOT SCREEN STARTING' >>/dev/ttyS0
+  openvt -c 1 -f -s -w -- su-exec stearlight env \
+    SDL_VIDEODRIVER=KMSDRM SVRT_BOOT_ONLY=1 \
+    /usr/bin/stearlight-shell >>/dev/ttyS0 2>&1 || true
+  printf '%s\n' 'STEARLIGHT VM BOOT SCREEN COMPLETE' >>/dev/ttyS0
+fi
+
 # QEMU's software-VGA diagnostic path has no window manager.  CEF uses an
 # INT_MIN position as a request for WM placement; without a WM Steam's login
 # window is mapped at an enormous unsigned coordinate and never reaches the
@@ -515,16 +554,19 @@ if [ -n "$xorg_pid" ]; then
 fi
 
 # Let dhcpcd obtain the user-mode NAT lease before Steam performs its first
-# manifest request.  The timeout is deliberately short so an offline VM still
-# reaches the Steam welcome/error UI instead of hanging the display session.
-attempt=0
-while [ "$attempt" -lt 15 ]; do
-  if ip route show default 2>/dev/null | grep -q default; then
-    break
-  fi
-  attempt=$((attempt + 1))
-  sleep 1
-done
+# manifest request in the native Gamescope path.  The shell bridge can start
+# immediately and lets Steam wait for networking behind the boot/loop movies;
+# blocking there made the VM show a static framebuffer during its boot check.
+if [ "$SVRT_VM_SESSION_MODE" = gamescope ]; then
+  attempt=0
+  while [ "$attempt" -lt 15 ]; do
+    if ip route show default 2>/dev/null | grep -q default; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+fi
 
 # Keep this supervisor process alive for the lifetime of the X server.  The
 # previous `exec` form orphaned Xorg whenever the shell exited (for example
