@@ -55,7 +55,13 @@ set +a
 : "${TOUCH_MODE:=4}"
 : "${HIDE_CURSOR_DELAY_MS:=3000}"
 : "${FADE_OUT_DURATION_MS:=200}"
-: "${CLIENTCMD:=/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck}"
+if [[ -z "${CLIENTCMD:-}" ]]; then
+    steam_frame_arg=
+    if [[ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]]; then
+        steam_frame_arg=' -steamframe'
+    fi
+    CLIENTCMD="/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck${steam_frame_arg}"
+fi
 
 export ENABLE_GAMESCOPE_WSI=1
 export QT_QPA_PLATFORM=xcb

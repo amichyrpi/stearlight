@@ -40,6 +40,29 @@ export SVRT_STEAMUI_PATCH_ENABLED=${SVRT_STEAMUI_PATCH_ENABLED:-0}
 export SVRT_STEAM_LAUNCHER=/usr/local/libexec/stearlight/launch-steam
 export SVRT_STEAM_RUNTIME_SEED=/usr/lib/steam
 export STEARLIGHT_STEAM_BETA=steamdeck_publicbeta
+# Use Valve's native Steam Frame client mode.  Set this to 0 only for the
+# explicit legacy ten-foot diagnostic; pairing and streaming are still owned by
+# Steam's own steamlink:// and streaming_client path.
+export STEARLIGHT_STEAM_FRAME=${STEARLIGHT_STEAM_FRAME:-1}
+# Standalone XR is deliberately opt-in. When enabled, pass the same OpenXR
+# runtime contract to games launched by Steam; with the default disabled value
+# these variables stay unset so Valve's Steam Frame/VRLink path is untouched.
+xr_config=${STEARLIGHT_XR_CONFIG:-/etc/conf.d/stearlight-xr}
+if [ -r "$xr_config" ]; then
+  . "$xr_config"
+fi
+if [ "${STEARLIGHT_XR_ENABLE:-0}" = 1 ] &&
+   [ "${STEARLIGHT_XR_MODE:-standalone}" = standalone ]; then
+  export XR_RUNTIME_JSON="${STEARLIGHT_XR_RUNTIME_JSON:-/usr/share/openxr/1/openxr_monado.json}"
+  export XRT_COMPOSITOR_SCALE_PERCENTAGE="${STEARLIGHT_XR_COMPOSITOR_SCALE_PERCENTAGE:-100}"
+  export XRT_COMPOSITOR_COMPUTE="${STEARLIGHT_XR_COMPOSITOR_COMPUTE:-0}"
+  export XRT_NO_STDIN="${STEARLIGHT_XR_NO_STDIN:-1}"
+  if [ -n "${STEARLIGHT_XR_ACTIVE_CONFIG:-}" ]; then
+    export P_OVERRIDE_ACTIVE_CONFIG="$STEARLIGHT_XR_ACTIVE_CONFIG"
+  else
+    unset P_OVERRIDE_ACTIVE_CONFIG
+  fi
+fi
 # Do not start a second nested Gamescope from stearlight-shell.  The shell's
 # Steam bridge uses a private Xvfb display and maps the captured Valve surface
 # into the two-eye KMS renderer.  The explicit Gamescope session below keeps
@@ -50,7 +73,6 @@ if [ "$STEARLIGHT_SESSION_MODE" != gamescope ]; then
 else
   export SVRT_USE_GAMESCOPE=${SVRT_USE_GAMESCOPE:-1}
 fi
-export SVRT_START_IN_STREAMING_MODE=0
 export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
 export STEAM_BOOTSTRAP_CONFIG="${XDG_CONFIG_HOME:-$SVRT_STEAM_HOME/.config}/gamescope/bootstrap.cfg"
 export STEAMOS_STEAM_REBOOT_SENTINEL=/tmp/steamos-reboot-sentinel
@@ -87,7 +109,14 @@ export GTK_IM_MODULE=Steam
 export XCURSOR_THEME=steam
 export XCURSOR_SCALE=256
 export GAMESCOPE_FALLBACK_APPID=0x41524d41
-export CLIENTCMD="/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck"
+# Match Armada's native ARM64 SteamOS session. Valve's client selects its
+# own streaming_client/VRLink path when Steam Link is opened. The installed
+# Valve client also exposes its native -steamframe mode for this session.
+steam_frame_arg=
+if [ "$STEARLIGHT_STEAM_FRAME" != 0 ]; then
+    steam_frame_arg=' -steamframe'
+fi
+export CLIENTCMD="/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck${steam_frame_arg}"
 export CURSOR_FILE="$SVRT_STEAM_HOME/.local/share/Steam/tenfoot/resource/images/cursors/arrow.png"
 mkdir -p "$(dirname "$STEAM_BOOTSTRAP_CONFIG")"
 touch "$STEAM_BOOTSTRAP_CONFIG"

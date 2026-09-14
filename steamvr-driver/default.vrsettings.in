@@ -1,0 +1,15 @@
+{
+  "vrlink_@SVRT_VRLINK_PRODUCT@": {
+    "enable": true,
+    "modelNumber": "Stearlight",
+    "trackingSystemName": "stearlight",
+    "manufacturerName": "Stearlight",
+    "deviceType": "stearlight/hmd",
+    "serialNumber": "STEARLIGHT-PI4-001",
+    "resourceRoot": "svrt-vrlink",
+    "recommendedRenderWidth": 1440,
+    "recommendedRenderHeight": 1600,
+    "minStreamFormatWidth": 1024,
+    "maxStreamFormatWidth": 1536
+  }
+}

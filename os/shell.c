@@ -35,17 +35,63 @@ static void sleep_frame(uint64_t *deadline_ns) {
                                         &target, NULL) == EINTR) {}
 }
 
+static void forward_ui_input(const svrt_ui_input *input, void *opaque) {
+    stearlight_steam_client *client = opaque;
+    if (!input || !client || !input->on_surface) return;
+    switch (input->type) {
+        case SVRT_UI_INPUT_MOUSE_MOTION:
+            stearlight_steam_client_send_mouse_motion(
+                client, input->surface_x, input->surface_y,
+                input->surface_width, input->surface_height);
+            break;
+        case SVRT_UI_INPUT_MOUSE_BUTTON_DOWN:
+        case SVRT_UI_INPUT_MOUSE_BUTTON_UP:
+            /* SDL can deliver the first button event before a motion event
+               after the private X display is created. Put XTest's pointer on
+               the same surface coordinate before sending the click so Valve
+               receives it at the location the user selected. */
+            stearlight_steam_client_send_mouse_motion(
+                client, input->surface_x, input->surface_y,
+                input->surface_width, input->surface_height);
+            stearlight_steam_client_send_mouse_button(
+                client, input->button,
+                input->type == SVRT_UI_INPUT_MOUSE_BUTTON_DOWN);
+            break;
+        case SVRT_UI_INPUT_MOUSE_WHEEL:
+            stearlight_steam_client_send_mouse_motion(
+                client, input->surface_x, input->surface_y,
+                input->surface_width, input->surface_height);
+            stearlight_steam_client_send_mouse_wheel(client, input->wheel_y);
+            break;
+        case SVRT_UI_INPUT_KEY_DOWN:
+        case SVRT_UI_INPUT_KEY_UP:
+            stearlight_steam_client_send_key(
+                client, input->keycode,
+                input->type == SVRT_UI_INPUT_KEY_DOWN, input->modifiers);
+            break;
+    }
+}
+
 static void open_steam_page(stearlight_steam_client *client,
                             svrt_ui_action action) {
     const char *uri = NULL;
     switch (action) {
-        case SVRT_UI_ACTION_HOME: uri = "steam://open/main"; break;
+        /* These are Valve client URL handlers found in the installed Steam
+           client. Keep navigation in Steam instead of recreating its pages
+           in the Stearlight shell. */
+        case SVRT_UI_ACTION_HOME: uri = "steam://open/bigpicture"; break;
         case SVRT_UI_ACTION_LIBRARY: uri = "steam://open/games"; break;
         case SVRT_UI_ACTION_SHOP: uri = "steam://store"; break;
-        case SVRT_UI_ACTION_FRIENDS: uri = "steam://open/friends"; break;
+        case SVRT_UI_ACTION_FRIENDS:
+            uri = "steam://url/SteamIDFriendsPage";
+            break;
+        case SVRT_UI_ACTION_MEDIA: uri = "steam://open/screenshots"; break;
         case SVRT_UI_ACTION_DOWNLOADS: uri = "steam://open/downloads"; break;
         case SVRT_UI_ACTION_SETTINGS: uri = "steam://open/settings"; break;
-        case SVRT_UI_ACTION_PROFILE: uri = "steam://open/account"; break;
+        case SVRT_UI_ACTION_PROFILE: uri = "steam://url/CommunityHome"; break;
+        case SVRT_UI_ACTION_CONNECTION:
+            stearlight_steam_client_open_steam_link(client);
+            return;
         default: break;
     }
     if (uri) stearlight_steam_client_open_uri(client, uri);
@@ -85,6 +131,7 @@ int main(void) {
         svrt_ui_close(&ui);
         return 1;
     }
+    svrt_ui_set_input_callback(&ui, forward_ui_input, &steam);
     svrt_ui_set_streaming_mode(&ui, 0);
 
     uint64_t deadline_ns = 0;
@@ -106,7 +153,14 @@ int main(void) {
 #endif
         svrt_ui_draw(&ui, ui_state, NULL, NULL,
                      stearlight_steam_client_detail(&steam), now);
-        open_steam_page(&steam, svrt_ui_take_action(&ui));
+        /* Navigation chrome is only a pointer-friendly shell.  Every page
+           action is handed back to Valve through its own URI handler; the
+           shell never implements pairing or streaming. */
+        const svrt_ui_action action = svrt_ui_take_action(&ui);
+        open_steam_page(&steam, action);
+        if (svrt_ui_take_connection_request(&ui) &&
+            action != SVRT_UI_ACTION_CONNECTION)
+            stearlight_steam_client_open_steam_link(&steam);
         sleep_frame(&deadline_ns);
     }
 

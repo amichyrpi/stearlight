@@ -52,7 +52,11 @@ if [[ -z "${INTERNAL_HEIGHT:-}" ]]; then export INTERNAL_HEIGHT=1600; fi
 if [[ -z "${NESTED_REFRESH:-}" ]]; then export NESTED_REFRESH=60; fi
 
 if [[ -z "${CLIENTCMD:-}" ]]; then
-    CLIENTCMD='/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck'
+    steam_frame_arg=
+    if [[ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]]; then
+        steam_frame_arg=' -steamframe'
+    fi
+    CLIENTCMD="/usr/local/libexec/stearlight/launch-steam -gamepadui -steamos3 -steampal -steamdeck${steam_frame_arg}"
     export CLIENTCMD
 fi
 

@@ -1,0 +1,450 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -eq 0 ]; then
+    printf '%s\n' 'usage: stearlight-xr-run <openxr-application> [args...]' >&2
+    exit 64
+fi
+
+config=${STEARLIGHT_XR_CONFIG:-/etc/conf.d/stearlight-xr}
+if [ -r "$config" ]; then
+    . "$config"
+fi
+if [ "${STEARLIGHT_XR_ENABLE:-0}" != 1 ]; then
+    printf '%s\n' 'Stearlight: standalone OpenXR is disabled' >&2
+    exit 1
+fi
+if [ "${STEARLIGHT_XR_MODE:-standalone}" != standalone ]; then
+    printf '%s\n' 'Stearlight: Steam Frame mode owns remote XR; set STEARLIGHT_XR_MODE=standalone for local OpenXR' >&2
+    exit 1
+fi
+
+runtime_dir=${STEARLIGHT_XR_RUNTIME_DIR:-/run/user/1000}
+runtime_json=${STEARLIGHT_XR_RUNTIME_JSON:-}
+if [ -z "$runtime_json" ]; then
+    for candidate in /usr/share/openxr/1/openxr_monado.json \
+                     /etc/xdg/openxr/1/active_runtime.json; do
+        if [ -r "$candidate" ]; then
+            runtime_json=$candidate
+            break
+        fi
+    done
+fi
+if [ -z "$runtime_json" ] || [ ! -r "$runtime_json" ]; then
+    printf '%s\n' "Stearlight: OpenXR runtime manifest is missing ($runtime_json)" >&2
+    exit 1
+fi
+
+application=$(command -v "$1" 2>/dev/null || true)
+if [ -z "$application" ] || [ ! -x "$application" ]; then
+    printf '%s\n' "Stearlight: OpenXR application is not executable ($1)" >&2
+    exit 127
+fi
+shift
+
+mkdir -p "$runtime_dir"
+if [ ! -w "$runtime_dir" ]; then
+    printf '%s\n' "Stearlight: OpenXR runtime directory is not writable ($runtime_dir)" >&2
+    exit 1
+fi
+export HOME=${HOME:-/home/stearlight}
+export USER=${USER:-stearlight}
+export LOGNAME=${LOGNAME:-$USER}
+export XDG_RUNTIME_DIR="$runtime_dir"
+export XR_RUNTIME_JSON="$runtime_json"
+export XRT_COMPOSITOR_SCALE_PERCENTAGE="${STEARLIGHT_XR_COMPOSITOR_SCALE_PERCENTAGE:-100}"
+export XRT_COMPOSITOR_COMPUTE="${STEARLIGHT_XR_COMPOSITOR_COMPUTE:-0}"
+export XRT_NO_STDIN="${STEARLIGHT_XR_NO_STDIN:-1}"
+if [ -n "${STEARLIGHT_XR_ACTIVE_CONFIG:-}" ]; then
+    export P_OVERRIDE_ACTIVE_CONFIG="$STEARLIGHT_XR_ACTIVE_CONFIG"
+else
+    unset P_OVERRIDE_ACTIVE_CONFIG
+fi
+if [ "${STEARLIGHT_XR_ACTIVE_CONFIG:-}" = qwerty ]; then
+    export QWERTY_ENABLE="${QWERTY_ENABLE:-1}"
+    export XRT_DEBUG_GUI="${XRT_DEBUG_GUI:-1}"
+    export OXR_DEBUG_GUI="${OXR_DEBUG_GUI:-1}"
+    export DISPLAY="${STEARLIGHT_XR_DISPLAY:-${DISPLAY:-:8}}"
+fi
+
+runtime_socket=${STEARLIGHT_XR_RUNTIME_SOCKET:-$XDG_RUNTIME_DIR/monado_comp_ipc}
+runtime_pid_file=${STEARLIGHT_XR_RUNTIME_PID_FILE:-$XDG_RUNTIME_DIR/stearlight-monado.pid}
+runtime_owner_file=${STEARLIGHT_XR_RUNTIME_OWNER_FILE:-${runtime_pid_file}.owner}
+runtime_lease_dir=${STEARLIGHT_XR_RUNTIME_LEASE_DIR:-${runtime_pid_file}.leases}
+runtime_lease_file=$runtime_lease_dir/$$
+startup_lock=${STEARLIGHT_XR_STARTUP_LOCK:-${runtime_pid_file}.lock}
+supervisor_pid_file=${STEARLIGHT_XR_SUPERVISOR_PID_FILE:-/run/stearlight-xr.pid}
+monado_service=${STEARLIGHT_XR_MONADO_SERVICE:-/usr/bin/monado-service}
+steam_launch=${STEARLIGHT_XR_STEAM_LAUNCH:-0}
+openvr_runtime=${STEARLIGHT_XR_OPENVR_RUNTIME:-}
+openvr_container_runtime=${STEARLIGHT_XR_OPENVR_CONTAINER_RUNTIME:-}
+openvr_bridge=
+openvr_bridge_library=
+openvr_paths_runtime=
+monado_pid=
+wait_pid=
+runtime_owned=0
+lock_held=0
+monado_log_dir=${XDG_CACHE_HOME:-/home/stearlight/.cache}/stearlight
+monado_log="$monado_log_dir/monado-service.log"
+
+steam_visible_path() {
+    path=$1
+    case "$path" in
+        /run/host/*|"$HOME"/*)
+            printf '%s\n' "$path"
+            ;;
+        /usr/*|/opt/*|/etc/*|/lib/*|/lib64/*)
+            printf '/run/host%s\n' "$path"
+            ;;
+        *)
+            printf '%s\n' "$path"
+            ;;
+    esac
+}
+
+ensure_openvr_paths() {
+    openvr_paths_dir=${XDG_CONFIG_HOME:-$HOME/.config}/openvr
+    openvr_paths_file=$openvr_paths_dir/openvrpaths.vrpath
+    if [ ! -e "$openvr_paths_file" ]; then
+        if ! mkdir -p "$openvr_paths_dir"; then
+            printf '%s\n' "Stearlight: cannot create OpenVR config directory ($openvr_paths_dir)" >&2
+            exit 1
+        fi
+        escaped_openvr_runtime=$(printf '%s' "$openvr_paths_runtime" | sed 's/[\\"]/\\&/g')
+        if ! (umask 077; printf '{\n    "version": 1,\n    "runtime": [\n        "%s"\n    ]\n}\n' "$escaped_openvr_runtime" >"$openvr_paths_file"); then
+            printf '%s\n' "Stearlight: cannot create OpenVR path registry ($openvr_paths_file)" >&2
+            exit 1
+        fi
+    elif [ ! -f "$openvr_paths_file" ] || [ ! -s "$openvr_paths_file" ]; then
+        printf '%s\n' "Stearlight: OpenVR path registry is not a valid non-empty file ($openvr_paths_file)" >&2
+        exit 1
+    fi
+}
+
+resolve_openvr_bridge() {
+    if [ "$openvr_runtime" = auto ]; then
+        openvr_runtime=
+        for candidate in \
+            "$HOME/.local/share/Steam/steamapps/common/xrizer" \
+            "$HOME/.local/share/stearlight/xrizer" \
+            /usr/lib/xrizer \
+            /opt/xrizer \
+            /usr/lib/opencomposite \
+            /opt/opencomposite; do
+            if [ -d "$candidate" ]; then
+                openvr_runtime=$candidate
+                break
+            fi
+        done
+    fi
+
+    if [ -z "$openvr_runtime" ]; then
+        if [ "${STEARLIGHT_XR_OPENVR_REQUIRED:-0}" = 1 ]; then
+            printf '%s\n' 'Stearlight: an ARM64 OpenVR bridge is required but STEARLIGHT_XR_OPENVR_RUNTIME is empty' >&2
+            exit 1
+        fi
+        return
+    fi
+    case "$openvr_runtime" in
+        /*) ;;
+        *)
+            printf '%s\n' "Stearlight: OpenVR bridge path must be absolute ($openvr_runtime)" >&2
+            exit 1
+            ;;
+    esac
+    for candidate in \
+        "$openvr_runtime/bin/linuxarm64/vrclient.so" \
+        "$openvr_runtime/bin/linuxarm64/libopenvr_api.so"; do
+        if [ -f "$candidate" ]; then
+            openvr_bridge_library=$candidate
+            break
+        fi
+    done
+    if [ -z "$openvr_bridge_library" ]; then
+        printf '%s\n' "Stearlight: ARM64 OpenVR bridge library is missing ($openvr_runtime)" >&2
+        exit 1
+    fi
+    openvr_bridge=$openvr_runtime
+    if [ -z "$openvr_container_runtime" ]; then
+        openvr_container_runtime=$(steam_visible_path "$openvr_runtime")
+    fi
+    case "$openvr_container_runtime" in
+        /*) ;;
+        *)
+            printf '%s\n' "Stearlight: container OpenVR bridge path must be absolute ($openvr_container_runtime)" >&2
+            exit 1
+            ;;
+    esac
+    if [ "$steam_launch" = 1 ]; then
+        export VR_OVERRIDE="$openvr_container_runtime"
+        openvr_paths_runtime=$openvr_container_runtime
+    else
+        export VR_OVERRIDE="$openvr_runtime"
+        openvr_paths_runtime=$openvr_runtime
+    fi
+    ensure_openvr_paths
+}
+
+resolve_openvr_bridge
+if [ "$steam_launch" = 1 ]; then
+    if [ -n "${STEARLIGHT_XR_CONTAINER_RUNTIME_JSON:-}" ]; then
+        export XR_RUNTIME_JSON="$STEARLIGHT_XR_CONTAINER_RUNTIME_JSON"
+    else
+        export XR_RUNTIME_JSON=$(steam_visible_path "$runtime_json")
+    fi
+    pressure_vessel_filesystems_rw=${PRESSURE_VESSEL_FILESYSTEMS_RW:-}
+    case ":$pressure_vessel_filesystems_rw:" in
+        *":$runtime_socket:"*) ;;
+        *)
+            if [ -n "$pressure_vessel_filesystems_rw" ]; then
+                pressure_vessel_filesystems_rw="$pressure_vessel_filesystems_rw:$runtime_socket"
+            else
+                pressure_vessel_filesystems_rw=$runtime_socket
+            fi
+            export PRESSURE_VESSEL_FILESYSTEMS_RW="$pressure_vessel_filesystems_rw"
+            ;;
+    esac
+fi
+
+read_live_pid_file() {
+    pid_path=$1
+    if [ ! -r "$pid_path" ]; then return 1; fi
+    recorded_pid=$(cat "$pid_path" 2>/dev/null || true)
+    case "$recorded_pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    if kill -0 "$recorded_pid" 2>/dev/null; then
+        printf '%s\n' "$recorded_pid"
+        return 0
+    fi
+    return 1
+}
+
+pid_file_process_alive() {
+    read_live_pid_file "$runtime_pid_file" >/dev/null
+}
+
+runtime_process_pid() {
+    if read_live_pid_file "$runtime_pid_file"; then return 0; fi
+    if [ "$supervisor_pid_file" != "$runtime_pid_file" ] &&
+       read_live_pid_file "$supervisor_pid_file"; then
+        return 0
+    fi
+    return 1
+}
+
+owned_runtime_pid() {
+    owner_pid=$(cat "$runtime_owner_file" 2>/dev/null || true)
+    recorded_pid=$(cat "$runtime_pid_file" 2>/dev/null || true)
+    case "$owner_pid:$recorded_pid" in
+        ''|*:*[!0-9]*|*[!0-9]*:*) return 1 ;;
+    esac
+    if [ "$owner_pid" != "$recorded_pid" ] ||
+       ! kill -0 "$owner_pid" 2>/dev/null; then
+        return 1
+    fi
+    printf '%s\n' "$owner_pid"
+}
+
+prune_runtime_leases() {
+    if [ ! -d "$runtime_lease_dir" ]; then return; fi
+    for lease in "$runtime_lease_dir"/*; do
+        if [ ! -f "$lease" ]; then continue; fi
+        lease_pid=$(cat "$lease" 2>/dev/null || true)
+        case "$lease_pid" in
+            ''|*[!0-9]*) rm -f "$lease" ;;
+            *)
+                if ! kill -0 "$lease_pid" 2>/dev/null; then
+                    rm -f "$lease"
+                fi
+                ;;
+        esac
+    done
+    rmdir "$runtime_lease_dir" 2>/dev/null || true
+}
+
+active_runtime_leases() {
+    if [ ! -d "$runtime_lease_dir" ]; then return 1; fi
+    for lease in "$runtime_lease_dir"/*; do
+        if [ -f "$lease" ]; then return 0; fi
+    done
+    return 1
+}
+
+clear_stale_runtime_state() {
+    # An arbitrary existing socket may belong to an external supervisor and
+    # must never be destroyed by this wrapper. The owner marker is written
+    # only when this wrapper starts Monado, so stale cleanup is limited to a
+    # process/socket pair that Stearlight actually owned.
+    owner_pid=$(cat "$runtime_owner_file" 2>/dev/null || true)
+    recorded_pid=$(cat "$runtime_pid_file" 2>/dev/null || true)
+    if [ -n "$owner_pid" ] && [ "$owner_pid" = "$recorded_pid" ] &&
+       ! pid_file_process_alive; then
+        rm -f "$runtime_socket" "$runtime_pid_file" "$runtime_owner_file"
+    fi
+}
+
+clear_stale_startup_lock() {
+    if [ ! -d "$startup_lock" ]; then return; fi
+    lock_pid=$(cat "$startup_lock/pid" 2>/dev/null || true)
+    case "$lock_pid" in
+        ''|*[!0-9]*)
+            rm -f "$startup_lock/pid"
+            rmdir "$startup_lock" 2>/dev/null || true
+            ;;
+        *)
+            if ! kill -0 "$lock_pid" 2>/dev/null; then
+                rm -f "$startup_lock/pid"
+                rmdir "$startup_lock" 2>/dev/null || true
+            fi
+            ;;
+    esac
+}
+
+acquire_startup_lock() {
+    attempt=0
+    while ! mkdir "$startup_lock" 2>/dev/null; do
+        clear_stale_startup_lock
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 100 ]; then
+            printf '%s\n' "Stearlight: timed out waiting for the Monado startup lock ($startup_lock)" >&2
+            return 1
+        fi
+        sleep 0.1
+    done
+    printf '%s\n' "$$" >"$startup_lock/pid"
+    lock_held=1
+}
+
+release_startup_lock() {
+    if [ "$lock_held" -ne 1 ]; then return; fi
+    lock_pid=$(cat "$startup_lock/pid" 2>/dev/null || true)
+    if [ "$lock_pid" = "$$" ]; then
+        rm -f "$startup_lock/pid"
+        rmdir "$startup_lock" 2>/dev/null || true
+    fi
+    lock_held=0
+}
+
+cleanup_monado() {
+    if [ "$lock_held" -eq 1 ]; then release_startup_lock; fi
+    if [ -z "$runtime_lease_file" ]; then return; fi
+
+    # The first launcher may finish while another launcher is still inside
+    # Steam/Proton. Serialize lease removal with startup so only the last
+    # active launcher can stop a Stearlight-owned on-demand service.
+    if ! acquire_startup_lock; then
+        rm -f "$runtime_lease_file"
+        return
+    fi
+    rm -f "$runtime_lease_file"
+    prune_runtime_leases
+    if [ "$runtime_owned" -eq 1 ] && ! active_runtime_leases; then
+        service_pid=$monado_pid
+        if [ -z "$service_pid" ]; then
+            service_pid=$(owned_runtime_pid 2>/dev/null || true)
+        fi
+        terminated=0
+        if [ -n "$service_pid" ] && kill -0 "$service_pid" 2>/dev/null; then
+            kill -TERM "$service_pid" 2>/dev/null || true
+            if [ "$service_pid" = "$monado_pid" ]; then
+                wait "$service_pid" 2>/dev/null || true
+            else
+                for attempt in $(seq 1 50); do
+                    if ! kill -0 "$service_pid" 2>/dev/null; then
+                        break
+                    fi
+                    sleep 0.1
+                done
+            fi
+            if ! kill -0 "$service_pid" 2>/dev/null; then
+                terminated=1
+            fi
+        else
+            terminated=1
+        fi
+        if [ "$terminated" -eq 1 ]; then
+            recorded_pid=$(cat "$runtime_pid_file" 2>/dev/null || true)
+            if [ "$recorded_pid" = "$service_pid" ]; then
+                rm -f "$runtime_pid_file" "$runtime_owner_file" "$runtime_socket"
+            fi
+        fi
+    fi
+    rmdir "$runtime_lease_dir" 2>/dev/null || true
+    release_startup_lock
+}
+trap cleanup_monado EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# The OpenRC service is intentionally opt-in, so a normal standalone game
+# invocation must be able to bring up the same Monado runtime on demand. A
+# pre-existing live socket means an external supervisor already owns it; do
+# not kill that service when the application exits. A socket left by a dead
+# Stearlight-owned process is removed so a second launch can bind successfully.
+clear_stale_runtime_state
+mkdir -p "$runtime_lease_dir"
+printf '%s\n' "$$" >"$runtime_lease_file"
+if ! acquire_startup_lock; then
+    exit 1
+fi
+prune_runtime_leases
+clear_stale_runtime_state
+if wait_pid=$(runtime_process_pid); then :; else wait_pid=; fi
+if owned_runtime_pid >/dev/null 2>&1; then
+    runtime_owned=1
+fi
+# A service can be alive while it is still creating its IPC socket. Reuse the
+# recorded process and wait below instead of starting a duplicate. It may
+# belong to another Stearlight launcher, so the lease held by this invocation
+# keeps it alive until this application exits. The OpenRC service has a
+# separate supervisor pidfile, so check it as a fallback when the runtime
+# pidfile has not been written yet.
+if [ ! -S "$runtime_socket" ] && [ -z "$wait_pid" ]; then
+    if [ "${STEARLIGHT_XR_AUTOSTART:-1}" = 0 ]; then
+        printf '%s\n' "Stearlight: Monado is not running and autostart is disabled ($runtime_socket)" >&2
+        exit 1
+    fi
+    if [ ! -x "$monado_service" ]; then
+        printf '%s\n' "Stearlight: monado-service is not installed ($monado_service)" >&2
+        exit 127
+    fi
+    mkdir -p "$monado_log_dir"
+    printf '%s\n' "Stearlight: starting Monado on demand (log=$monado_log)" >&2
+    IPC_EXIT_ON_DISCONNECT=1 "$monado_service" \
+        >"$monado_log" 2>&1 &
+    monado_pid=$!
+    wait_pid=$monado_pid
+    runtime_owned=1
+    printf '%s\n' "$monado_pid" >"$runtime_pid_file"
+    printf '%s\n' "$monado_pid" >"$runtime_owner_file"
+    chmod 0600 "$runtime_pid_file" 2>/dev/null || true
+    chmod 0600 "$runtime_owner_file" 2>/dev/null || true
+fi
+
+if [ ! -S "$runtime_socket" ] && [ -n "$wait_pid" ]; then
+    ready=0
+    attempt=0
+    while [ "$attempt" -lt 100 ]; do
+        if [ -S "$runtime_socket" ]; then
+            ready=1
+            break
+        fi
+        if ! kill -0 "$wait_pid" 2>/dev/null; then
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    if [ "$ready" -ne 1 ]; then
+        printf '%s\n' 'Stearlight: Monado did not create its runtime socket' >&2
+        tail -n 40 "$monado_log" >&2 2>/dev/null || true
+        exit 1
+    fi
+fi
+release_startup_lock
+
+application_status=0
+"$application" "$@" || application_status=$?
+exit "$application_status"

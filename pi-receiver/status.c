@@ -34,8 +34,13 @@ void svrt_status_server_get_pose(svrt_status_server *server, int state,
     pose->valid = pose->connected;
     pose->result = pose->valid ? 200 /* TrackingResult_Running_OK */
                                : 101 /* TrackingResult_Calibrating_OutOfRange */;
+    /* A synthetic pose is useful for protocol/UI bring-up only.  It must not
+       be the default: reporting a moving headset without an IMU/camera would
+       make SteamVR accept a receiver that cannot provide real tracking. */
+    const char *enabled = getenv("SVRT_ENABLE_SYNTHETIC_POSE");
     const char *disabled = getenv("SVRT_DISABLE_SYNTHETIC_POSE");
-    if (disabled && disabled[0] && strcmp(disabled, "0")) {
+    if (!enabled || strcmp(enabled, "1") != 0 ||
+        (disabled && disabled[0] && strcmp(disabled, "0"))) {
         pose->valid = 0;
         pose->result = 101;
     }

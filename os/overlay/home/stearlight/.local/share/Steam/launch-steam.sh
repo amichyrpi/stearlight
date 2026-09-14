@@ -23,7 +23,11 @@ export STEAMOS_OOBE=1
 export STEAMOS_OOBE_IMAGE=1
 export STEAM_USE_MANGOAPP=1
 export STEAM_DISABLE_MANGOAPP_ATOM_WORKAROUND=1
-export CLIENTCMD="steam -gamepadui -steamos3 -steampal -steamdeck"
+frame_arg=
+if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+    frame_arg=' -steamframe'
+fi
+export CLIENTCMD="steam -gamepadui -steamos3 -steampal -steamdeck${frame_arg}"
 export CURSOR_FILE="$steam_root/tenfoot/resource/images/cursors/arrow.png"
 
 # Valve's SteamOS first-run pages call these helpers from inside the runtime.
@@ -68,6 +72,27 @@ if [ -z "$platform" ]; then
 fi
 platform=${platform:+$platform/files}
 
+# The normal session passes the SteamOS arguments explicitly. Preserve them
+# when present; protocol handlers may invoke this script with only a Steam URI,
+# so supply the native client arguments for that case as well.
+case "${1-}" in
+    steam://*|steamlink://*)
+        uri=$1
+        shift
+        set -- -gamepadui -steamos3 -steampal -steamdeck
+        if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+            set -- "$@" -steamframe
+        fi
+        set -- "$@" "$uri"
+        ;;
+    '')
+    set -- -gamepadui -steamos3 -steampal -steamdeck
+    if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+        set -- "$@" -steamframe
+    fi
+        ;;
+esac
+
 exec bwrap --die-with-parent --new-session \
   --bind "$runtime" / \
   --dev-bind /dev /dev --proc /proc --ro-bind /sys /sys \
@@ -78,6 +103,6 @@ exec bwrap --die-with-parent --new-session \
   --setenv PROTON_NO_ESYNC 1 --setenv PROTON_NO_FSYNC 1 \
   $bwrap_extra \
   -- "$steam_root/steamrtarm64/steam" \
-  -gamepadui -720p -vrskip -vrdisable -noverifyfiles \
+  "$@" -noverifyfiles \
   -nocrashmonitor -no-cef-sandbox -cef-disable-sandbox \
-  -cef-disable-breakpad -disable-gpu -cef-disable-gpu "$@"
+  -cef-disable-breakpad -disable-gpu -cef-disable-gpu

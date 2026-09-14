@@ -24,10 +24,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build libsdl2-dev libavformat-dev libavcodec-dev libavutil-dev libdrm-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libsdl2-ttf-dev libavformat-dev libavcodec-dev libavutil-dev libx11-dev libxcomposite-dev libxtst-dev
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DSVRT_BUILD_DRIVER=OFF -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Ninja -DSVRT_BUILD_DRIVER=OFF -DSVRT_BUILD_RECEIVER=OFF -DSVRT_BUILD_OS_SHELL=ON -DSVRT_BUILD_PI_LIBRARY=OFF -DSVRT_BUILD_UTILITY=OFF -DSVRT_STEARLIGHT_OS=ON -DSVRT_BUILD_VENDORED_SDL=OFF -DCMAKE_BUILD_TYPE=Release
 
       - name: Build and test
         run: |
@@ -37,7 +37,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p package
-          cp build/pi-receiver/svrt-receiver README.md LICENSE package/
+          cp build/os/stearlight-shell README.md LICENSE package/
           tar -czf svrt-linux-x86_64.tar.gz -C package .
 
       - uses: actions/upload-artifact@v4
@@ -53,14 +53,14 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build -A x64 -DSVRT_BUILD_PI_LIBRARY=OFF -DSVRT_BUILD_RECEIVER=OFF
+        run: cmake -S . -B build -A x64 -DSVRT_BUILD_DRIVER=ON -DSVRT_BUILD_PI_LIBRARY=OFF -DSVRT_BUILD_RECEIVER=OFF
 
       - name: Build
         run: cmake --build build --config Release --parallel
 
       - name: Package
         shell: pwsh
-        run: Compress-Archive -Path build/svrt/* -DestinationPath svrt-steamvr-driver-win64.zip -Force
+        run: Compress-Archive -Path build/svrt,steamvr-driver/README.md -DestinationPath svrt-steamvr-driver-win64.zip -Force
 
       - uses: actions/upload-artifact@v4
         with:

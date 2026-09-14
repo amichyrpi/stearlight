@@ -24,6 +24,11 @@ case "${output_dir}" in
 esac
 rm -rf "${output_dir}/image"
 mkdir -p "${output_dir}/image"
+# Keep the Docker build context valid even when a source archive omits the
+# empty generated directory.  A subscribed build may populate it below with
+# Valve's private FEX/Proton depots; an offline build still gets an empty
+# directory and therefore a reproducible image without those optional tools.
+mkdir -p "${script_dir}/generated"
 
 if [[ -n ${STEAM_USERNAME:-} ]]; then
   echo "Downloading FEX and Proton from Steam with the supplied account..."

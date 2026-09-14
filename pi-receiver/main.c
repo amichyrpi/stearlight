@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <svrt.h>
 
 #include "status.h"
@@ -22,6 +24,11 @@ static volatile sig_atomic_t quitting;
 static void stop(int sig) {
     (void)sig;
     quitting = 1;
+}
+
+static int steam_frame_client_enabled(void) {
+    const char *mode = getenv("SVRT_STEAM_FRAME");
+    return !mode || !mode[0] || strcmp(mode, "0") != 0;
 }
 
 static uint64_t monotonic_time_ns(void) {
@@ -139,13 +146,24 @@ static void open_steam_page(svrt_steam_client *client,
                             svrt_ui_action action) {
     const char *uri = NULL;
     switch (action) {
-        case SVRT_UI_ACTION_HOME: uri = "steam://open/main"; break;
+        /* Keep the compatibility receiver on Valve's URI handlers too. The
+           native Steam Frame path never calls the legacy pairing code, but a
+           user must not get a different client navigation contract merely
+           by selecting the explicit legacy build. */
+        case SVRT_UI_ACTION_HOME: uri = "steam://open/bigpicture"; break;
         case SVRT_UI_ACTION_LIBRARY: uri = "steam://open/games"; break;
         case SVRT_UI_ACTION_SHOP: uri = "steam://store"; break;
-        case SVRT_UI_ACTION_FRIENDS: uri = "steam://open/friends"; break;
+        case SVRT_UI_ACTION_FRIENDS:
+            uri = "steam://url/SteamIDFriendsPage";
+            break;
         case SVRT_UI_ACTION_DOWNLOADS: uri = "steam://open/downloads"; break;
         case SVRT_UI_ACTION_SETTINGS: uri = "steam://open/settings"; break;
-        case SVRT_UI_ACTION_PROFILE: uri = "steam://open/account"; break;
+        case SVRT_UI_ACTION_PROFILE:
+            uri = "steam://url/CommunityHome";
+            break;
+        case SVRT_UI_ACTION_CONNECTION:
+            svrt_steam_client_open_steam_link(client);
+            return;
         default: break;
     }
     if (uri) svrt_steam_client_open_uri(client, uri);
@@ -209,14 +227,34 @@ int main(int argc, char **argv) {
         fprintf(stderr, "SVRT VM RECEIVER-ONLY: Steam client disabled\n");
     }
     const char *start_streaming = getenv("SVRT_START_IN_STREAMING_MODE");
-    int streaming_mode = headless ||
-                         (start_streaming && start_streaming[0] &&
-                          strcmp(start_streaming, "0"));
+    const int native_steam_frame = steam_frame_client_enabled() &&
+                                   have_ui && steam_client_started;
+    if (steam_frame_client_enabled() && !native_steam_frame) {
+        fprintf(stderr,
+                "SVRT: native Steam Frame mode needs the graphical Steam client; "
+                "set SVRT_STEAM_FRAME=0 only for the legacy receiver\n");
+        if (steam_client_started) svrt_steam_client_stop(&steam_client);
+        if (have_ui) svrt_ui_close(&ui);
+        svrt_status_server_stop(&status);
+        return 2;
+    }
+    if (native_steam_frame && start_streaming && start_streaming[0] &&
+        strcmp(start_streaming, "0")) {
+        fprintf(stderr,
+                "SVRT: ignoring SVRT_START_IN_STREAMING_MODE; Valve's Steam "
+                "client owns Steam Frame/VRLink\n");
+    }
+    int streaming_mode = !native_steam_frame &&
+                         (headless ||
+                          (start_streaming && start_streaming[0] &&
+                           strcmp(start_streaming, "0")));
     if (have_ui) svrt_ui_set_streaming_mode(&ui, streaming_mode);
     while (!quitting) {
         svrt_status_server_update(&status, SVRT_RECEIVER_UNAUTHORIZED, NULL);
-        /* Standalone Steam is the receiver's home mode.  Steam Link pairing
-           and the video socket are entered only from the connection tile. */
+        /* Native Steam Frame is the receiver's home mode. Valve's Steam
+           client owns discovery, pairing, authorization, transport, and the
+           Steam Frame UI. The code below is reachable only after an explicit
+           SVRT_STEAM_FRAME=0 legacy opt-in. */
         uint64_t idle_ui_deadline_ns = 0;
         while (have_ui && !quitting && !streaming_mode) {
             const uint32_t now = SDL_GetTicks();
@@ -237,9 +275,19 @@ int main(int argc, char **argv) {
                 svrt_ui_take_connection_request(&ui);
             if (action == SVRT_UI_ACTION_CONNECTION ||
                 connection_requested) {
-                streaming_mode = 1;
-                svrt_ui_set_streaming_mode(&ui, 1);
-                fprintf(stderr, "SVRT: connection tile selected\n");
+                if (steam_client_started && steam_frame_client_enabled()) {
+                    /* Valve's Steam client owns Steam Link/VRLink pairing,
+                       authorization, transport and its Steam Frame UI. Do
+                       not route this path through the legacy custom
+                       receiver protocol. */
+                    svrt_steam_client_open_steam_link(&steam_client);
+                    fprintf(stderr,
+                            "SVRT: opened Steam Link in the Steam client\n");
+                } else {
+                    streaming_mode = 1;
+                    svrt_ui_set_streaming_mode(&ui, 1);
+                    fprintf(stderr, "SVRT: legacy connection tile selected\n");
+                }
             } else if (steam_client_started)
                 open_steam_page(&steam_client, action);
             sleep_ui_frame(&idle_ui_deadline_ns);

@@ -1,0 +1,36 @@
+# Standalone OpenXR is opt-in.  Leave this disabled for the normal Steam Frame
+# session: Valve's Steam client owns remote discovery, pairing, streaming,
+# tracking, and controller input through its built-in Steam Link/VRLink path.
+STEARLIGHT_XR_ENABLE=0
+STEARLIGHT_XR_MODE=standalone
+STEARLIGHT_XR_RUNTIME_JSON=/usr/share/openxr/1/openxr_monado.json
+STEARLIGHT_XR_RUNTIME_DIR=/run/user/1000
+STEARLIGHT_XR_COMPOSITOR_SCALE_PERCENTAGE=100
+STEARLIGHT_XR_COMPOSITOR_COMPUTE=0
+# OpenRC and application wrappers do not provide a pollable terminal on
+# stdin. Monado otherwise aborts before creating monado_comp_ipc.
+STEARLIGHT_XR_NO_STDIN=1
+# Start Monado automatically for an OpenXR application when the opt-in
+# service is not already running. Set to 0 when an external supervisor owns
+# the Monado process.
+STEARLIGHT_XR_AUTOSTART=1
+# Optional ARM64 OpenVR-to-OpenXR bridge for older OpenVR/Proton titles.
+# Leave empty to run native OpenXR titles without a bridge. Set this to an
+# installed ARM64 xrizer/OpenComposite runtime directory, or to "auto" to
+# search the standard per-user locations. The x86_64 release archives must
+# not be used on the Pi.
+STEARLIGHT_XR_OPENVR_RUNTIME=
+# Steam Linux Runtime can see home paths directly and host /usr paths below
+# /run/host/usr. Set this only when the bridge is installed elsewhere.
+STEARLIGHT_XR_OPENVR_CONTAINER_RUNTIME=
+STEARLIGHT_XR_CONTAINER_RUNTIME_JSON=
+# Set to 1 for an OpenVR title that must have a bridge; otherwise xr-run
+# continues to support native OpenXR titles when no bridge is installed.
+STEARLIGHT_XR_OPENVR_REQUIRED=0
+# The runtime wrapper uses the OpenRC pidfile as a fallback while Monado is
+# still creating its IPC socket. It never treats that supervised process as
+# its own and therefore never stops it when an OpenXR game exits.
+STEARLIGHT_XR_SUPERVISOR_PID_FILE=/run/stearlight-xr.pid
+# Set this only when a tested Monado driver configuration is installed.
+# For example, Monado's remote driver uses: P_OVERRIDE_ACTIVE_CONFIG=remote
+STEARLIGHT_XR_ACTIVE_CONFIG=

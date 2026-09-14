@@ -1,0 +1,7 @@
+{
+  "alwaysActivate": true,
+  "name": "svrt-vrlink",
+  "directory": "",
+  "resourceOnly": true,
+  "hmd_presence": []
+}

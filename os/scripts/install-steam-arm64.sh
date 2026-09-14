@@ -2,18 +2,19 @@
 set -euo pipefail
 
 # Install Valve's native ARM64 Steam seed and Steam Runtime during the image
-# build. The manifest is resolved at build time instead of pinning a stale zip
-# hash; this keeps the appliance on the same SteamOS/Gamepad UI branch as the
-# public ARM client. Steam itself still owns first-run language, timezone,
-# network, update, sign-in and tour setup.
+# build. The ARM seed is a content-addressed Valve CDN object; its URL can be
+# overridden when Valve publishes a newer seed. Steam itself still owns
+# first-run language, timezone, network, update, sign-in and tour setup.
 
 steam_root="${HOME}/.local/share/Steam"
 runtime="${steam_root}/steamrtarm64"
 work="${HOME}/.cache/stearlight-steam-install"
 cdn="${STEAM_ARM_CDN:-https://client-update.steamstatic.com}"
 channel="${STEARLIGHT_STEAM_BETA:-steamdeck_publicbeta}"
-manifest_name="steam_client_${channel}_linuxarm64"
-manifest="${steam_root}/package/${manifest_name}.manifest"
+# Valve publishes the ARM64 seed as a content-addressed CDN object rather than
+# the branch manifest used by the x86 client.  Keep the URL overridable so the
+# image can move to a newer Valve seed without changing the installer logic.
+bootstrap_url="${STEAM_ARM_BOOTSTRAP_URL:-${cdn}/bins_linuxarm64_linuxarm64.zip.f523fa87fc6b9b5435a5e7370cb0d664ef53b50b}"
 runtime_base="${STEAM_ARM_RUNTIME_BASE:-https://repo.steampowered.com/steamrt3c/images}"
 runtime_channel="${STEAM_ARM_RUNTIME_CHANNEL:-latest-public-beta}"
 bootstrap_timeout="${STEAM_BOOTSTRAP_TIMEOUT:-900}"
@@ -28,25 +29,11 @@ ln -sfn "${steam_root}/linuxarm64" "${HOME}/.steam/sdkarm64"
 ln -sfn "${steam_root}/ubuntu12_32" "${HOME}/.steam/bin32"
 ln -sfn "${steam_root}/ubuntu12_64" "${HOME}/.steam/bin64"
 
-curl -fsSL --retry 8 --retry-all-errors -o "${manifest}" \
-  "${cdn}/${manifest_name}"
-
-seed_package=$(python3 - "${manifest}" <<'PY'
-import pathlib
-import re
-import sys
-
-manifest = pathlib.Path(sys.argv[1]).read_text(errors="ignore")
-match = re.search(r"bins_linuxarm64_linuxarm64\.zip\.(?!vz\.)[^\"\s]+", manifest)
-if not match:
-    raise SystemExit("failed to find ARM64 Steam seed package")
-print(match.group(0))
-PY
-)
-seed_archive="${steam_root}/package/${seed_package}"
+seed_archive="${work}/steam-arm64-bootstrap.zip"
 curl -fsSL --retry 8 --retry-all-errors -o "${seed_archive}" \
-  "${cdn}/${seed_package}"
+  "${bootstrap_url}"
 unzip -q -o "${seed_archive}" -d "${steam_root}"
+chmod +x "${runtime}/steam"
 
 runtime_snapshot=$(curl -fsSL --retry 8 --retry-all-errors \
   "${runtime_base}/${runtime_channel}.txt" | tr -d '[:space:]')

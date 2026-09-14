@@ -140,7 +140,7 @@ USER root
 
 FROM alpine:${ALPINE_TAG} AS shell-build
 RUN apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
-    libx11-dev libxcomposite-dev ninja pkgconf sdl2-dev sdl2_ttf-dev
+    libx11-dev libxcomposite-dev libxtst-dev ninja pkgconf sdl2-dev sdl2_ttf-dev
 WORKDIR /src
 COPY . .
 RUN cmake -S . -B /build -G Ninja \
@@ -190,7 +190,8 @@ RUN apk add --no-cache \
       alpine-base alsa-lib bash bubblewrap coreutils dbus dbus-glib dhcpcd e2fsprogs eudev ffmpeg \
       ca-certificates fontconfig font-dejavu font-noto font-noto-all font-noto-cjk font-noto-emoji gcompat ibus linux-virt mesa-dri-gallium mesa-egl mesa-gbm mesa-gles \
       mesa-vulkan-swrast mesa-vulkan-virtio vulkan-loader dbus-x11 gamescope mbedtls3 openrc sdl2 sdl2_ttf shadow \
-      libxcb libxcomposite libxscrnsaver \
+      monado openxr \
+      libxcb libxcomposite libxscrnsaver libxtst \
       weston weston-backend-x11 weston-shell-desktop weston-xwayland \
       lsof pciutils python3 su-exec tar tzdata util-linux-misc xauth xf86-input-libinput \
       xf86-video-vmware xorg-server xrandr xwayland xwininfo xvfb \
@@ -220,6 +221,11 @@ COPY os/overlay/usr/bin/ /usr/bin/
 COPY os/overlay/usr/share/gamescope-session-plus/ /usr/share/gamescope-session-plus/
 COPY os/overlay/usr/share/wayland-sessions/ /usr/share/wayland-sessions/
 COPY os/overlay/etc/steamos-oobe-image /etc/steamos-oobe-image
+COPY os/overlay/etc/conf.d/stearlight-xr /etc/conf.d/stearlight-xr
+COPY os/overlay/etc/init.d/stearlight-xr /etc/init.d/stearlight-xr
+COPY os/overlay/usr/local/libexec/stearlight/xr-service /usr/local/libexec/stearlight/xr-service
+COPY os/overlay/usr/local/libexec/stearlight/xr-run /usr/local/libexec/stearlight/xr-run
+COPY os/overlay/usr/local/libexec/stearlight/launch-xr-game /usr/local/libexec/stearlight/launch-xr-game
 RUN cp /etc/fonts/stearlight-fonts.conf /etc/fonts/fonts.conf \
     && cp /etc/fonts/stearlight-fonts.conf /usr/share/fontconfig/fonts.conf \
     && rm -f /etc/fonts/conf.d/48-guessfamily.conf \
@@ -253,6 +259,10 @@ RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
                    /usr/local/libexec/stearlight/patch-steamui-network \
                    /usr/local/libexec/stearlight/patch-steam-runtime \
                    /usr/local/libexec/stearlight/steam-runtime-watch \
+                   /etc/init.d/stearlight-xr \
+                   /usr/local/libexec/stearlight/xr-service \
+                   /usr/local/libexec/stearlight/xr-run \
+                   /usr/local/libexec/stearlight/launch-xr-game \
                    /usr/bin/gamescope-session-plus \
                    /usr/share/gamescope-session-plus/gamescope-session-plus \
                    /usr/share/gamescope-session-plus/sessions.d/steam \

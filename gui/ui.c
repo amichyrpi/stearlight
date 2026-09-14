@@ -57,15 +57,410 @@ static void trace_render_present(svrt_ui *ui, const char *phase) {
 
 static svrt_ui_video *video_open(const char *path);
 
+static float scene_focal_length(int eye_height);
+
+static void panel_screen_bounds(int eye_x, int eye_width, int height, int eye,
+                                float *left, float *right, float *top,
+                                float *bottom) {
+    const float focal = scene_focal_length(height);
+    const float eye_offset = eye ? SVRT_EYE_SEPARATION_METERS * 0.5f :
+                                   -SVRT_EYE_SEPARATION_METERS * 0.5f;
+    const float radius = 3.5f;
+    const float distance = 2.15f;
+    const float arc = (SVRT_UI_MINIMAL_STEAMOS ? 40.0f : 44.0f) *
+                      SVRT_PI / 180.0f;
+    const float panel_height = SVRT_UI_MINIMAL_STEAMOS ? 1.34f : 1.50f;
+    const float center = eye_x + eye_width * 0.5f;
+    float min_x = center;
+    float max_x = center;
+    float min_y = height;
+    float max_y = 0.0f;
+    enum { slices = 96 };
+    for (int column = 0; column <= slices; ++column) {
+        const float angle = ((float)column / slices - 0.5f) * arc;
+        const float world_x = radius * sinf(angle);
+        const float z = distance - radius * (1.0f - cosf(angle));
+        const float x = center + SVRT_UI_HORIZONTAL_ASPECT * focal *
+                                  (world_x - eye_offset) / z;
+        const float half_height = focal * panel_height * 0.5f / z;
+        if (x < min_x) min_x = x;
+        if (x > max_x) max_x = x;
+        if (height * 0.5f - half_height < min_y)
+            min_y = height * 0.5f - half_height;
+        if (height * 0.5f + half_height > max_y)
+            max_y = height * 0.5f + half_height;
+    }
+    if (left) *left = min_x;
+    if (right) *right = max_x;
+    if (top) *top = min_y;
+    if (bottom) *bottom = max_y;
+}
+
+static void map_screen_position(const svrt_ui *ui, int raw_x, int raw_y,
+                                int width, int height, float *scene_x,
+                                float *scene_y) {
+    (void)ui;
+    float x = (float)raw_x;
+    float y = (float)raw_y;
+#if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
+    const float scene_width = width * 0.5f * SVRT_DEBUG_LEFT_EYE_UI_SCALE;
+    const float scene_height = height * SVRT_DEBUG_LEFT_EYE_UI_SCALE;
+    x = (x - (width - scene_width) * 0.5f) /
+        SVRT_DEBUG_LEFT_EYE_UI_SCALE;
+    y = (y - (height - scene_height) * 0.5f) /
+        SVRT_DEBUG_LEFT_EYE_UI_SCALE;
+#endif
+    if (scene_x) *scene_x = x;
+    if (scene_y) *scene_y = y;
+}
+
+static float panel_projected_x(int eye_x, int eye_width, int height, int eye,
+                               float u) {
+    const float focal = scene_focal_length(height);
+    const float eye_offset = eye ? SVRT_EYE_SEPARATION_METERS * 0.5f :
+                                   -SVRT_EYE_SEPARATION_METERS * 0.5f;
+    const float radius = 3.5f;
+    const float distance = 2.15f;
+    const float arc = (SVRT_UI_MINIMAL_STEAMOS ? 40.0f : 44.0f) *
+                      SVRT_PI / 180.0f;
+    const float angle = (u - 0.5f) * arc;
+    const float world_x = radius * sinf(angle);
+    const float z = distance - radius * (1.0f - cosf(angle));
+    return eye_x + eye_width * 0.5f + SVRT_UI_HORIZONTAL_ASPECT * focal *
+           (world_x - eye_offset) / z;
+}
+
+static void panel_projected_vertical(int eye_x, int eye_width, int height,
+                                     int eye, float u, float *top,
+                                     float *bottom) {
+    (void)eye_x;
+    (void)eye_width;
+    const float focal = scene_focal_length(height);
+    const float radius = 3.5f;
+    const float distance = 2.15f;
+    const float arc = (SVRT_UI_MINIMAL_STEAMOS ? 40.0f : 44.0f) *
+                      SVRT_PI / 180.0f;
+    const float panel_height = SVRT_UI_MINIMAL_STEAMOS ? 1.34f : 1.50f;
+    const float angle = (u - 0.5f) * arc;
+    const float z = distance - radius * (1.0f - cosf(angle));
+    const float half_height = focal * panel_height * 0.5f / z;
+    if (top) *top = height * 0.5f - half_height;
+    if (bottom) *bottom = height * 0.5f + half_height;
+    (void)eye;
+}
+
+static void map_surface_position(float scene_x, float scene_y, int width,
+                                 int height, int *on_surface,
+                                 int *surface_x, int *surface_y) {
+    const int eye_width = width / 2;
+    int eye = scene_x >= eye_width;
+    int eye_x = eye ? eye_width : 0;
+    if (scene_x < 0.0f || scene_x >= (float)width) eye = 0;
+    eye_x = eye ? eye_width : 0;
+    const int current_eye_width = eye ? width - eye_width : eye_width;
+    float left = 0.0f, right = 0.0f, top = 0.0f, bottom = 0.0f;
+    panel_screen_bounds(eye_x, current_eye_width, height, eye, &left, &right,
+                        &top, &bottom);
+    const int inside = scene_x >= left && scene_x <= right &&
+                       scene_y >= top && scene_y <= bottom;
+    if (on_surface) *on_surface = inside;
+    if (!inside) return;
+
+    /* The panel is projected from a cylinder, so its screen x coordinate is
+       not linear in the source texture. Invert the same projection used by
+       draw_curved_panel_eye() before forwarding the pointer to Steam. This
+       keeps the laser tip and Valve's actual hit target aligned near the
+       curved edges instead of drifting horizontally. */
+    float low = 0.0f, high = 1.0f;
+    const float left_x = panel_projected_x(eye_x, current_eye_width, height,
+                                           eye, low);
+    const float right_x = panel_projected_x(eye_x, current_eye_width, height,
+                                            eye, high);
+    if (right_x > left_x) {
+        for (int iteration = 0; iteration < 24; ++iteration) {
+            const float middle = (low + high) * 0.5f;
+            if (panel_projected_x(eye_x, current_eye_width, height, eye,
+                                  middle) < scene_x)
+                low = middle;
+            else
+                high = middle;
+        }
+    } else {
+        for (int iteration = 0; iteration < 24; ++iteration) {
+            const float middle = (low + high) * 0.5f;
+            if (panel_projected_x(eye_x, current_eye_width, height, eye,
+                                  middle) > scene_x)
+                low = middle;
+            else
+                high = middle;
+        }
+    }
+    const float u = (low + high) * 0.5f;
+    float projected_top = 0.0f, projected_bottom = 0.0f;
+    panel_projected_vertical(eye_x, current_eye_width, height, eye, u,
+                             &projected_top, &projected_bottom);
+    if (surface_x)
+        *surface_x = (int)lroundf(u * (SVRT_PANEL_WIDTH - 1));
+    if (surface_y && projected_bottom > projected_top) {
+        float v = (scene_y - projected_top) /
+                  (projected_bottom - projected_top);
+        if (v < 0.0f) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        *surface_y = (int)lroundf(v * (SVRT_PANEL_HEIGHT - 1));
+    }
+}
+
+static svrt_ui_action navigation_action_at(const svrt_ui *ui,
+                                           float scene_x, float scene_y,
+                                           int width, int height) {
+    if (!ui || ui->state != SVRT_UI_HOME || width <= 0 || height <= 0)
+        return SVRT_UI_ACTION_NONE;
+    const int eye_width = width / 2;
+    const int eye_x = scene_x >= eye_width ? eye_width : 0;
+    const float x = scene_x - eye_x;
+    const float y = scene_y;
+    const int sidebar_w = (int)(eye_width * 0.065f);
+    const int sidebar_h = (int)(height * 0.48f);
+    const SDL_Rect sidebar = {
+        (int)(eye_width * 0.055f),
+        (height - sidebar_h) / 2 - height / 20,
+        sidebar_w, sidebar_h};
+    if (x >= sidebar.x && x < sidebar.x + sidebar.w &&
+        y >= sidebar.y && y < sidebar.y + sidebar.h) {
+        int item = (int)((y - sidebar.y) * 7 / sidebar.h);
+        if (item < 0) item = 0;
+        if (item > 6) item = 6;
+        return (svrt_ui_action)(SVRT_UI_ACTION_HOME + item);
+    }
+
+    const int bar_h = (int)(height * 0.072f);
+    const int bar_w = (int)(eye_width * 0.48f);
+    const int bar_y = (int)(height * 0.745f);
+    const SDL_Rect steam = {(eye_width - bar_w) / 2 - bar_h - 8,
+                            bar_y, bar_h, bar_h};
+    const SDL_Rect bar = {steam.x + steam.w + 8, bar_y, bar_w, bar_h};
+    const SDL_Rect connection = {bar.x + 8, bar.y + 7,
+                                 bar.h - 14, bar.h - 14};
+    const SDL_Rect avatar = {bar.x + bar.w - bar.h + 7, bar.y + 7,
+                             bar.h - 14, bar.h - 14};
+    if (x >= connection.x && x < connection.x + connection.w &&
+        y >= connection.y && y < connection.y + connection.h)
+        return SVRT_UI_ACTION_CONNECTION;
+    if (x >= steam.x && x < steam.x + steam.w &&
+        y >= steam.y && y < steam.y + steam.h)
+        return SVRT_UI_ACTION_HOME;
+    if (x >= avatar.x && x < avatar.x + avatar.w &&
+        y >= avatar.y && y < avatar.y + avatar.h)
+        return SVRT_UI_ACTION_PROFILE;
+    return SVRT_UI_ACTION_NONE;
+}
+
+static void notify_input(svrt_ui *ui, svrt_ui_input_type type, int screen_x,
+                          int screen_y, int delta_x, int delta_y, int button,
+                          int wheel_y, int keycode, int scancode,
+                          int modifiers) {
+    if (!ui) return;
+    int width = 0, height = 0;
+    SDL_GetRendererOutputSize(ui->renderer, &width, &height);
+    if (width <= 0 || height <= 0) return;
+    float scene_x = 0.0f, scene_y = 0.0f;
+    map_screen_position(ui, screen_x, screen_y, width, height, &scene_x,
+                        &scene_y);
+    const int eye_width = width / 2;
+    const int eye_x = scene_x >= eye_width ? eye_width : 0;
+    ui->cursor_x = (int)lroundf(scene_x - eye_x);
+    ui->cursor_y = (int)lroundf(scene_y);
+    ui->cursor_visible = 1;
+#if SVRT_UI_MINIMAL_STEAMOS && SVRT_UI_SHOW_NAV_CHROME
+    /* Navigation remains usable even during a client restart, when the
+       transport callback may temporarily be unavailable. */
+    if (type == SVRT_UI_INPUT_MOUSE_BUTTON_DOWN) {
+        const svrt_ui_action action = navigation_action_at(
+            ui, scene_x, scene_y, width, height);
+        if (action != SVRT_UI_ACTION_NONE) {
+            ui->pending_action = action;
+            if (action >= SVRT_UI_ACTION_HOME &&
+                action <= SVRT_UI_ACTION_SETTINGS)
+                ui->selected_page = action - SVRT_UI_ACTION_HOME;
+            if (action == SVRT_UI_ACTION_CONNECTION)
+                ui->connection_requested = 1;
+            return;
+        }
+    }
+#endif
+    if (!ui->input_callback) return;
+    svrt_ui_input input = {
+        .type = type,
+        .screen_x = screen_x,
+        .screen_y = screen_y,
+        .screen_width = width,
+        .screen_height = height,
+        .delta_x = delta_x,
+        .delta_y = delta_y,
+        .button = button,
+        .wheel_y = wheel_y,
+        .keycode = keycode,
+        .scancode = scancode,
+        .modifiers = modifiers,
+        .surface_width = SVRT_PANEL_WIDTH,
+        .surface_height = SVRT_PANEL_HEIGHT};
+    map_surface_position(scene_x, scene_y, width, height,
+                         &input.on_surface, &input.surface_x,
+                         &input.surface_y);
+    if (type == SVRT_UI_INPUT_KEY_DOWN || type == SVRT_UI_INPUT_KEY_UP)
+        input.on_surface = 1;
+    ui->input_callback(&input, ui->input_callback_opaque);
+}
+
 static void disable_local_input(void) {
     static const Uint32 events[] = {
-        SDL_KEYUP, SDL_TEXTEDITING, SDL_TEXTINPUT,
-        SDL_KEYMAPCHANGED, SDL_MOUSEMOTION,
-        SDL_MOUSEBUTTONUP, SDL_MOUSEWHEEL, SDL_FINGERDOWN, SDL_FINGERUP,
-        SDL_FINGERMOTION};
+        SDL_TEXTEDITING, SDL_TEXTINPUT,
+        SDL_KEYMAPCHANGED};
     SDL_ShowCursor(SDL_DISABLE);
     for (size_t i = 0; i < sizeof(events) / sizeof(events[0]); ++i)
         SDL_EventState(events[i], SDL_IGNORE);
+    SDL_EventState(SDL_KEYDOWN, SDL_ENABLE);
+    SDL_EventState(SDL_KEYUP, SDL_ENABLE);
+    SDL_EventState(SDL_MOUSEMOTION, SDL_ENABLE);
+    SDL_EventState(SDL_MOUSEBUTTONDOWN, SDL_ENABLE);
+    SDL_EventState(SDL_MOUSEBUTTONUP, SDL_ENABLE);
+    SDL_EventState(SDL_MOUSEWHEEL, SDL_ENABLE);
+}
+
+static void open_game_controller(svrt_ui *ui, int device_index) {
+    if (!ui || ui->game_controller || device_index < 0 ||
+        !SDL_IsGameController(device_index))
+        return;
+    ui->game_controller = SDL_GameControllerOpen(device_index);
+    if (ui->game_controller) {
+        SDL_Joystick *joystick = SDL_GameControllerGetJoystick(
+            ui->game_controller);
+        ui->gamepad_instance_id = joystick ? SDL_JoystickInstanceID(joystick) : -1;
+        ui->gamepad_left_x = SDL_GameControllerGetAxis(
+            ui->game_controller, SDL_CONTROLLER_AXIS_LEFTX);
+        ui->gamepad_left_y = SDL_GameControllerGetAxis(
+            ui->game_controller, SDL_CONTROLLER_AXIS_LEFTY);
+        ui->gamepad_right_y = SDL_GameControllerGetAxis(
+            ui->game_controller, SDL_CONTROLLER_AXIS_RIGHTY);
+        fprintf(stderr, "SVRT UI: game controller=%s\n",
+                SDL_GameControllerName(ui->game_controller) ?
+                    SDL_GameControllerName(ui->game_controller) : "unknown");
+        return;
+    }
+    fprintf(stderr, "SVRT UI: game controller open failed: %s\n",
+            SDL_GetError());
+}
+
+static int gamepad_axis_step(int value) {
+    const int deadzone = 8000;
+    const int magnitude = value < 0 ? -value : value;
+    if (magnitude <= deadzone) return 0;
+    const int span = 32767 - deadzone;
+    int step = 1 + (magnitude - deadzone) * 7 / span;
+    if (step > 8) step = 8;
+    return value < 0 ? -step : step;
+}
+
+static void move_gamepad_cursor(svrt_ui *ui, int delta_x, int delta_y) {
+    if (!ui || !ui->renderer || (!delta_x && !delta_y)) return;
+    int width = 0, height = 0;
+    SDL_GetRendererOutputSize(ui->renderer, &width, &height);
+    const int eye_width = width / 2;
+    if (eye_width <= 0 || height <= 0) return;
+    if (!ui->cursor_visible) {
+        ui->cursor_x = eye_width / 2;
+        ui->cursor_y = height / 2;
+        ui->cursor_visible = 1;
+    }
+    ui->cursor_x += delta_x;
+    ui->cursor_y += delta_y;
+    if (ui->cursor_x < 0) ui->cursor_x = 0;
+    if (ui->cursor_x >= eye_width) ui->cursor_x = eye_width - 1;
+    if (ui->cursor_y < 0) ui->cursor_y = 0;
+    if (ui->cursor_y >= height) ui->cursor_y = height - 1;
+    /* Use the left eye's local coordinates as the canonical pointer.  The
+       renderer draws the same laser target in both eyes and the input mapper
+       applies the inverse cylinder projection before forwarding to Steam. */
+    notify_input(ui, SVRT_UI_INPUT_MOUSE_MOTION, ui->cursor_x, ui->cursor_y,
+                 delta_x, delta_y, 0, 0, 0, 0, 0);
+}
+
+static void send_gamepad_button(svrt_ui *ui, SDL_GameControllerButton button,
+                                int pressed) {
+    if (!ui || !ui->renderer) return;
+    int width = 0, height = 0;
+    SDL_GetRendererOutputSize(ui->renderer, &width, &height);
+    const int eye_width = width / 2;
+    if (eye_width <= 0 || height <= 0) return;
+    if (!ui->cursor_visible) {
+        ui->cursor_x = eye_width / 2;
+        ui->cursor_y = height / 2;
+        ui->cursor_visible = 1;
+    }
+    switch (button) {
+        case SDL_CONTROLLER_BUTTON_A:
+            /* A is the Steam Frame select action.  The existing input bridge
+               handles this exactly like a left-click, including local nav
+               chrome hit testing before the event reaches Valve's client. */
+            notify_input(ui,
+                         pressed ? SVRT_UI_INPUT_MOUSE_BUTTON_DOWN :
+                                   SVRT_UI_INPUT_MOUSE_BUTTON_UP,
+                         ui->cursor_x, ui->cursor_y, 0, 0, 1, 0,
+                         0, 0, 0);
+            break;
+        case SDL_CONTROLLER_BUTTON_B:
+            /* B is the Steam Frame back action.  Escape is also the native
+               Gamepad UI back key and keeps the whole page stack in Steam. */
+            notify_input(ui,
+                         pressed ? SVRT_UI_INPUT_KEY_DOWN :
+                                   SVRT_UI_INPUT_KEY_UP,
+                         ui->cursor_x, ui->cursor_y, 0, 0, 0, 0,
+                         SDLK_ESCAPE, 0, 0);
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_UP:
+            if (pressed) move_gamepad_cursor(ui, 0, -48);
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+            if (pressed) move_gamepad_cursor(ui, 0, 48);
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+            if (pressed) move_gamepad_cursor(ui, -48, 0);
+            break;
+        case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+            if (pressed) move_gamepad_cursor(ui, 48, 0);
+            break;
+        default:
+            break;
+    }
+}
+
+static void update_gamepad_axes(svrt_ui *ui) {
+    if (!ui || !ui->game_controller || !ui->renderer) return;
+    const uint32_t now_ms = SDL_GetTicks();
+    if (now_ms >= ui->next_gamepad_cursor_ms) {
+        const int delta_x = gamepad_axis_step(ui->gamepad_left_x);
+        const int delta_y = gamepad_axis_step(ui->gamepad_left_y);
+        if (delta_x || delta_y) {
+            move_gamepad_cursor(ui, delta_x, delta_y);
+            ui->next_gamepad_cursor_ms = now_ms + 16;
+        }
+    }
+    if (now_ms >= ui->next_gamepad_wheel_ms) {
+        const int step = gamepad_axis_step(ui->gamepad_right_y);
+        if (step) {
+            if (!ui->cursor_visible) {
+                int width = 0, height = 0;
+                SDL_GetRendererOutputSize(ui->renderer, &width, &height);
+                ui->cursor_x = width / 4;
+                ui->cursor_y = height / 2;
+                ui->cursor_visible = 1;
+            }
+            notify_input(ui, SVRT_UI_INPUT_MOUSE_WHEEL,
+                         ui->cursor_x, ui->cursor_y, 0, 0, 0,
+                         step < 0 ? 1 : -1, 0, 0, 0);
+            ui->next_gamepad_wheel_ms = now_ms + 80;
+        }
+    }
 }
 
 static void poll_ui_actions(svrt_ui *ui) {
@@ -74,22 +469,80 @@ static void poll_ui_actions(svrt_ui *ui) {
         if (event.type == SDL_KEYDOWN) {
             if (event.key.keysym.sym == SDLK_F9)
                 ui->connection_requested = 1;
+            else
+                notify_input(ui, SVRT_UI_INPUT_KEY_DOWN, ui->cursor_x,
+                             ui->cursor_y, 0, 0, 0, 0,
+                             event.key.keysym.sym, event.key.keysym.scancode,
+                             event.key.keysym.mod);
+        } else if (event.type == SDL_KEYUP) {
+            notify_input(ui, SVRT_UI_INPUT_KEY_UP, ui->cursor_x,
+                         ui->cursor_y, 0, 0, 0, 0,
+                         event.key.keysym.sym, event.key.keysym.scancode,
+                         event.key.keysym.mod);
         }
+        if (event.type == SDL_MOUSEMOTION) {
+            notify_input(ui, SVRT_UI_INPUT_MOUSE_MOTION, event.motion.x,
+                         event.motion.y, event.motion.xrel, event.motion.yrel,
+                         0, 0, 0, 0, 0);
+        } else if (event.type == SDL_MOUSEBUTTONDOWN ||
+                   event.type == SDL_MOUSEBUTTONUP) {
+            notify_input(ui,
+                         event.type == SDL_MOUSEBUTTONDOWN ?
+                             SVRT_UI_INPUT_MOUSE_BUTTON_DOWN :
+                             SVRT_UI_INPUT_MOUSE_BUTTON_UP,
+                          event.button.x, event.button.y, 0, 0,
+                          event.button.button, 0, 0, 0, 0);
+        } else if (event.type == SDL_MOUSEWHEEL) {
+            int mouse_x = 0, mouse_y = 0;
+            SDL_GetMouseState(&mouse_x, &mouse_y);
+            notify_input(ui, SVRT_UI_INPUT_MOUSE_WHEEL, mouse_x, mouse_y,
+                         event.wheel.x, event.wheel.y, 0, event.wheel.y,
+                         0, 0, 0);
+        } else if (event.type == SDL_CONTROLLERDEVICEADDED) {
+            open_game_controller(ui, event.cdevice.which);
+        } else if (event.type == SDL_CONTROLLERDEVICEREMOVED) {
+            if (ui->game_controller &&
+                ui->gamepad_instance_id == event.cdevice.which) {
+                SDL_GameControllerClose(ui->game_controller);
+                ui->game_controller = NULL;
+                ui->gamepad_instance_id = -1;
+                ui->gamepad_left_x = 0;
+                ui->gamepad_left_y = 0;
+                ui->gamepad_right_y = 0;
+                fprintf(stderr, "SVRT UI: game controller removed\n");
+            }
+        } else if (event.type == SDL_CONTROLLERAXISMOTION) {
+            if (ui->game_controller &&
+                event.caxis.which == ui->gamepad_instance_id &&
+                event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) {
+                ui->gamepad_left_x = event.caxis.value;
+            } else if (ui->game_controller &&
+                       event.caxis.which == ui->gamepad_instance_id &&
+                       event.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                ui->gamepad_left_y = event.caxis.value;
+            } else if (ui->game_controller &&
+                       event.caxis.which == ui->gamepad_instance_id &&
+                       event.caxis.axis == SDL_CONTROLLER_AXIS_RIGHTY) {
+                ui->gamepad_right_y = event.caxis.value;
+            }
+        } else if (event.type == SDL_CONTROLLERBUTTONDOWN ||
+                   event.type == SDL_CONTROLLERBUTTONUP) {
+            if (ui->game_controller &&
+                event.cbutton.which == ui->gamepad_instance_id)
+                send_gamepad_button(ui, event.cbutton.button,
+                                    event.type == SDL_CONTROLLERBUTTONDOWN);
+        }
+#if !SVRT_UI_MINIMAL_STEAMOS
         if (event.type == SDL_MOUSEBUTTONDOWN) {
             int width = 0, height = 0;
             SDL_GetRendererOutputSize(ui->renderer, &width, &height);
-            float x = event.button.x, y = event.button.y;
-#if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
-            const float scene_width = width * 0.5f *
-                                      SVRT_DEBUG_LEFT_EYE_UI_SCALE;
-            const float scene_height = height *
-                                       SVRT_DEBUG_LEFT_EYE_UI_SCALE;
-            x = (x - (width - scene_width) * 0.5f) /
-                SVRT_DEBUG_LEFT_EYE_UI_SCALE;
-            y = (y - (height - scene_height) * 0.5f) /
-                SVRT_DEBUG_LEFT_EYE_UI_SCALE;
-#endif
+            float scene_x = 0.0f, scene_y = 0.0f;
+            map_screen_position(ui, event.button.x, event.button.y, width,
+                                height, &scene_x, &scene_y);
             const int eye_width = width / 2;
+            const int eye_x = scene_x >= eye_width ? eye_width : 0;
+            const float x = scene_x - eye_x;
+            const float y = scene_y;
             const int sidebar_w = (int)(eye_width * 0.065f);
             const int sidebar_h = (int)(height * 0.48f);
             const SDL_Rect sidebar = {
@@ -98,9 +551,9 @@ static void poll_ui_actions(svrt_ui *ui) {
                 sidebar_w, sidebar_h};
             if (x >= sidebar.x && x < sidebar.x + sidebar.w &&
                 y >= sidebar.y && y < sidebar.y + sidebar.h) {
-                int item = (int)((y - sidebar.y) * 6 / sidebar.h);
+                int item = (int)((y - sidebar.y) * 7 / sidebar.h);
                 if (item < 0) item = 0;
-                if (item > 5) item = 5;
+                if (item > 6) item = 6;
                 ui->selected_page = item;
                 ui->pending_action = (svrt_ui_action)(SVRT_UI_ACTION_HOME + item);
             }
@@ -128,7 +581,9 @@ static void poll_ui_actions(svrt_ui *ui) {
                 ui->pending_action = SVRT_UI_ACTION_PROFILE;
             }
         }
+#endif
     }
+    update_gamepad_axes(ui);
 }
 
 static int read_integer_file(const char *path, int *value) {
@@ -474,6 +929,169 @@ static void fill_rounded_rect(SDL_Renderer *renderer, const SDL_Rect *rect,
     }
 }
 
+static void draw_filled_circle(SDL_Renderer *renderer, int center_x,
+                               int center_y, int radius, SDL_Color color) {
+    if (!renderer || radius <= 0) return;
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    for (int y = -radius; y <= radius; ++y) {
+        const int span = (int)sqrtf((float)(radius * radius - y * y));
+        SDL_RenderDrawLine(renderer, center_x - span, center_y + y,
+                           center_x + span, center_y + y);
+    }
+}
+
+static void draw_circle_outline(SDL_Renderer *renderer, int center_x,
+                                int center_y, int radius, SDL_Color color) {
+    if (!renderer || radius <= 0) return;
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    for (int y = -radius; y <= radius; ++y) {
+        const int span = (int)sqrtf((float)(radius * radius - y * y));
+        SDL_RenderDrawPoint(renderer, center_x - span, center_y + y);
+        SDL_RenderDrawPoint(renderer, center_x + span, center_y + y);
+    }
+}
+
+/* The real Steam surface is still Valve's captured client. These tiny
+   vector marks only keep the shell's pointer/navigation chrome crisp on the
+   Pi; shipping the large SVG artwork would add an image loader and another
+   runtime dependency for seven simple icons. */
+static void draw_nav_icon(SDL_Renderer *renderer, int item, int center_x,
+                          int center_y, int size, SDL_Color color) {
+    if (!renderer || size < 6) return;
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    const int radius = size / 2 - 2;
+    switch (item) {
+        case 0: { /* Home */
+            SDL_Point roof[] = {{center_x - radius, center_y},
+                                {center_x, center_y - radius},
+                                {center_x + radius, center_y},
+                                {center_x - radius, center_y}};
+            SDL_RenderDrawLines(renderer, roof, 4);
+            SDL_Rect body = {center_x - radius + 3, center_y,
+                             radius * 2 - 6, radius};
+            SDL_RenderDrawRect(renderer, &body);
+            break;
+        }
+        case 1: { /* Library */
+            const int cell = (size - 7) / 2;
+            const int gap = 3;
+            for (int row = 0; row < 2; ++row)
+                for (int column = 0; column < 2; ++column) {
+                    SDL_Rect cell_rect = {
+                        center_x - cell - gap / 2 + column * (cell + gap),
+                        center_y - cell - gap / 2 + row * (cell + gap),
+                        cell, cell};
+                    SDL_RenderFillRect(renderer, &cell_rect);
+                }
+            break;
+        }
+        case 2: { /* Shop/tag */
+            SDL_Point tag[] = {{center_x - radius, center_y - radius / 2},
+                               {center_x + radius / 3, center_y - radius / 2},
+                               {center_x + radius, center_y},
+                               {center_x + radius / 3, center_y + radius / 2},
+                               {center_x - radius, center_y + radius / 2},
+                               {center_x - radius, center_y - radius / 2}};
+            SDL_RenderDrawLines(renderer, tag, 6);
+            draw_filled_circle(renderer, center_x - radius / 2,
+                               center_y - radius / 5, 1, color);
+            break;
+        }
+        case 3: { /* Friends */
+            draw_filled_circle(renderer, center_x - radius / 3,
+                               center_y - radius / 3, 2, color);
+            draw_filled_circle(renderer, center_x + radius / 3,
+                               center_y - radius / 3, 2, color);
+            SDL_RenderDrawLine(renderer, center_x - radius,
+                               center_y + radius / 2,
+                               center_x, center_y + radius / 2);
+            SDL_RenderDrawLine(renderer, center_x,
+                               center_y + radius / 2,
+                               center_x + radius, center_y + radius / 2);
+            SDL_RenderDrawLine(renderer, center_x - radius + 2,
+                               center_y + radius / 2,
+                               center_x - radius / 2, center_y + radius);
+            SDL_RenderDrawLine(renderer, center_x + radius - 2,
+                               center_y + radius / 2,
+                               center_x + radius / 2, center_y + radius);
+            break;
+        }
+        case 4: { /* Media/screenshots */
+            SDL_Rect image = {center_x - radius, center_y - radius * 2 / 3,
+                              radius * 2, radius * 4 / 3};
+            SDL_RenderDrawRect(renderer, &image);
+            SDL_RenderDrawLine(renderer, image.x + 2, image.y + image.h - 3,
+                               center_x - 1, center_y);
+            SDL_RenderDrawLine(renderer, center_x - 1, center_y,
+                               image.x + image.w - 2, image.y + 3);
+            draw_filled_circle(renderer, image.x + image.w - 5,
+                               image.y + 5, 1, color);
+            break;
+        }
+        case 5: { /* Downloads */
+            SDL_RenderDrawLine(renderer, center_x, center_y - radius,
+                               center_x, center_y + radius / 2);
+            SDL_RenderDrawLine(renderer, center_x - radius / 2,
+                               center_y, center_x,
+                               center_y + radius / 2);
+            SDL_RenderDrawLine(renderer, center_x + radius / 2,
+                               center_y, center_x,
+                               center_y + radius / 2);
+            SDL_Rect tray = {center_x - radius, center_y + radius / 2,
+                             radius * 2, 3};
+            SDL_RenderFillRect(renderer, &tray);
+            break;
+        }
+        case 6: { /* Settings */
+            draw_circle_outline(renderer, center_x, center_y, radius / 2,
+                                color);
+            draw_filled_circle(renderer, center_x, center_y, 2,
+                               (SDL_Color){22, 27, 35, 255});
+            SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b,
+                                   color.a);
+            for (int spoke = 0; spoke < 8; ++spoke) {
+                const float angle = spoke * SVRT_PI / 4.0f;
+                const int x0 = center_x + (int)lroundf(cosf(angle) * radius);
+                const int y0 = center_y + (int)lroundf(sinf(angle) * radius);
+                const int x1 = center_x + (int)lroundf(cosf(angle) *
+                                                       (radius - 3));
+                const int y1 = center_y + (int)lroundf(sinf(angle) *
+                                                       (radius - 3));
+                SDL_RenderDrawLine(renderer, x0, y0, x1, y1);
+            }
+            break;
+        }
+        case 7: { /* Steam mark */
+            draw_circle_outline(renderer, center_x, center_y, radius, color);
+            draw_filled_circle(renderer, center_x + radius / 3,
+                               center_y - radius / 3, 2, color);
+            SDL_RenderDrawLine(renderer, center_x - radius / 2,
+                               center_y + radius / 3,
+                               center_x + radius / 3,
+                               center_y - radius / 3);
+            SDL_RenderDrawLine(renderer, center_x - radius / 2,
+                               center_y + radius / 3,
+                               center_x - radius / 3,
+                               center_y + radius / 2);
+            break;
+        }
+        case 8: { /* Connection/stream target */
+            SDL_Point eye[] = {{center_x - radius, center_y},
+                               {center_x - radius / 2, center_y - radius / 2},
+                               {center_x + radius / 2, center_y - radius / 2},
+                               {center_x + radius, center_y},
+                               {center_x + radius / 2, center_y + radius / 2},
+                               {center_x - radius / 2, center_y + radius / 2},
+                               {center_x - radius, center_y}};
+            SDL_RenderDrawLines(renderer, eye, 7);
+            draw_filled_circle(renderer, center_x, center_y, 2, color);
+            break;
+        }
+        default: break;
+    }
+}
+
 static void draw_round_texture(SDL_Renderer *renderer, SDL_Texture *texture,
                                const SDL_Rect *rect) {
 #if SDL_VERSION_ATLEAST(2, 0, 18)
@@ -514,17 +1132,17 @@ static void draw_dashboard_chrome_eye(svrt_ui *ui, int eye_x,
                         (height - sidebar_h) / 2 - height / 20,
                         sidebar_w, sidebar_h};
     fill_rounded_rect(ui->renderer, &sidebar, sidebar_w / 5, surface);
-    const int item_step = (sidebar.h - 14) / 6;
+    const int item_step = (sidebar.h - 14) / 7;
     SDL_Rect side_selected = {sidebar.x + 5,
                               sidebar.y + 7 + ui->selected_page * item_step,
                               sidebar.w - 10, sidebar.w - 10};
     fill_rounded_rect(ui->renderer, &side_selected, 8, selected);
-    static const char *items[] = {"H", "L", "S", "F", "D", "G"};
-    for (int item = 0; item < 6; ++item)
-        draw_text(ui->renderer, ui->small_font, items[item],
-                  sidebar.x + sidebar.w / 2,
-                  sidebar.y + 11 + item * item_step,
-                  item ? muted.a : 255);
+    for (int item = 0; item < 7; ++item)
+        draw_nav_icon(ui->renderer, item, sidebar.x + sidebar.w / 2,
+                      sidebar.y + 11 + item * item_step + sidebar.w / 2,
+                      sidebar.w - 10,
+                      item == ui->selected_page ?
+                          (SDL_Color){255, 255, 255, 255} : muted);
 
     const int bar_h = (int)(height * 0.072f);
     const int bar_w = (int)(eye_width * 0.48f);
@@ -539,16 +1157,18 @@ static void draw_dashboard_chrome_eye(svrt_ui *ui, int eye_x,
     SDL_Rect steam_selected = {steam.x + 5, steam.y + steam.h - 6,
                                steam.w - 10, 3};
     fill_rounded_rect(ui->renderer, &steam_selected, 2, selected);
-    draw_text(ui->renderer, ui->small_font, "S",
-              steam.x + steam.w / 2, steam.y + 8, 255);
+    draw_nav_icon(ui->renderer, 7, steam.x + steam.w / 2,
+                  steam.y + steam.h / 2, steam.w - 10,
+                  (SDL_Color){255, 255, 255, 255});
 
     SDL_Rect connection = {bar.x + 8, bar.y + 7,
                            bar.h - 14, bar.h - 14};
     fill_rounded_rect(ui->renderer, &connection, 8,
                       ui->streaming_mode ? selected :
                       (SDL_Color){31, 38, 48, 255});
-    draw_text(ui->renderer, ui->small_font, "C",
-              connection.x + connection.w / 2, connection.y + 3, 255);
+    draw_nav_icon(ui->renderer, 8, connection.x + connection.w / 2,
+                  connection.y + connection.h / 2, connection.w - 2,
+                  (SDL_Color){255, 255, 255, 255});
 
     char clock_text[16] = {0};
     time_t now = time(NULL);
@@ -907,19 +1527,12 @@ static void draw_environment(svrt_ui *ui) {
     }
 }
 
-static float rounded_corner_inset(float u) {
-    const float radius = 0.035f;
-    float edge = u < 0.5f ? u : 1.0f - u;
-    if (edge >= radius) return 0.0f;
-    const float x = edge - radius;
-    return radius - sqrtf(radius * radius - x * x);
-}
-
 static void draw_curved_panel_eye(svrt_ui *ui, int eye_x, int eye_width,
                                   int height, int eye) {
     /* Keep the curved silhouette smooth even on renderers that have to use
-       the RenderCopy fallback below.  The geometry path still submits the
-       whole panel in one draw call. */
+       the RenderCopy fallback below.  The SteamOS window intentionally uses
+       square corners; the curved projection belongs to the panel surface,
+       not to its UI artwork. */
     enum { slices = 96 };
 #if SDL_VERSION_ATLEAST(2, 0, 18)
     SDL_Vertex vertices[(slices + 1) * 2];
@@ -940,15 +1553,13 @@ static void draw_curved_panel_eye(svrt_ui *ui, int eye_x, int eye_width,
                                SVRT_UI_HORIZONTAL_ASPECT * focal *
                                    (world_x - eye_offset) / z;
         const float half_screen_height = focal * panel_height * 0.5f / z;
-        const float inset = rounded_corner_inset(u);
-        const float screen_inset = inset * half_screen_height * 2.0f;
         SDL_Color white = {255, 255, 255, 255};
         vertices[column * 2] = (SDL_Vertex){
-            {screen_x, height * 0.5f - half_screen_height + screen_inset},
-            white, {u, inset}};
+            {screen_x, height * 0.5f - half_screen_height},
+            white, {u, 0.0f}};
         vertices[column * 2 + 1] = (SDL_Vertex){
-            {screen_x, height * 0.5f + half_screen_height - screen_inset},
-            white, {u, 1.0f - inset}};
+            {screen_x, height * 0.5f + half_screen_height},
+            white, {u, 1.0f}};
     }
     for (int column = 0; column < slices; ++column) {
         const int vertex = column * 2, index = column * 6;
@@ -1056,6 +1667,51 @@ static void draw_steam_starting_eye(svrt_ui *ui, int eye_x, int eye_width,
 }
 #endif
 
+static void draw_cursor_circle(SDL_Renderer *renderer, int center_x,
+                               int center_y, int radius, SDL_Color color) {
+    if (!renderer || radius <= 0) return;
+    SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, color.a);
+    for (int y = -radius; y <= radius; ++y) {
+        const int span = (int)sqrtf((float)(radius * radius - y * y));
+        SDL_RenderDrawLine(renderer, center_x - span, center_y + y,
+                           center_x + span, center_y + y);
+    }
+}
+
+static void draw_laser_cursor_eye(svrt_ui *ui, int eye_x, int eye_width,
+                                  int height) {
+    if (!ui || !ui->cursor_visible || eye_width <= 0 || height <= 0) return;
+    int cursor_x = ui->cursor_x;
+    int cursor_y = ui->cursor_y;
+    if (cursor_x < 0) cursor_x = 0;
+    if (cursor_x >= eye_width) cursor_x = eye_width - 1;
+    if (cursor_y < 0) cursor_y = 0;
+    if (cursor_y >= height) cursor_y = height - 1;
+    const int target_x = eye_x + cursor_x;
+    const int target_y = cursor_y;
+    const int origin_x = eye_x + (int)lroundf(eye_width * 0.035f);
+    const int origin_y = (int)lroundf(height * 0.90f);
+    SDL_SetRenderDrawBlendMode(ui->renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(ui->renderer, 4, 18, 42, 210);
+    SDL_RenderDrawLine(ui->renderer, origin_x, origin_y, target_x, target_y);
+    SDL_SetRenderDrawColor(ui->renderer, 41, 145, 240, 235);
+    SDL_RenderDrawLine(ui->renderer, origin_x, origin_y, target_x, target_y);
+
+    const float dx = (float)target_x - origin_x;
+    const float dy = (float)target_y - origin_y;
+    for (int index = 1; index <= 3; ++index) {
+        const float fraction = 0.18f * index;
+        draw_cursor_circle(ui->renderer,
+                           (int)lroundf(origin_x + dx * fraction),
+                           (int)lroundf(origin_y + dy * fraction), 3,
+                           (SDL_Color){41, 145, 240, 180});
+    }
+    draw_cursor_circle(ui->renderer, target_x, target_y, 10,
+                       (SDL_Color){41, 145, 240, 55});
+    draw_cursor_circle(ui->renderer, target_x, target_y, 5,
+                       (SDL_Color){99, 190, 255, 255});
+}
+
 static void draw_scene(svrt_ui *ui) {
     int width = 0, height = 0;
     SDL_GetRendererOutputSize(ui->renderer, &width, &height);
@@ -1092,11 +1748,15 @@ static void draw_scene(svrt_ui *ui) {
                                     height, SDL_GetTicks() - ui->state_started_ms);
     }
 #endif
-    if (ui->state == SVRT_UI_HOME && !SVRT_UI_MINIMAL_STEAMOS)
+    if (ui->state == SVRT_UI_HOME &&
+        (!SVRT_UI_MINIMAL_STEAMOS || SVRT_UI_SHOW_NAV_CHROME))
         for (int eye = 0; eye < eye_count; ++eye)
             draw_dashboard_chrome_eye(ui, eye * (width / 2),
                                       eye ? width - width / 2 : width / 2,
                                       height);
+    for (int eye = 0; eye < eye_count; ++eye)
+        draw_laser_cursor_eye(ui, eye * (width / 2),
+                              eye ? width - width / 2 : width / 2, height);
 #if SVRT_ENABLE_DEBUG_LEFT_EYE_UI
     if (rendering_left_eye_scene) {
         SDL_SetRenderTarget(ui->renderer, NULL);
@@ -1170,9 +1830,10 @@ static int configure_display_mode(SDL_Window *window) {
 
 int svrt_ui_open(svrt_ui *ui) {
     memset(ui, 0, sizeof(*ui));
+    ui->gamepad_instance_id = -1;
     const char *trace_fps = getenv("SVRT_TRACE_UI_FPS");
     ui->trace_ui_fps = trace_fps && trace_fps[0] && strcmp(trace_fps, "0");
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER)) {
         fprintf(stderr, "SVRT UI: SDL video initialization failed: %s\n",
                 SDL_GetError());
         return -1;
@@ -1212,6 +1873,18 @@ int svrt_ui_open(svrt_ui *ui) {
             fprintf(stderr, "SVRT UI: renderer=%s flags=0x%x\n",
                     renderer_info.name ? renderer_info.name : "unknown",
                     renderer_info.flags);
+    }
+    /* Open controllers only after the renderer exists.  SDL exposes a
+       controller at process startup before it emits a DEVICEADDED event;
+       opening it earlier used to be skipped by the renderer guard in the
+       input path, leaving a paired controller unable to move the laser until
+       it was unplugged and reconnected. */
+    SDL_GameControllerEventState(SDL_ENABLE);
+    for (int device = 0; device < SDL_NumJoysticks(); ++device) {
+        if (SDL_IsGameController(device)) {
+            open_game_controller(ui, device);
+            break;
+        }
     }
     int output_width = 0, output_height = 0;
     SDL_DisplayMode output_mode = {0};
@@ -1281,6 +1954,8 @@ int svrt_ui_open(svrt_ui *ui) {
 
 void svrt_ui_close(svrt_ui *ui) {
     if (!ui) return;
+    if (ui->game_controller)
+        SDL_GameControllerClose(ui->game_controller);
     video_close(&ui->boot); video_close(&ui->loop);
     video_close(&ui->steam_loading); video_close(&ui->background);
     video_close(&ui->avatar);
@@ -1389,6 +2064,13 @@ void svrt_ui_set_client_frame(svrt_ui *ui, SDL_Texture *frame) {
 
 void svrt_ui_set_streaming_mode(svrt_ui *ui, int enabled) {
     if (ui) ui->streaming_mode = enabled != 0;
+}
+
+void svrt_ui_set_input_callback(svrt_ui *ui, svrt_ui_input_callback callback,
+                                void *opaque) {
+    if (!ui) return;
+    ui->input_callback = callback;
+    ui->input_callback_opaque = opaque;
 }
 
 int svrt_ui_take_connection_request(svrt_ui *ui) {

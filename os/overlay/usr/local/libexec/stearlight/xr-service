@@ -1,0 +1,62 @@
+#!/bin/sh
+set -eu
+
+config=${STEARLIGHT_XR_CONFIG:-/etc/conf.d/stearlight-xr}
+if [ -r "$config" ]; then
+    . "$config"
+fi
+
+if [ "${STEARLIGHT_XR_ENABLE:-0}" != 1 ]; then
+    printf '%s\n' 'Stearlight: standalone OpenXR is disabled' >&2
+    exit 1
+fi
+if [ "${STEARLIGHT_XR_MODE:-standalone}" != standalone ]; then
+    printf '%s\n' 'Stearlight: Steam Frame mode owns remote XR; Monado requires STEARLIGHT_XR_MODE=standalone' >&2
+    exit 1
+fi
+monado_service=${STEARLIGHT_XR_MONADO_SERVICE:-/usr/bin/monado-service}
+if [ ! -x "$monado_service" ]; then
+    printf '%s\n' "Stearlight: monado-service is not installed ($monado_service)" >&2
+    exit 127
+fi
+
+runtime_dir=${STEARLIGHT_XR_RUNTIME_DIR:-/run/user/1000}
+runtime_json=${STEARLIGHT_XR_RUNTIME_JSON:-}
+if [ -z "$runtime_json" ]; then
+    for candidate in /usr/share/openxr/1/openxr_monado.json \
+                     /etc/xdg/openxr/1/active_runtime.json; do
+        if [ -r "$candidate" ]; then
+            runtime_json=$candidate
+            break
+        fi
+    done
+fi
+if [ -z "$runtime_json" ] || [ ! -r "$runtime_json" ]; then
+    printf '%s\n' "Stearlight: OpenXR runtime manifest is missing ($runtime_json)" >&2
+    exit 1
+fi
+
+mkdir -p "$runtime_dir"
+chmod 0700 "$runtime_dir" 2>/dev/null || true
+export HOME=/home/stearlight
+export USER=stearlight
+export LOGNAME=stearlight
+export XDG_RUNTIME_DIR="$runtime_dir"
+export XR_RUNTIME_JSON="$runtime_json"
+export XRT_COMPOSITOR_SCALE_PERCENTAGE="${STEARLIGHT_XR_COMPOSITOR_SCALE_PERCENTAGE:-100}"
+export XRT_COMPOSITOR_COMPUTE="${STEARLIGHT_XR_COMPOSITOR_COMPUTE:-0}"
+export XRT_NO_STDIN="${STEARLIGHT_XR_NO_STDIN:-1}"
+if [ -n "${STEARLIGHT_XR_ACTIVE_CONFIG:-}" ]; then
+    export P_OVERRIDE_ACTIVE_CONFIG="$STEARLIGHT_XR_ACTIVE_CONFIG"
+else
+    unset P_OVERRIDE_ACTIVE_CONFIG
+fi
+if [ "${STEARLIGHT_XR_ACTIVE_CONFIG:-}" = qwerty ]; then
+    export QWERTY_ENABLE="${QWERTY_ENABLE:-1}"
+    export XRT_DEBUG_GUI="${XRT_DEBUG_GUI:-1}"
+    export OXR_DEBUG_GUI="${OXR_DEBUG_GUI:-1}"
+    export DISPLAY="${STEARLIGHT_XR_DISPLAY:-${DISPLAY:-:8}}"
+fi
+
+printf '%s\n' "STEARLIGHT XR MONADO STARTING runtime=$runtime_json runtime_dir=$runtime_dir" >&2
+exec "$monado_service"

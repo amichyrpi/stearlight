@@ -45,7 +45,13 @@ We use a separated build and test environment for the aarch64 distro and the VM.
 
 For any informations about the aarch64 distro and the VM, please refer to the [os/README.md](os/README.md) and [os/VM.md](os/VM.md) files.
 
-### Compiling on Raspberry Pi
+### Compiling the legacy H.265 receiver (optional)
+
+The native Stearlight OS path does not build a custom receiver or use IHSlib.
+Build the Alpine image with `os/build.sh` as described in
+[os/README.md](os/README.md). The commands below are retained only for
+developers working on the old H.265 transport; they require an explicit
+legacy opt-in and must not be used for Steam Frame/VRLink streaming.
 
 Before compilling H.265 SVRT you need to be running a 64-bit Raspberry Pi OS image with KMS enabled and FFmpeg. If you don't have a 64-bit Raspberry Pi OS image, you can install it by using [Raspberry Pi Imager](https://www.raspberrypi.com/software/). You can enable KMS and install FFmpeg using the following commands:
 
@@ -128,6 +134,7 @@ git clone https://github.com/amichyrpi/stearlight.git
 cd stearlight
 mkdir build && cd build
 cmake .. -G Ninja -DSVRT_BUILD_DRIVER=OFF \
+  -DSVRT_BUILD_RECEIVER=ON \
   -DSVRT_BUILD_VENDORED_SDL=ON \
   -DCMAKE_BUILD_TYPE=Release
 cmake --build . --parallel
@@ -151,15 +158,41 @@ running the receiver as root. The Steam installer installs Valve's native
 ARM64 beta client and runtime under `/var/lib/svrt-receiver`, then applies the
 ARMv8.0 compatibility files required by Raspberry Pi 4 CPUs.
 
-The graphical receiver starts in standalone Steam Big Picture mode. Select the
-connection tile in the lower bar to enter Steam Link/SteamVR streaming mode;
-`F9` provides the same toggle for development testing. Headless deployments, or
-systems that must retain the old automatic streaming startup, can set
-`SVRT_START_IN_STREAMING_MODE=1` in the systemd service environment.
+The graphical legacy receiver starts Valve's native Gamepad UI client. When
+Steam Frame mode is enabled it passes the installed Valve client's
+`-steamframe` option, and
+the connection tile opens Valve's registered `steamlink://lookup/` handler. Pairing,
+authorization, transport, and the Steam Frame controls remain inside the
+client; the receiver never implements a second protocol. `SVRT_STEAM_FRAME=0`
+and `SVRT_START_IN_STREAMING_MODE=1` remain legacy-receiver compatibility
+controls only. Native Steam Frame mode never enters the legacy custom pairing
+path.
 
 ### SteamVR driver setup
 
-You can easily install the driver by using the SVRT Utility App on both Windows and Linux, you can find the app in the [Releases](https://github.com/amichyrpi/stearlight/releases) page.
+For the native Steam Frame/VRLink path, use Valve's built-in SteamVR `vrlink`
+driver. The Steam client and SteamVR provide pairing, authorization, transport,
+and the Steam Frame UI. Tracking and controller input are provided only when
+the connected headset exposes the hardware contract Valve expects. Stearlight
+does not register a guessed third-party driver and does not reproduce the Steam
+Link protocol.
+
+Run `scripts\install-driver.ps1` without switches to remove any old `svrt`
+registration and verify that Valve's native VRLink driver is installed. Do not
+register the legacy `build/svrt` DLL for this path. The legacy package remains
+available only for the old custom H.265 receiver protocol.
+
+An optional resource-only package is available only when the exact Android
+product string sent by the headset is known:
+
+```powershell
+scripts\install-driver.ps1 -InstallVrlinkResources `
+  -ProductName '<exact android/os/Build/PRODUCT value>'
+```
+
+The package adds panel metadata to Valve's driver; it contains no pairing,
+streaming, tracking, or controller implementation. The utility and legacy
+package are available from the [Releases](https://github.com/amichyrpi/stearlight/releases) page.
 
 You can also build and install the driver manually by using the following commands:
 
@@ -174,12 +207,40 @@ You can also build and install the driver manually by using the following comman
   cmake --build build --config Release --parallel
   $vrpathreg = Join-Path ${env:ProgramFiles(x86)} `
     'Steam\steamapps\common\SteamVR\bin\win64\vrpathreg.exe'
-  & $vrpathreg adddriver (Resolve-Path 'build\svrt')
+  # Native Steam Frame/VRLink: Valve's built-in driver owns the path.
+  & $vrpathreg removedriverswithname svrt
   ```
 
-### Starting order
+If an exact headset product value is available, the optional resource package
+can be generated with
+`-DSVRT_BUILD_VRLINK_RESOURCES=ON -DSVRT_VRLINK_PRODUCT=<product>` and then
+registered with `vrpathreg`. Do not invent a product alias: Steam Link selects
+these settings by the exact value reported by the headset.
 
-The Raspberry Pi receiver is started at Raspberry Pi boot, and the SteamVR driver is started at SteamVR boot. The driver automatically detects when the Raspberry Pi receiver becomes available.
+The legacy custom H.265 driver is still available as an explicit compatibility
+path by registering `build\svrt` (or by running
+`scripts\install-driver.ps1 -LegacyH265`).
+
+### Native Steam Frame starting order
+
+The Stearlight OS session starts Valve's Steam client in its native
+`-steamframe` mode at Raspberry Pi boot. On the PC, leave Valve's built-in
+`vrlink` driver installed; no Stearlight driver process or custom pairing daemon
+is started for this path.
+
+### Legacy H.265 transport (optional)
+
+The following transport details apply only to the explicit legacy receiver
+build (`SVRT_LEGACY_H265=1`, `SVRT_STEAM_FRAME=0`) and are not used by native
+Steam Frame/VRLink streaming.
+
+The legacy status endpoint does not claim valid tracking until a real sensor
+driver is connected. `SVRT_ENABLE_SYNTHETIC_POSE=1` enables bounded test motion
+for protocol bring-up only; it must not be used for a headset session.
+
+The Raspberry Pi receiver is started at Raspberry Pi boot, and the legacy
+SteamVR driver is started at SteamVR boot. The driver automatically detects
+when the Raspberry Pi receiver becomes available.
 
 ### Stereo resolution and transport
 

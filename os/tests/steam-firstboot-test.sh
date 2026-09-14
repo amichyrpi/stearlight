@@ -64,9 +64,21 @@ STEARLIGHT_STEAM_BETA=steamdeck_publicbeta \
 
 steam_root="$home/.local/share/Steam"
 test -x "$steam_root/ubuntu12_32/steam"
-test -L "$home/.steam/root"
-test -L "$home/.steam/steam"
-test "$(readlink "$home/.steam/root")" = "$steam_root"
+if case "$(uname -s)" in
+     MINGW*|MSYS*|CYGWIN*) true ;;
+     *) false ;;
+   esac
+then
+    # Git Bash represents directory symlinks as directory junctions, so its
+    # test(1) cannot report -L and readlink(1) cannot inspect the target.
+    # The Linux/Alpine path below still verifies the actual symlink target.
+    test -d "$home/.steam/root"
+    test -d "$home/.steam/steam"
+else
+    test -L "$home/.steam/root"
+    test -L "$home/.steam/steam"
+    test "$(readlink "$home/.steam/root")" = "$steam_root"
+fi
 test "$(cat "$steam_root/package/beta")" = steamdeck_publicbeta
 test -e "$steam_root/.stearlight-prepared"
 test -s "$home/.config/gamescope/bootstrap.cfg"

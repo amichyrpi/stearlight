@@ -16,9 +16,9 @@ enum svrt_receiver_state {
     SVRT_RECEIVER_UNAUTHORIZED = 4
 };
 
-/* Wire-compatible synthetic 6DoF pose returned with SVRT/1 STATUS. The
-   Raspberry Pi currently has no lighthouse sensor, so this is deliberately
-   bounded test motion rather than a claim of physical tracking. */
+/* Wire-compatible 6DoF pose returned with SVRT/1 STATUS. The optional
+   synthetic implementation is disabled unless SVRT_ENABLE_SYNTHETIC_POSE=1;
+   a production receiver must replace it with real headset sensor fusion. */
 typedef struct svrt_synthetic_pose {
     int valid;
     int connected;

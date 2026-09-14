@@ -4,6 +4,11 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+/* This is Valve's Steam-client URL handler.  The OS never implements a
+ * second Steam Link/VRLink discovery, pairing, or transport protocol. */
+#define STEARLIGHT_STEAM_LINK_URI "steamlink://lookup/"
+#define STEARLIGHT_STEAM_URI_MAX 512
+
 /* Standalone Steam process/display bridge used only by the OS shell.  The
  * receiver has its own implementation in pi-receiver/ and is not part of
  * the appliance build. */
@@ -26,7 +31,14 @@ typedef struct stearlight_steam_client {
     int frame_announced;
     uint32_t next_connect_ms;
     uint32_t next_capture_ms;
+    unsigned int launch_failures;
+    unsigned int x_modifiers;
     stearlight_steam_client_state state;
+    /* A navigation/connection request can arrive while Steam is starting or
+     * being restarted. Keep the most recent Valve URI and dispatch it after
+     * the first visible client frame, so the request is never lost and no
+     * second transport implementation is needed. */
+    char pending_uri[STEARLIGHT_STEAM_URI_MAX];
     char detail[160];
 } stearlight_steam_client;
 
@@ -41,4 +53,16 @@ const char *stearlight_steam_client_detail(
     const stearlight_steam_client *client);
 void stearlight_steam_client_stop(stearlight_steam_client *client);
 void stearlight_steam_client_open_uri(
-    const stearlight_steam_client *client, const char *uri);
+    stearlight_steam_client *client, const char *uri);
+void stearlight_steam_client_open_steam_link(
+    stearlight_steam_client *client);
+void stearlight_steam_client_send_mouse_motion(
+    const stearlight_steam_client *client, int surface_x, int surface_y,
+    int surface_width, int surface_height);
+void stearlight_steam_client_send_mouse_button(
+    const stearlight_steam_client *client, int button, int pressed);
+void stearlight_steam_client_send_mouse_wheel(
+    const stearlight_steam_client *client, int delta_y);
+void stearlight_steam_client_send_key(
+    stearlight_steam_client *client, int keycode, int pressed,
+    int modifiers);

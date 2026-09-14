@@ -2,15 +2,21 @@
 param(
     [string]$ImagePath = (Join-Path $PSScriptRoot '..\out\stearlight-vm\stearlight-os-vm-x86_64.vdi'),
     [string]$Name = 'Stearlight-OS-Test',
-    [int]$BootSeconds = 45,
+    # A clean Steam tree may spend about two minutes in Valve's bootstrap and
+    # WebHelper startup before it maps the first Gamepad UI surface. Keep the
+    # default long enough to test a true cold boot, not only a warm cache.
+    [int]$BootSeconds = 300,
     # Take the screenshot only after the C bridge has captured a real Steam
-    # window.  A small optional settle delay remains useful for manual runs.
-    [int]$CaptureDelaySeconds = 0,
+    # window and WebHelper has had time to paint its first page. Override with
+    # zero only when intentionally testing the transition frame.
+    [int]$CaptureDelaySeconds = 15,
     # The first SteamOS client update can finish after the compositor marker;
     # use the same bounded boot budget for the framebuffer wait instead of
     # declaring a healthy but still-updating client black after 120 seconds.
     [int]$VisibleTimeoutSeconds = 0,
-    [int]$MemoryMB = 3072,
+    # Valve's 32-bit bootstrap, 64-bit WebHelper and software compositor
+    # need the same 4 GiB budget used by the repeatability smoke test.
+    [int]$MemoryMB = 4096,
     [ValidateSet('vga', 'virtio-gl')]
     [string]$QemuGpu = 'vga',
     # Keep QEMU visible by default so a successful SteamOS session can be
@@ -70,9 +76,8 @@ function Wait-SerialReady {
         $steamSessionReady = $serial -match "(?i)(STEARLIGHT STEAM SESSION STARTING|STEARLIGHT STEAM SHELL STARTING)"
         $steamFrameReady = $serial -match '(?i)STEARLIGHT STEAM FRAME READY [0-9]+x[0-9]+'
         $gamescopeSessionReady = $serial -match '(?i)STEARLIGHT GAMESCOPE READY [0-9]+x[0-9]+ @ [0-9]+Hz'
-        $x11SessionReady = $serial -match '(?i)STEARLIGHT STEAM SESSION STARTING'
         if ($displayReady -and $steamSessionReady -and
-            ($steamFrameReady -or $gamescopeSessionReady -or $x11SessionReady)) {
+            ($steamFrameReady -or $gamescopeSessionReady)) {
             return $serial
         }
         if ($Process -and $Process.HasExited) { break }
@@ -473,6 +478,114 @@ function Assert-StereoScreenshot {
     }
 }
 
+function Assert-CentralSteamSurface {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
+                               [IO.FileAccess]::Read,
+                               [IO.FileShare]::ReadWrite)
+    try {
+        if ((Read-PpmToken -Stream $stream) -ne 'P6') {
+            throw "Steam surface check requires a binary PPM screenshot: $Path"
+        }
+        $width = 0; $height = 0; $maxValue = 0
+        if (-not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$width) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$height) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$maxValue) -or
+            $width -ne $expectedWidth -or $height -ne $expectedHeight -or
+            $maxValue -ne 255) {
+            throw "Steam surface check received a ${width}x${height} PPM; expected ${expectedWidth}x${expectedHeight}."
+        }
+        $pixelBytes = [int64]$width * [int64]$height * 3
+        if ($stream.Length -lt $pixelBytes) {
+            throw "Steam surface screenshot is truncated: $Path"
+        }
+        $pixelOffset = $stream.Length - $pixelBytes
+        $half = [int]($width / 2)
+        $leftSamples = 0; $rightSamples = 0
+        $pixel = New-Object byte[] 3
+        for ($eye = 0; $eye -lt 2; ++$eye) {
+            $firstX = $eye * $half + [int]($half * 0.12)
+            $lastX = $eye * $half + [int]($half * 0.88)
+            # The lower navigation bar is shell chrome and must not satisfy
+            # this check. Sample only the upper/central Steam surface, where
+            # Valve's WebHelper page and welcome text are rendered.
+            for ($y = [int]($height * 0.12); $y -lt [int]($height * 0.68); $y += 8) {
+                for ($x = $firstX; $x -lt $lastX; $x += 8) {
+                    $position = $pixelOffset + (([int64]$y * $width + $x) * 3)
+                    [void]$stream.Seek($position, [IO.SeekOrigin]::Begin)
+                    if ($stream.Read($pixel, 0, 3) -eq 3 -and
+                        [Math]::Max($pixel[0], [Math]::Max($pixel[1], $pixel[2])) -gt 96) {
+                        if ($eye -eq 0) { $leftSamples++ } else { $rightSamples++ }
+                    }
+                }
+            }
+        }
+        if ($leftSamples -lt 20 -or $rightSamples -lt 20) {
+            throw "Central Steam surface is missing (left $leftSamples, right $rightSamples samples)."
+        }
+        Write-Host "Central Steam surface check: left $leftSamples, right $rightSamples visible samples"
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Assert-LaserCursor {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
+                               [IO.FileAccess]::Read,
+                               [IO.FileShare]::ReadWrite)
+    try {
+        if ((Read-PpmToken -Stream $stream) -ne 'P6') {
+            throw "Laser cursor check requires a binary PPM screenshot: $Path"
+        }
+        $width = 0; $height = 0; $maxValue = 0
+        if (-not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$width) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$height) -or
+            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$maxValue) -or
+            $width -ne $expectedWidth -or $height -ne $expectedHeight -or
+            $maxValue -ne 255) {
+            throw "Laser cursor check received a ${width}x${height} PPM; expected ${expectedWidth}x${expectedHeight}."
+        }
+        $pixelBytes = [int64]$width * [int64]$height * 3
+        if ($stream.Length -lt $pixelBytes) {
+            throw "Laser cursor screenshot is truncated: $Path"
+        }
+        $pixelOffset = $stream.Length - $pixelBytes
+        $half = [int]($width / 2)
+        $eyeSamples = @(0, 0)
+        $pixel = New-Object byte[] 3
+        # The laser starts near the lower-left of every eye. Scan that small
+        # origin region instead of relying on the current pointer target,
+        # which may be different when a human is inspecting the VM.
+        for ($eye = 0; $eye -lt 2; $eye++) {
+            $firstX = $eye * $half
+            $lastX = $firstX + [int]($half * 0.15)
+            for ($y = [int]($height * 0.72); $y -lt [int]($height * 0.99); $y += 4) {
+                for ($x = $firstX; $x -lt $lastX; $x += 4) {
+                    $position = $pixelOffset + (([int64]$y * $width + $x) * 3)
+                    [void]$stream.Seek($position, [IO.SeekOrigin]::Begin)
+                    if ($stream.Read($pixel, 0, 3) -ne 3) { continue }
+                    $red = [int]$pixel[0]
+                    $green = [int]$pixel[1]
+                    $blue = [int]$pixel[2]
+                    if ($blue -gt 150 -and $green -gt 80 -and
+                        $blue -gt ($red + 60)) {
+                        $eyeSamples[$eye]++
+                    }
+                }
+            }
+        }
+        if ($eyeSamples[0] -lt 3 -or $eyeSamples[1] -lt 3) {
+            throw "Blue laser cursor is missing (left $($eyeSamples[0]), right $($eyeSamples[1]) samples)."
+        }
+        Write-Host "Laser cursor check: left $($eyeSamples[0]), right $($eyeSamples[1]) blue samples"
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 # QEMU is the supported fallback on machines without VirtualBox.  Keep all
 # firmware, logs and temporary state beside the VM image so a test never uses
 # the system drive for VM data.
@@ -536,6 +649,16 @@ if (-not [IO.File]::Exists($vbox)) {
     # empty strip above/below the 16:9 stereo framebuffer.  Resize the outer
     # window from its current width while preserving the guest aspect ratio;
     # the guest framebuffer itself remains 2880x1600.
+    # PowerShell Add-Type uses %TEMP% for its compiler output. Keep that
+    # transient assembly beside the image so a nearly-full C: cannot prevent
+    # an F:-backed VM test from starting.
+    $testTemp = Join-Path $output '.stearlight-test-temp'
+    [IO.Directory]::CreateDirectory($testTemp) | Out-Null
+    $previousTemp = $env:TEMP
+    $previousTmp = $env:TMP
+    $env:TEMP = $testTemp
+    $env:TMP = $testTemp
+    try {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -566,6 +689,10 @@ public static class StearlightQemuWindow {
         uint flags);
 }
 '@
+    } finally {
+        $env:TEMP = $previousTemp
+        $env:TMP = $previousTmp
+    }
 
     function Set-QemuWindowAspect {
         param(
@@ -703,7 +830,13 @@ public static class StearlightQemuWindow {
         # Steam's first-run client downloads the Gamepad UI/bootstrap payload.
         # Give the appliance a private user-mode NAT interface so this works
         # in a VM without exposing or depending on a host bridge.
-        '-nic', 'user,model=e1000'
+        '-nic', 'user,model=e1000',
+        # Use an absolute tablet for the visible QEMU harness.  The default
+        # PS/2 mouse is relative and requires pointer capture; the tablet
+        # keeps host coordinates aligned with the curved Steam surface and
+        # lets the user click without first grabbing the QEMU window.
+        '-device', 'ich9-usb-ehci1,id=stearlight-usb',
+        '-device', 'usb-tablet,bus=stearlight-usb.0'
     ) + $qemuVideoArgs + @(
         # VGA is the deterministic fallback.  virtio-gl is an optional host
         # path for QEMU builds that can provide Venus/DRM to the guest.
@@ -752,6 +885,8 @@ public static class StearlightQemuWindow {
             -TimeoutSeconds $visibleTimeout)
         Assert-VisibleScreenshot -Path $qemuScreenshot
         Assert-StereoScreenshot -Path $qemuScreenshot
+        Assert-CentralSteamSurface -Path $qemuScreenshot
+        Assert-LaserCursor -Path $qemuScreenshot
         Write-Host "QEMU framebuffer screenshot: $qemuScreenshot"
         $testSucceeded = $true
     } finally {

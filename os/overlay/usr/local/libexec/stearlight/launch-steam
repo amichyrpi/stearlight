@@ -12,6 +12,7 @@ steam_root=${STEAM_ROOT:-${home}/.local/share/Steam}
 steam_arm_dir=${STEAM_ARM_DIR:-${steam_root}/steamrtarm64}
 steam_arm=${STEAM_ARM_BINARY:-${steam_arm_dir}/steam}
 steam_shim_dir=${steam_root}/lib/aarch64-linux-gnu
+steam_host_runtime=${STEAM_HOST_RUNTIME_ARM64_DIR:-/opt/stearlight/steam-runtime}
 steam_runtime_dir=${STEAM_RUNTIME_ARM64_DIR:-${steam_root}/steam-runtime-steamrt-arm64}
 
 # Images produced before the native runtime layout fix kept the archive under
@@ -39,6 +40,15 @@ fi
 if [ -d "${steam_runtime_dir}/files/lib/aarch64-linux-gnu" ]; then
     ld_path=${ld_path}:${steam_runtime_dir}/files/lib/aarch64-linux-gnu
 fi
+# The bundled Valve platform intentionally omits generic glibc SONAME links;
+# the Debian staging tree supplies those links while Alpine remains the host
+# userspace. Keep this path last so Valve's libraries win whenever present.
+if [ -d "${steam_host_runtime}/lib/aarch64-linux-gnu" ]; then
+    ld_path=${ld_path}:${steam_host_runtime}/lib/aarch64-linux-gnu
+fi
+if [ -d "${steam_host_runtime}/usr/lib/aarch64-linux-gnu" ]; then
+    ld_path=${ld_path}:${steam_host_runtime}/usr/lib/aarch64-linux-gnu
+fi
 export LD_LIBRARY_PATH=${ld_path}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 
 if [ -d "${steam_runtime_dir}/bin" ]; then
@@ -48,6 +58,28 @@ fi
 if [ -x /run/host/usr/bin/fusermount3 ]; then
     export FUSERMOUNT_PROG=/run/host/usr/bin/fusermount3
 fi
+
+# Keep direct invocations and Valve URI handoffs on the same SteamOS/Gamepad UI
+# contract as the supervised session. The session normally supplies these
+# arguments, but a manual restart or a protocol handler may invoke this
+# launcher with none or with only steam:// / steamlink://.
+case "${1-}" in
+    steam://*|steamlink://*)
+        uri=$1
+        shift
+        set -- -gamepadui -steamos3 -steampal -steamdeck
+        if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+            set -- "$@" -steamframe
+        fi
+        set -- "$@" "$uri"
+        ;;
+    '')
+    set -- -gamepadui -steamos3 -steampal -steamdeck
+    if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+        set -- "$@" -steamframe
+    fi
+        ;;
+esac
 
 touch "${steam_root}/.cef-enable-remote-debugging"
 cd "${steam_arm_dir}"

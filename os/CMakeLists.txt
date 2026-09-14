@@ -2,6 +2,7 @@ include(GNUInstallDirs)
 
 find_package(X11 REQUIRED)
 find_package(PkgConfig REQUIRED)
+find_library(SVRT_XTST_LIBRARY Xtst REQUIRED)
 pkg_check_modules(SVRT_SDL_TTF REQUIRED IMPORTED_TARGET SDL2_ttf)
 pkg_check_modules(SVRT_AVCODEC REQUIRED IMPORTED_TARGET libavcodec libavformat libavutil)
 
@@ -20,7 +21,8 @@ target_compile_definitions(stearlight-shell PRIVATE
   SVRT_GUI_BACKGROUND_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/transition_background.png"
   SVRT_ENABLE_DEBUG_LEFT_EYE_UI=0
   SVRT_UI_MINIMAL_STEAMOS=1
-  SVRT_UI_FORCE_PANEL_STRIPS=0
+  SVRT_UI_SHOW_NAV_CHROME=1
+  SVRT_UI_FORCE_PANEL_STRIPS=1
   SVRT_SHOW_STEAM_STARTING_FALLBACK=0
   SVRT_STEAM_LOOP_HOLD_MS=1500
   SVRT_STEAM_CAPTURE_INTERVAL_MS=16
@@ -30,7 +32,8 @@ target_compile_definitions(stearlight-shell PRIVATE
   SVRT_ENFORCE_DISPLAY_MODE=1)
 target_compile_features(stearlight-shell PRIVATE c_std_11)
 target_link_libraries(stearlight-shell PRIVATE
-  X11::X11 Xcomposite PkgConfig::SVRT_SDL_TTF PkgConfig::SVRT_AVCODEC m)
+  X11::X11 Xcomposite ${SVRT_XTST_LIBRARY}
+  PkgConfig::SVRT_SDL_TTF PkgConfig::SVRT_AVCODEC m)
 
 install(TARGETS stearlight-shell RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/../assets/

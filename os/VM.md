@@ -20,7 +20,7 @@ Build and run an automated screenshot test from PowerShell:
 
 ```powershell
 .\os\build-vm.ps1
-.\os\test-vm.ps1 -BootSeconds 45
+.\os\test-vm.ps1 -BootSeconds 300
 ```
 
 Outputs are written to `out/stearlight-vm/` unless an explicit output directory

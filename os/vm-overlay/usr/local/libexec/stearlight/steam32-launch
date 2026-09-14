@@ -231,6 +231,28 @@ launch_client() {
     exec /usr/bin/steam "$@" $vm_cef_args
 }
 
+# Keep protocol handoffs on the same Valve client path as a normal session.
+# The OS supplies a URI as the first argument; this launcher owns the
+# architecture-specific Gamepad UI flags and appends the URI last, matching
+# the ARM64 launcher and Steam's `steam steam://...` convention.
+case "${1-}" in
+    steam://*|steamlink://*)
+        uri=$1
+        shift
+        set -- -gamepadui -steamos3 -steampal -steamdeck
+        if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+            set -- "$@" -steamframe
+        fi
+        set -- "$@" "$uri"
+        ;;
+    '')
+        set -- -gamepadui -steamos3 -steampal -steamdeck
+        if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+            set -- "$@" -steamframe
+        fi
+        ;;
+esac
+
 # The VM has no physical DRM/Vulkan presentation device.  Run a tiny
 # software Wayland compositor nested on the private Xvfb display instead of
 # asking Steam's Gamepad UI to create an off-screen surface.  Weston presents

@@ -1,7 +1,11 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "steam_client.h"
 
+#include <X11/keysym.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/XTest.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -62,7 +66,63 @@ static int steam_uses_classic_ui(void) {
                     strcmp(mode, "classic") == 0);
 }
 
+static int steam_frame_enabled(void) {
+    const char *mode = getenv("STEARLIGHT_STEAM_FRAME");
+    /* The native Stearlight session is a Steam Frame client by default. Keep
+       the old X11 ten-foot mode usable as an explicit diagnostic fallback. */
+    if (!mode || !mode[0]) return !steam_uses_classic_ui();
+    return strcmp(mode, "0") != 0;
+}
+
 static void report_exec_failure(const char *path);
+static void stop_process_group(pid_t pid);
+static void dispatch_steam_uri(const char *uri);
+static void flush_pending_uri(stearlight_steam_client *client);
+
+static int valid_valve_uri(const char *uri) {
+    if (!uri || !uri[0]) return 0;
+    const size_t length = strnlen(uri, STEARLIGHT_STEAM_URI_MAX);
+    if (!length || length >= STEARLIGHT_STEAM_URI_MAX) return 0;
+    if (strncmp(uri, "steam://", 8) && strncmp(uri, "steamlink://", 12))
+        return 0;
+    for (size_t index = 0; index < length; ++index) {
+        const unsigned char byte = (unsigned char)uri[index];
+        if (byte < 0x21 || byte > 0x7e) return 0;
+    }
+    return 1;
+}
+
+static const char *steam_link_uri(void) {
+    const char *configured = getenv("STEARLIGHT_STEAM_LINK_URI");
+    return valid_valve_uri(configured) ? configured : STEARLIGHT_STEAM_LINK_URI;
+}
+
+static void exec_steam_with_uri(const char *uri) {
+    if (!uri || !uri[0]) _exit(127);
+    const char *launcher = steam_launcher();
+    const char *binary = steam_binary();
+    /* Pass the URI as the first argument, exactly like Valve's documented
+       `steam steam://...` entry point.  Each architecture-specific launcher
+       adds the normal Gamepad UI/Steam Frame flags only when it has to start
+       a new client.  If Steam is already running, its own URI handler forwards
+       the request to that client instead of starting a second UI mode. */
+    if (access(launcher, X_OK) == 0)
+        execl(launcher, launcher, uri, NULL);
+    if (access(binary, X_OK) == 0) {
+        /* The architecture-specific launcher normally owns this argument
+           translation.  Keep the direct-binary fallback equivalent so a
+           repaired or minimal Steam install cannot silently lose Gamepad UI
+           or Steam Frame mode on the next restart. */
+        if (steam_uses_classic_ui())
+            execl(binary, binary, "-tenfoot", "-steam", uri, NULL);
+        if (steam_frame_enabled())
+            execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
+                  "-steamdeck", "-steamframe", uri, NULL);
+        execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
+              "-steamdeck", uri, NULL);
+    }
+    _exit(127);
+}
 
 static void child_environment(void) {
     const char *user = getenv("SVRT_STEAM_USER");
@@ -161,7 +221,12 @@ static void child_environment(void) {
              "%s/.local/share/Steam/tenfoot/resource/images/cursors/arrow.png",
              steam_home());
     setenv("CURSOR_FILE", cursor_file, 1);
-    setenv("CLIENTCMD", "steam -gamepadui -steamos3 -steampal -steamdeck", 1);
+    const char *client_cmd = steam_uses_classic_ui() ?
+        "steam -tenfoot -steam" :
+        (steam_frame_enabled() ?
+         "steam -gamepadui -steamos3 -steampal -steamdeck -steamframe" :
+         "steam -gamepadui -steamos3 -steampal -steamdeck");
+    setenv("CLIENTCMD", client_cmd, 1);
     setenv("STEAMOS_STEAM_REBOOT_SENTINEL", "/tmp/steamos-reboot-sentinel", 1);
     setenv("REBOOT_SENTINEL", "/tmp/steamos-reboot-sentinel", 1);
     setenv("STEAMOS_STEAM_SHUTDOWN_SENTINEL", "/tmp/steamos-shutdown-sentinel", 1);
@@ -283,12 +348,12 @@ static pid_t start_display(void) {
     if (!glx || !glx[0] || strcmp(glx, "0") != 0) {
         execlp("Xvfb", "Xvfb", STEARLIGHT_STEAM_DISPLAY, "-screen", "0",
                "1024x640x24", "+extension", "GLX", "+extension",
-               "Composite", "-ac",
+               "Composite", "+extension", "XTEST", "-ac",
                "-nolisten", "tcp", "-noreset", NULL);
     } else {
         execlp("Xvfb", "Xvfb", STEARLIGHT_STEAM_DISPLAY, "-screen", "0",
-               "1024x640x24", "-extension", "GLX", "-ac", "-nolisten",
-               "tcp", "-noreset", NULL);
+               "1024x640x24", "-extension", "GLX", "+extension", "XTEST",
+               "-ac", "-nolisten", "tcp", "-noreset", NULL);
     }
     report_exec_failure("Xvfb");
     _exit(127);
@@ -328,20 +393,34 @@ static pid_t start_steam(void) {
         const char *gamescope_icd = getenv("SVRT_GAMESCOPE_VK_ICD");
         if (gamescope_icd && gamescope_icd[0])
             setenv("VK_ICD_FILENAMES", gamescope_icd, 1);
-        execlp("gamescope", "gamescope", "-e", "--backend", "sdl", "-b",
-               "-W", "1024", "-H", "640", "-w", "1024", "-h", "640",
-               "-r", "60", "--expose-wayland", "--", launcher,
-               "-gamepadui", "-steamos3", "-steampal", "-steamdeck",
-               NULL);
+        if (steam_frame_enabled())
+            execlp("gamescope", "gamescope", "-e", "--backend", "sdl", "-b",
+                   "-W", "1024", "-H", "640", "-w", "1024", "-h", "640",
+                   "-r", "60", "--expose-wayland", "--", launcher,
+                   "-gamepadui", "-steamos3", "-steampal", "-steamdeck",
+                   "-steamframe", NULL);
+        else
+            execlp("gamescope", "gamescope", "-e", "--backend", "sdl", "-b",
+                   "-W", "1024", "-H", "640", "-w", "1024", "-h", "640",
+                   "-r", "60", "--expose-wayland", "--", launcher,
+                   "-gamepadui", "-steamos3", "-steampal", "-steamdeck", NULL);
         report_exec_failure("gamescope");
     }
     if (access(launcher, X_OK) == 0) {
-        execl(launcher, launcher, "-gamepadui", "-steamos3", "-steampal",
-              "-steamdeck", NULL);
+        if (steam_frame_enabled())
+            execl(launcher, launcher, "-gamepadui", "-steamos3", "-steampal",
+                  "-steamdeck", "-steamframe", NULL);
+        else
+            execl(launcher, launcher, "-gamepadui", "-steamos3", "-steampal",
+                  "-steamdeck", NULL);
         report_exec_failure(launcher);
     }
-    execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
-          "-steamdeck", NULL);
+    if (steam_frame_enabled())
+        execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
+              "-steamdeck", "-steamframe", NULL);
+    else
+        execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
+              "-steamdeck", NULL);
     report_exec_failure(binary);
     _exit(127);
 }
@@ -371,31 +450,51 @@ int stearlight_steam_client_start(stearlight_steam_client *client,
     client->next_connect_ms = SDL_GetTicks() + 100;
     snprintf(client->detail, sizeof(client->detail),
              "Starting Steam");
-    fprintf(stderr, "STEARLIGHT STEAM: starting native SteamOS Gamepad UI\n");
+    fprintf(stderr, "STEARLIGHT STEAM: starting Valve native Gamepad UI client\n");
     return 0;
 }
 
 static void connect_display(stearlight_steam_client *client, uint32_t now_ms) {
-    if (client->display || now_ms < client->next_connect_ms) return;
-    client->display = XOpenDisplay(STEARLIGHT_STEAM_DISPLAY);
+    if (!client) return;
     if (!client->display) {
-        client->next_connect_ms = now_ms + 100;
-        return;
+        if (now_ms < client->next_connect_ms) return;
+        client->display = XOpenDisplay(STEARLIGHT_STEAM_DISPLAY);
+        if (!client->display) {
+            client->next_connect_ms = now_ms + 100;
+            return;
+        }
+        client->root = DefaultRootWindow((Display *)client->display);
+        int glx_event = 0;
+        int glx_error = 0;
+        int glx_opcode = 0;
+        const Bool glx_available = XQueryExtension(
+            (Display *)client->display, "GLX", &glx_opcode, &glx_event,
+            &glx_error);
+        fprintf(stderr, "STEARLIGHT STEAM: private display GLX %s (opcode %d)\n",
+                glx_available ? "available" : "missing", glx_opcode);
     }
-    client->root = DefaultRootWindow((Display *)client->display);
-    int glx_event = 0;
-    int glx_error = 0;
-    int glx_opcode = 0;
-    const Bool glx_available = XQueryExtension(
-        (Display *)client->display, "GLX", &glx_opcode, &glx_event,
-        &glx_error);
-    fprintf(stderr, "STEARLIGHT STEAM: private display GLX %s (opcode %d)\n",
-            glx_available ? "available" : "missing", glx_opcode);
-    client->steam_pid = start_steam();
-    if (client->steam_pid <= 0) {
-        client->state = STEARLIGHT_STEAM_CLIENT_FAILED;
+    if (client->steam_pid || now_ms < client->next_connect_ms) return;
+    const pid_t steam_pid = start_steam();
+    if (steam_pid <= 0) {
+        /* fork(2) returns -1 on a transient process/resource failure. Do not
+           leave that sentinel in the struct: a non-zero negative pid would
+           make the next update believe Steam is still running and disable
+           the retry path. */
+        client->steam_pid = 0;
+        if (client->launch_failures < 10U) ++client->launch_failures;
+        const uint32_t retry_ms = client->launch_failures > 5U ? 10000U :
+                                   1000U * client->launch_failures;
+        client->state = STEARLIGHT_STEAM_CLIENT_STARTING;
         snprintf(client->detail, sizeof(client->detail),
-                 "Cannot launch Steam");
+                 "Steam launch failed; retrying");
+        client->next_connect_ms = now_ms + retry_ms;
+        fprintf(stderr,
+                "STEARLIGHT STEAM: cannot launch client; retry in %u ms\n",
+                retry_ms);
+    } else {
+        client->steam_pid = steam_pid;
+        client->state = STEARLIGHT_STEAM_CLIENT_STARTING;
+        client->next_connect_ms = now_ms + 1000;
     }
 }
 
@@ -403,6 +502,46 @@ static int child_exited(pid_t pid) {
     if (pid <= 0) return 0;
     int status = 0;
     return waitpid(pid, &status, WNOHANG) == pid;
+}
+
+static void clear_captured_frame(stearlight_steam_client *client) {
+    if (!client) return;
+    client->content_window = 0;
+    client->frame_announced = 0;
+    client->x_modifiers = 0;
+    if (client->frame) SDL_DestroyTexture(client->frame);
+    client->frame = NULL;
+    client->frame_width = 0;
+    client->frame_height = 0;
+}
+
+static uint32_t schedule_restart(stearlight_steam_client *client,
+                                 uint32_t now_ms) {
+    if (!client) return 0;
+    if (client->launch_failures < 10U) ++client->launch_failures;
+    const uint32_t delay = client->launch_failures > 5U ? 10000U :
+                           1000U * client->launch_failures;
+    client->next_connect_ms = now_ms + delay;
+    client->state = STEARLIGHT_STEAM_CLIENT_STARTING;
+    return delay;
+}
+
+static int ensure_display(stearlight_steam_client *client, uint32_t now_ms) {
+    if (!client || client->display_pid > 0 || now_ms < client->next_connect_ms)
+        return 1;
+    client->display_pid = start_display();
+    if (client->display_pid > 0) {
+        client->next_connect_ms = now_ms + 100;
+        return 1;
+    }
+    client->display_pid = 0;
+    const uint32_t retry_ms = schedule_restart(client, now_ms);
+    snprintf(client->detail, sizeof(client->detail),
+             "Steam display launch failed; retrying");
+    fprintf(stderr,
+            "STEARLIGHT STEAM: cannot relaunch display; retry in %u ms\n",
+            retry_ms);
+    return 0;
 }
 
 static int image_has_visible_content(const XImage *image) {
@@ -780,14 +919,42 @@ void stearlight_steam_client_update(stearlight_steam_client *client,
     if (!client || !renderer || client->state == STEARLIGHT_STEAM_CLIENT_MISSING ||
         client->state == STEARLIGHT_STEAM_CLIENT_FAILED)
         return;
+    if (client->display_pid > 0 && child_exited(client->display_pid)) {
+        fprintf(stderr, "STEARLIGHT STEAM: private X display exited\n");
+        stop_process_group(client->steam_pid);
+        client->steam_pid = 0;
+        if (client->display) XCloseDisplay((Display *)client->display);
+        client->display = NULL;
+        client->display_pid = 0;
+        client->root = 0;
+        clear_captured_frame(client);
+        const uint32_t retry_ms = schedule_restart(client, now_ms);
+        /* The old X server has already been reaped.  Recreate it as part of
+           the same retry, otherwise connect_display() can only keep trying
+           XOpenDisplay() against a display that will never come back. */
+        client->display_pid = start_display();
+        if (client->display_pid <= 0)
+            client->display_pid = 0;
+        snprintf(client->detail, sizeof(client->detail),
+                 "Steam display exited; restarting");
+        fprintf(stderr,
+                 "STEARLIGHT STEAM: display restart in %u ms\n", retry_ms);
+        return;
+    }
+    if (!client->display && !ensure_display(client, now_ms)) return;
     connect_display(client, now_ms);
     if (!client->display || !client->steam_pid) return;
     if (child_exited(client->steam_pid)) {
+        const pid_t exited_pid = client->steam_pid;
         client->steam_pid = 0;
-        client->state = STEARLIGHT_STEAM_CLIENT_FAILED;
+        (void)kill(-exited_pid, SIGTERM);
+        clear_captured_frame(client);
+        const uint32_t retry_ms = schedule_restart(client, now_ms);
         snprintf(client->detail, sizeof(client->detail),
-                 "Steam exited unexpectedly");
-        fprintf(stderr, "STEARLIGHT STEAM: client exited\n");
+                 "Steam exited; restarting");
+        fprintf(stderr,
+                "STEARLIGHT STEAM: client exited; restart in %u ms\n",
+                retry_ms);
         return;
     }
     /* A low-rate heartbeat makes first-run failures diagnosable even when the
@@ -877,10 +1044,12 @@ void stearlight_steam_client_update(stearlight_steam_client *client,
                         image->width, image->height, client->content_window);
                 client->frame_announced = 1;
             }
+            client->launch_failures = 0;
             client->state = STEARLIGHT_STEAM_CLIENT_RUNNING;
             client->detail[0] = '\0';
         }
     }
+    flush_pending_uri(client);
     XDestroyImage(image);
 }
 
@@ -905,9 +1074,8 @@ static void stop_process_group(pid_t pid) {
     waitpid(pid, NULL, 0);
 }
 
-void stearlight_steam_client_open_uri(
-    const stearlight_steam_client *client, const char *uri) {
-    if (!client || client->steam_pid <= 0 || !uri || !uri[0]) return;
+static void dispatch_steam_uri(const char *uri) {
+    if (!uri || !uri[0]) return;
     pid_t child = fork();
     if (child < 0) return;
     if (!child) {
@@ -916,11 +1084,268 @@ void stearlight_steam_client_open_uri(
         if (grandchild) _exit(0);
         setsid();
         child_environment();
-        execl(steam_launcher(), steam_launcher(), uri, NULL);
-        execl(steam_binary(), steam_binary(), uri, NULL);
-        _exit(127);
+        exec_steam_with_uri(uri);
     }
     waitpid(child, NULL, 0);
+}
+
+static void flush_pending_uri(stearlight_steam_client *client) {
+    if (!client || !client->pending_uri[0] || client->steam_pid <= 0 ||
+        client->state != STEARLIGHT_STEAM_CLIENT_RUNNING)
+        return;
+    char uri[STEARLIGHT_STEAM_URI_MAX];
+    memcpy(uri, client->pending_uri, sizeof(uri));
+    client->pending_uri[0] = '\0';
+    fprintf(stderr, "STEARLIGHT STEAM: dispatching queued Valve URI (%s)\n",
+            uri);
+    dispatch_steam_uri(uri);
+}
+
+void stearlight_steam_client_open_uri(
+    stearlight_steam_client *client, const char *uri) {
+    if (!client || !valid_valve_uri(uri) ||
+        client->state == STEARLIGHT_STEAM_CLIENT_MISSING ||
+        client->state == STEARLIGHT_STEAM_CLIENT_FAILED)
+        return;
+    if (client->steam_pid <= 0 ||
+        client->state != STEARLIGHT_STEAM_CLIENT_RUNNING) {
+        snprintf(client->pending_uri, sizeof(client->pending_uri), "%s", uri);
+        fprintf(stderr,
+                "STEARLIGHT STEAM: queued Valve URI until client frame is ready (%s)\n",
+                client->pending_uri);
+        return;
+    }
+    dispatch_steam_uri(uri);
+}
+
+void stearlight_steam_client_open_steam_link(
+    stearlight_steam_client *client) {
+    if (!client) return;
+    const char *uri = steam_link_uri();
+    fprintf(stderr,
+            "STEARLIGHT STEAM: handing Steam Link to Valve client (%s)\n",
+            uri);
+    stearlight_steam_client_open_uri(client, uri);
+}
+
+static int steam_pointer_target(const stearlight_steam_client *client,
+                                int *screen, int *screen_width,
+                                int *screen_height, int *origin_x,
+                                int *origin_y, int *target_width,
+                                int *target_height) {
+    if (!client || !client->display || !screen_width || !screen_height ||
+        !origin_x || !origin_y || !target_width || !target_height)
+        return 0;
+    Display *display = (Display *)client->display;
+    const int selected_screen = DefaultScreen(display);
+    const int width = DisplayWidth(display, selected_screen);
+    const int height = DisplayHeight(display, selected_screen);
+    if (width <= 0 || height <= 0) return 0;
+    int x = 0, y = 0;
+    if (client->content_window) {
+        Window child = None;
+        XSync(display, False);
+        capture_x_error_code = 0;
+        int (*previous_handler)(Display *, XErrorEvent *) =
+            XSetErrorHandler(capture_x_error_handler);
+        XTranslateCoordinates(display, (Window)client->content_window,
+                              RootWindow(display, selected_screen), 0, 0,
+                              &x, &y, &child);
+        XSync(display, False);
+        XSetErrorHandler(previous_handler);
+        if (capture_x_error_code) return 0;
+        XWindowAttributes attributes;
+        if (get_window_attributes_safe(display,
+                                       (Window)client->content_window,
+                                       &attributes) &&
+            attributes.width > 0 && attributes.height > 0) {
+            *target_width = attributes.width;
+            *target_height = attributes.height;
+        } else {
+            *target_width = width;
+            *target_height = height;
+        }
+    } else {
+        *target_width = width;
+        *target_height = height;
+    }
+    if (screen) *screen = selected_screen;
+    *screen_width = width;
+    *screen_height = height;
+    *origin_x = x;
+    *origin_y = y;
+    return 1;
+}
+
+void stearlight_steam_client_send_mouse_motion(
+    const stearlight_steam_client *client, int surface_x, int surface_y,
+    int surface_width, int surface_height) {
+    int screen = 0, screen_width = 0, screen_height = 0;
+    int origin_x = 0, origin_y = 0;
+    int target_width = 0, target_height = 0;
+    if (!steam_pointer_target(client, &screen, &screen_width, &screen_height,
+                              &origin_x, &origin_y, &target_width,
+                              &target_height) || surface_width <= 0 ||
+        surface_height <= 0 || target_width <= 0 || target_height <= 0)
+        return;
+    int x = origin_x + surface_x * target_width / surface_width;
+    int y = origin_y + surface_y * target_height / surface_height;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x >= screen_width) x = screen_width - 1;
+    if (y >= screen_height) y = screen_height - 1;
+    XTestFakeMotionEvent((Display *)client->display, screen, x, y,
+                         CurrentTime);
+    XFlush((Display *)client->display);
+}
+
+void stearlight_steam_client_send_mouse_button(
+    const stearlight_steam_client *client, int button, int pressed) {
+    if (!client || !client->display) return;
+    int x_button = 0;
+    if (button == 1) x_button = 1;
+    else if (button == 2) x_button = 2;
+    else if (button == 3) x_button = 3;
+    if (!x_button) return;
+    XTestFakeButtonEvent((Display *)client->display, x_button,
+                         pressed ? True : False, CurrentTime);
+    XFlush((Display *)client->display);
+}
+
+void stearlight_steam_client_send_mouse_wheel(
+    const stearlight_steam_client *client, int delta_y) {
+    if (!client || !client->display || !delta_y) return;
+    const int button = delta_y > 0 ? 4 : 5;
+    const int count = delta_y > 0 ? delta_y : -delta_y;
+    for (int index = 0; index < count && index < 8; ++index) {
+        XTestFakeButtonEvent((Display *)client->display, button, True,
+                             CurrentTime);
+        XTestFakeButtonEvent((Display *)client->display, button, False,
+                             CurrentTime);
+    }
+    XFlush((Display *)client->display);
+}
+
+static KeySym x_keysym_from_sdl(int keycode) {
+    switch (keycode) {
+    case SDLK_BACKSPACE: return XK_BackSpace;
+    case SDLK_TAB: return XK_Tab;
+    case SDLK_RETURN: return XK_Return;
+    case SDLK_ESCAPE: return XK_Escape;
+    case SDLK_DELETE: return XK_Delete;
+    case SDLK_HOME: return XK_Home;
+    case SDLK_END: return XK_End;
+    case SDLK_PAGEUP: return XK_Page_Up;
+    case SDLK_PAGEDOWN: return XK_Page_Down;
+    case SDLK_LEFT: return XK_Left;
+    case SDLK_RIGHT: return XK_Right;
+    case SDLK_UP: return XK_Up;
+    case SDLK_DOWN: return XK_Down;
+    case SDLK_INSERT: return XK_Insert;
+    case SDLK_F1: return XK_F1;
+    case SDLK_F2: return XK_F2;
+    case SDLK_F3: return XK_F3;
+    case SDLK_F4: return XK_F4;
+    case SDLK_F5: return XK_F5;
+    case SDLK_F6: return XK_F6;
+    case SDLK_F7: return XK_F7;
+    case SDLK_F8: return XK_F8;
+    case SDLK_F9: return XK_F9;
+    case SDLK_F10: return XK_F10;
+    case SDLK_F11: return XK_F11;
+    case SDLK_F12: return XK_F12;
+    case SDLK_LSHIFT: return XK_Shift_L;
+    case SDLK_RSHIFT: return XK_Shift_R;
+    case SDLK_LCTRL: return XK_Control_L;
+    case SDLK_RCTRL: return XK_Control_R;
+    case SDLK_LALT: return XK_Alt_L;
+    case SDLK_RALT: return XK_Alt_R;
+    case SDLK_LGUI: return XK_Super_L;
+    case SDLK_RGUI: return XK_Super_R;
+    case SDLK_SPACE: return XK_space;
+    default:
+        /* SDL uses Unicode values for printable keycodes. Xlib accepts the
+           corresponding keysym for the same keyboard entry. */
+        return keycode >= 0x20 && keycode <= 0x10ffff ?
+                   (KeySym)keycode : NoSymbol;
+    }
+}
+
+static unsigned int x_modifier_mask(int keycode) {
+    switch (keycode) {
+    case SDLK_LSHIFT:
+    case SDLK_RSHIFT: return 1U;
+    case SDLK_LCTRL:
+    case SDLK_RCTRL: return 2U;
+    case SDLK_LALT:
+    case SDLK_RALT: return 4U;
+    case SDLK_LGUI:
+    case SDLK_RGUI: return 8U;
+    default: return 0U;
+    }
+}
+
+static KeySym x_modifier_keysym(unsigned int mask) {
+    if (mask == 1U) return XK_Shift_L;
+    if (mask == 2U) return XK_Control_L;
+    if (mask == 4U) return XK_Alt_L;
+    if (mask == 8U) return XK_Super_L;
+    return NoSymbol;
+}
+
+static unsigned int x_required_modifiers(int modifiers) {
+    unsigned int required = 0U;
+    if (modifiers & KMOD_SHIFT) required |= 1U;
+    if (modifiers & KMOD_CTRL) required |= 2U;
+    if (modifiers & KMOD_ALT) required |= 4U;
+    if (modifiers & KMOD_GUI) required |= 8U;
+    return required;
+}
+
+void stearlight_steam_client_send_key(
+    stearlight_steam_client *client, int keycode, int pressed,
+    int modifiers) {
+    if (!client || !client->display) return;
+    Display *display = (Display *)client->display;
+    const KeySym keysym = x_keysym_from_sdl(keycode);
+    if (keysym == NoSymbol) return;
+    const KeyCode x_keycode = XKeysymToKeycode(display, keysym);
+    if (!x_keycode) return;
+    const unsigned int modifier = x_modifier_mask(keycode);
+    if (modifier) {
+        XTestFakeKeyEvent(display, x_keycode, pressed ? True : False,
+                          CurrentTime);
+        if (pressed) client->x_modifiers |= modifier;
+        else client->x_modifiers &= ~modifier;
+        XFlush(display);
+        return;
+    }
+
+    const unsigned int required = x_required_modifiers(modifiers);
+    const unsigned int temporary = pressed ? required & ~client->x_modifiers : 0U;
+    if (pressed) {
+        for (unsigned int bit = 1U; bit <= 8U; bit <<= 1U) {
+            if (!(temporary & bit)) continue;
+            const KeyCode modifier_keycode = XKeysymToKeycode(
+                display, x_modifier_keysym(bit));
+            if (modifier_keycode)
+                XTestFakeKeyEvent(display, modifier_keycode, True,
+                                  CurrentTime);
+        }
+    }
+    XTestFakeKeyEvent(display, x_keycode, pressed ? True : False,
+                      CurrentTime);
+    if (pressed) {
+        for (unsigned int bit = 8U; bit > 0U; bit >>= 1U) {
+            if (!(temporary & bit)) continue;
+            const KeyCode modifier_keycode = XKeysymToKeycode(
+                display, x_modifier_keysym(bit));
+            if (modifier_keycode)
+                XTestFakeKeyEvent(display, modifier_keycode, False,
+                                  CurrentTime);
+        }
+    }
+    XFlush(display);
 }
 
 void stearlight_steam_client_stop(stearlight_steam_client *client) {

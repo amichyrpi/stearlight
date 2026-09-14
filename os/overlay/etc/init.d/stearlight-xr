@@ -1,0 +1,35 @@
+#!/sbin/openrc-run
+
+description="Stearlight standalone OpenXR runtime"
+command="/usr/local/libexec/stearlight/xr-service"
+command_user="stearlight:stearlight"
+supervisor="supervise-daemon"
+pidfile="/run/stearlight-xr.pid"
+output_log="/var/log/stearlight-xr.log"
+error_log="/var/log/stearlight-xr.log"
+respawn_delay=2
+# A missing or unconfigured headset must stop the opt-in service instead of
+# spinning forever and competing with the normal Steam Frame session.
+respawn_max=5
+
+depend() {
+    need localmount dbus
+    use hwdrivers pipewire
+}
+
+start_pre() {
+    if [ -r /etc/conf.d/stearlight-xr ]; then
+        . /etc/conf.d/stearlight-xr
+    fi
+    if [ "${STEARLIGHT_XR_ENABLE:-0}" != 1 ]; then
+        eerror "standalone OpenXR is disabled; set STEARLIGHT_XR_ENABLE=1 first"
+        return 1
+    fi
+    if [ "${STEARLIGHT_XR_MODE:-standalone}" != standalone ]; then
+        eerror "STEARLIGHT_XR_MODE must be standalone; Steam Frame streaming belongs to Valve's client"
+        return 1
+    fi
+    checkpath --directory --mode 0700 --owner stearlight:stearlight \
+        "${STEARLIGHT_XR_RUNTIME_DIR:-/run/user/1000}"
+    checkpath --file --mode 0644 --owner stearlight:stearlight "$output_log"
+}

@@ -1,6 +1,8 @@
 if(NOT SVRT_BUILD_RECEIVER OR NOT UNIX)
   return()
 endif()
+# Legacy target only. SteamOS builds intentionally use os/stearlight-shell and
+# Valve's native Steam client instead of this custom pairing receiver.
 include(GNUInstallDirs)
 set(SVRT_RECEIVER_BOOT_ASSET "boot.mkv")
 if(SVRT_STEARLIGHT_OS)

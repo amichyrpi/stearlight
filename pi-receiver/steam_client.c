@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "steam_client.h"
 
 #include <X11/Xutil.h>
@@ -40,6 +42,11 @@ static const char *steam_launcher(void) {
     return path;
 }
 
+static int steam_frame_enabled(void) {
+    const char *mode = getenv("SVRT_STEAM_FRAME");
+    return !mode || !mode[0] || strcmp(mode, "0") != 0;
+}
+
 static void child_environment(void) {
     const char *user = getenv("SVRT_STEAM_USER");
     if (!user || !user[0]) user = "svrt-receiver";
@@ -57,6 +64,12 @@ static void child_environment(void) {
     /* The receiver itself uses SDL's direct KMS backend.  Never leak that
        choice into Steam: its UI lives in the private Xvfb display. */
     setenv("SDL_VIDEODRIVER", "x11", 1);
+    /* The native path uses Valve's SteamOS Gamepad UI command line. Steam
+       selects its Steam Link/VRLink client when the steamlink:// URI is
+       opened, while -steamframe selects the matching client presentation. */
+    setenv("CLIENTCMD", steam_frame_enabled() ?
+           "steam -gamepadui -steamos3 -steampal -steamdeck -steamframe" :
+           "steam -gamepadui -steamos3 -steampal -steamdeck", 1);
 }
 
 static pid_t start_display(void) {
@@ -78,20 +91,38 @@ static pid_t start_steam(void) {
     const char *launcher = steam_launcher();
     const char *binary = steam_binary();
     if (gamescope && gamescope[0] && strcmp(gamescope, "0") &&
-        access(launcher, X_OK) == 0)
-        execlp("gamescope", "gamescope", "-e", "-b", "-W", "1024",
-               "-H", "640", "-w", "1024", "-h", "640", "-r", "60",
-               "--", launcher, launcher, "-gamepadui", "-steamos3",
-               "-steampal", "-steamdeck", "-720p", "-vrskip",
-               "-vrdisable", NULL);
-    if (access(launcher, X_OK) == 0)
-        execl(launcher, launcher, "-gamepadui", "-steamos3", "-steampal",
+        access(launcher, X_OK) == 0) {
+        if (steam_frame_enabled()) {
+            execlp("gamescope", "gamescope", "-e", "-b", "-W", "1024",
+                   "-H", "640", "-w", "1024", "-h", "640", "-r", "60",
+                   "--", launcher, "-gamepadui", "-steamos3", "-steampal",
+                   "-steamdeck", "-steamframe", NULL);
+        } else
+            execlp("gamescope", "gamescope", "-e", "-b", "-W", "1024",
+                   "-H", "640", "-w", "1024", "-h", "640", "-r", "60",
+                   "--", launcher, "-gamepadui", "-steamos3", "-steampal",
+                   "-steamdeck", "-720p", "-vrskip", "-vrdisable", NULL);
+    }
+    if (access(launcher, X_OK) == 0) {
+        if (steam_frame_enabled()) {
+            execl(launcher, launcher, "-gamepadui", "-steamos3", "-steampal",
+                  "-steamdeck", "-steamframe", "-nocrashmonitor",
+                  "-no-cef-sandbox", "-cef-disable-sandbox", NULL);
+        } else
+            execl(launcher, launcher, "-gamepadui", "-steamos3", "-steampal",
+                  "-steamdeck", "-720p", "-vrskip", "-vrdisable",
+                  "-nocrashmonitor", "-no-cef-sandbox",
+                  "-cef-disable-sandbox", NULL);
+    }
+    if (steam_frame_enabled()) {
+        execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
+              "-steamdeck", "-steamframe", "-nocrashmonitor",
+              "-no-cef-sandbox", "-cef-disable-sandbox", NULL);
+    } else
+        execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
               "-steamdeck", "-720p", "-vrskip", "-vrdisable",
-              "-nocrashmonitor", "-no-cef-sandbox",
-              "-cef-disable-sandbox", NULL);
-    execl(binary, binary, "-gamepadui", "-steamos3", "-steampal",
-          "-steamdeck", "-720p", "-vrskip", "-vrdisable", "-nocrashmonitor",
-          "-no-cef-sandbox", "-cef-disable-sandbox", NULL);
+              "-nocrashmonitor", "-no-cef-sandbox", "-cef-disable-sandbox",
+              NULL);
     _exit(127);
 }
 
@@ -126,7 +157,8 @@ int svrt_steam_client_start(svrt_steam_client *client,
     client->state = SVRT_STEAM_CLIENT_STARTING;
     client->next_connect_ms = SDL_GetTicks() + 100;
     snprintf(client->detail, sizeof(client->detail),
-             "Starting Steam Big Picture");
+             steam_frame_enabled() ? "Starting Valve Gamepad UI" :
+                                      "Starting legacy Steam UI");
     return 0;
 }
 
@@ -223,6 +255,15 @@ void svrt_steam_client_open_uri(const svrt_steam_client *client,
         _exit(127);
     }
     waitpid(child, NULL, 0);
+}
+
+void svrt_steam_client_open_steam_link(
+    const svrt_steam_client *client) {
+    if (!client || client->steam_pid <= 0) return;
+    fprintf(stderr,
+            "SVRT STEAM: handing Steam Link to Valve client (%s)\n",
+            SVRT_STEAM_LINK_URI);
+    svrt_steam_client_open_uri(client, SVRT_STEAM_LINK_URI);
 }
 
 void svrt_steam_client_stop(svrt_steam_client *client) {

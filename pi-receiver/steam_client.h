@@ -6,6 +6,10 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+/* Valve's Steam client URL handler.  The native Steam Frame path must not
+ * create a second discovery, pairing, or transport implementation here. */
+#define SVRT_STEAM_LINK_URI "steamlink://lookup/"
+
 typedef enum svrt_steam_client_state {
     SVRT_STEAM_CLIENT_MISSING,
     SVRT_STEAM_CLIENT_STARTING,
@@ -34,5 +38,6 @@ const char *svrt_steam_client_detail(const svrt_steam_client *client);
 void svrt_steam_client_stop(svrt_steam_client *client);
 void svrt_steam_client_open_uri(const svrt_steam_client *client,
                                 const char *uri);
+void svrt_steam_client_open_steam_link(const svrt_steam_client *client);
 
 #endif

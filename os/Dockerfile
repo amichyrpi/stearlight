@@ -19,7 +19,7 @@ USER root
 
 FROM --platform=$TARGETPLATFORM alpine:${ALPINE_TAG} AS shell-build
 RUN apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
-    libx11-dev ninja pkgconf \
+    libx11-dev libxcomposite-dev libxtst-dev ninja pkgconf \
     sdl2-dev sdl2_ttf-dev
 WORKDIR /src
 COPY . .
@@ -44,9 +44,10 @@ RUN printf '%s\n' \
       font-noto-cjk font-noto-emoji \
       gamescope iwd linux-rpi \
       linux-firmware-cypress mesa-dri-gallium \
-      mesa-egl mesa-gbm mesa-gles mesa-vulkan-broadcom vulkan-loader mbedtls3 monado openrc \
+      mesa-egl mesa-gbm mesa-gles mesa-vulkan-broadcom vulkan-loader mbedtls3 monado openxr openrc \
       pipewire pipewire-alsa pipewire-pulse raspberrypi-bootloader tzdata \
       sdl2 sdl2_ttf shadow su-exec util-linux-misc wireplumber xauth xvfb \
+      libxtst \
       xwayland
 RUN for group in audio input render video wheel; do \
       grep -q "^${group}:" /etc/group || addgroup -S "${group}"; \
@@ -67,6 +68,19 @@ RUN for group in audio input render video wheel; do \
 COPY --from=shell-build /staging/ /
 COPY --from=steam-runtime / /opt/stearlight/steam-runtime/
 COPY --from=steam-runtime --chown=1000:1000 /home/stearlight/ /home/stearlight/
+# os/build.sh may populate os/generated/steam-tools with Valve's optional
+# FEX and Proton ARM64 depots. Copy the generated directory itself (which is
+# kept present by .gitkeep) so a normal build without those private depots
+# still succeeds, while a subscribed build can install them below the Steam
+# tree in the RUN block below.
+COPY os/generated/ /etc/stearlight/
+# Valve's ARM64 Steam binaries are glibc ELF files.  Keep Alpine as the host
+# userspace, but provide the one absolute ELF interpreter path their binaries
+# require; their remaining glibc libraries come from the bundled Steam Runtime.
+COPY --from=steam-runtime /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 \
+  /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1
+RUN ln -sfn aarch64-linux-gnu/ld-linux-aarch64.so.1 \
+      /lib/ld-linux-aarch64.so.1
 COPY os/overlay/ /
 COPY os/steam-firstboot /usr/local/libexec/stearlight/steam-firstboot
 RUN cp /etc/fonts/stearlight-fonts.conf /etc/fonts/fonts.conf \
@@ -85,7 +99,11 @@ RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
            /etc/first-boot/bootstraplinux_ubuntu12_32.tar.xz; \
        fi \
     && chmod 0755 /etc/init.d/stearlight-session \
+                   /etc/init.d/stearlight-xr \
                    /usr/local/libexec/stearlight/session \
+                   /usr/local/libexec/stearlight/xr-service \
+                   /usr/local/libexec/stearlight/xr-run \
+                   /usr/local/libexec/stearlight/launch-xr-game \
                    /usr/local/libexec/stearlight/launch-steam \
                    /usr/local/libexec/stearlight/steam-firstboot \
                    /usr/local/libexec/stearlight/patch-steamui-network \
@@ -133,7 +151,8 @@ RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
          chown -R stearlight:stearlight \
            /home/stearlight/.local/share/Steam/steamapps; \
          rm -rf /etc/stearlight/steam-tools; \
-       fi
+       fi \
+    && rm -f /etc/stearlight/.gitkeep
 
 LABEL org.opencontainers.image.title="Stearlight OS" \
       org.opencontainers.image.description="Alpine aarch64 Steam/OpenXR appliance root filesystem"

@@ -216,7 +216,6 @@ fi
 # Alpine ICD through SVRT_GAMESCOPE_VK_ICD, while steam32-launch selects an
 # ABI-matched ICD only at an explicit direct-runtime boundary.
 unset VK_ICD_FILENAMES VK_DRIVER_FILES
-export SVRT_START_IN_STREAMING_MODE=0
 export STEAM_BOOTSTRAP_CONFIG=/home/stearlight/.config/gamescope/bootstrap.cfg
 export STEAMOS_STEAM_REBOOT_SENTINEL=/tmp/steamos-reboot-sentinel
 export REBOOT_SENTINEL=$STEAMOS_STEAM_REBOOT_SENTINEL
@@ -274,7 +273,15 @@ export SVRT_VM_STEAM_UPDATE_ARGS="${SVRT_VM_STEAM_UPDATE_ARGS:-}"
 # -720p/-fasthtml/VR switches were useful while debugging the updater, but
 # they select a different WebUI bootstrap path and are not part of a normal
 # Steam Deck welcome session.
-export CLIENTCMD="/usr/local/libexec/stearlight/steam32-launch -gamepadui -steamos3 -steampal -steamdeck ${SVRT_VM_STEAM_UPDATE_ARGS}"
+# Match Armada's native SteamOS launch contract. The VM can exercise the
+# client UI, but it cannot emulate the headset's tracking hardware; Steam's
+# own Steam Link/VRLink handler remains the only streaming entry point.
+export STEARLIGHT_STEAM_FRAME=${STEARLIGHT_STEAM_FRAME:-1}
+steam_frame_arg=
+if [ "$STEARLIGHT_STEAM_FRAME" != 0 ]; then
+  steam_frame_arg=' -steamframe'
+fi
+export CLIENTCMD="/usr/local/libexec/stearlight/steam32-launch -gamepadui -steamos3 -steampal -steamdeck${steam_frame_arg} ${SVRT_VM_STEAM_UPDATE_ARGS}"
 export CURSOR_FILE="$SVRT_STEAM_HOME/.local/share/Steam/tenfoot/resource/images/cursors/arrow.png"
 # Keep a bounded X11 tree trace in the serial log while the standalone Steam
 # bridge is being validated.  It is disabled for normal users by setting the
@@ -538,10 +545,13 @@ printf '%s\n' 'STEARLIGHT VM DISPLAY READY 2880x1600 @ 60Hz' >>/dev/ttyS0
 if [ -n "$xorg_pid" ]; then
   # Xorg creates its socket before modesetting has completed.  A synchronous
   # xrandr query at that point can wait forever on the server and prevent the
-  # Steam session from ever starting.  Keep the query diagnostic-only and
-  # bounded; it must never be part of the launch critical path.
+  # Steam session from ever starting.  Keep the query diagnostic-only,
+  # bounded, and asynchronous; it must never be part of the launch critical
+  # path.  Some minimal Xorg builds keep the client blocked after timeout(1)
+  # has sent its signal, so putting the whole diagnostic in a subshell also
+  # prevents that child from holding this supervisor at the barrier below.
   if command -v timeout >/dev/null 2>&1; then
-    timeout 5s env DISPLAY=:0 xrandr --current >>/dev/ttyS0 2>&1 || true
+    ( timeout 5s env DISPLAY=:0 xrandr --current >>/dev/ttyS0 2>&1 || true ) &
   else
     ( DISPLAY=:0 xrandr --current >>/dev/ttyS0 2>&1 || true ) &
   fi
@@ -661,7 +671,7 @@ elif [ "$SVRT_VM_SESSION_MODE" = x11 ]; then
   export STEAM_GAMESCOPE=0
   export STEAM_GAMESCOPE_WAYLAND=0
   export XDG_CURRENT_DESKTOP=steam
-  steam_ui_args='-gamepadui -steamos3 -steampal -steamdeck'
+  steam_ui_args="-gamepadui -steamos3 -steampal -steamdeck${steam_frame_arg}"
   if [ "${SVRT_VM_STEAM_UI_MODE:-gamepad}" = classic ]; then
     # Classic ten-foot Steam uses the ordinary X11 WebHelper surface and is
     # the only Steam UI that can be presented by QEMU's software VGA path.

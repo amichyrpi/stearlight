@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+# Steam launch-option prefix for standalone OpenXR titles. Use it in a game's
+# Properties > Launch Options as:
+#
+#   /usr/local/libexec/stearlight/launch-xr-game %command%
+#
+# Steam still owns the game, Proton/FEX, Steam Input, and cloud/save state;
+# this small prefix only makes the configured OpenXR runtime available and
+# keeps Monado alive for the complete command lifetime.
+if [ "$#" -eq 0 ]; then
+    printf '%s\n' 'usage: launch-xr-game <steam-command> [args...]' >&2
+    exit 64
+fi
+
+# Steam does not export the shell variables from /etc/conf.d, while xr-run
+# intentionally sources that file itself. Load the same configuration here so
+# the launch-option prefix works when enablement is configured persistently.
+config=${STEARLIGHT_XR_CONFIG:-/etc/conf.d/stearlight-xr}
+if [ -r "$config" ]; then
+    . "$config"
+fi
+
+if [ "${STEARLIGHT_XR_ENABLE:-0}" != 1 ]; then
+    printf '%s\n' 'Stearlight: standalone OpenXR is disabled' >&2
+    exit 1
+fi
+
+# Tell xr-run that the child will be placed in Steam Linux Runtime's
+# pressure-vessel container. This enables the container-visible OpenXR
+# manifest, OpenVR bridge path, and Monado IPC socket export.
+export STEARLIGHT_XR_STEAM_LAUNCH=1
+exec /usr/local/libexec/stearlight/xr-run "$@"

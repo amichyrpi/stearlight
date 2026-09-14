@@ -8,9 +8,14 @@ an appliance image, not an in-place conversion of Raspberry Pi OS.
 - Alpine edge with OpenRC and the Raspberry Pi downstream `linux-rpi` kernel.
 - Native aarch64 Mesa/V3DV, Gamescope, PipeWire/WirePlumber, and Monado/OpenXR.
 - A Debian glibc runtime isolated with Bubblewrap for the Steam ARM64 beta.
-- Steam Gamepad UI rendered by the standalone Stearlight stereo shell (the OS
-  image does not start the Steam Link receiver). Direct Gamescope remains an
-  explicit `STEARLIGHT_SESSION_MODE=gamescope` diagnostic override.
+- Valve's native ARM64 Steam client launched with the standard SteamOS Gamepad UI
+  contract and rendered by the standalone Stearlight stereo shell. The OS image does not
+  build or start the legacy custom Steam Link receiver; Valve's client owns
+  discovery, pairing, authorization, transport, and its Steam Frame UI. On a
+  custom Pi headset, device tracking and controller support still require the
+  matching hardware integration described below.
+  Direct Gamescope remains an explicit `STEARLIGHT_SESSION_MODE=gamescope`
+  diagnostic override.
   The VM build runs Valve's bootstrap once and includes the extracted client
   payload, so VM boots do not repeat the 500 MB client download.
 - A 2880x1600 side-by-side scanout at 60 Hz (1440x1600 per eye), pure black world, and
@@ -92,6 +97,23 @@ local preparation at boot. No Wi-Fi profile or password is copied from the
 build host; `iwd` and `dhcpcd` remain enabled so Steam can configure the
 connection interactively.
 
+The Steam Frame connection control is opened inside Valve's own client with
+the registered `steamlink://lookup/` discovery URI. The native session starts
+the installed Valve client with its `-steamframe` mode, and Valve owns discovery, pairing, authorization,
+`streaming_client` and VRLink transport. The shell forwards mouse and keyboard
+events to the client's private X11 surface and mirrors that surface into both
+eyes; it does not implement a second pairing or streaming protocol. It does not
+invent pose or controller data for custom hardware. `STEARLIGHT_STEAM_FRAME=0`
+is an explicit diagnostic escape hatch for the old ten-foot X11 mode;
+`SVRT_STEAM_FRAME` and `SVRT_START_IN_STREAMING_MODE` belong only to the
+separately built legacy receiver.
+
+For VM bring-up and boards with a normal SDL-mapped gamepad, the shell also
+provides a mouse-like fallback: the left stick and D-pad move the blue laser,
+A selects, B sends Steam's back key, and the right stick scrolls. This fallback
+only drives the local Steam UI; it does not replace Valve's VRLink pose or
+controller transport when a real Steam Frame-compatible headset is connected.
+
 ## Hide the Pi 4 EEPROM diagnostic screen
 
 `DISABLE_HDMI` is stored in the board EEPROM, not in an operating-system
@@ -116,13 +138,82 @@ default yet. The current Pi prototype has no specified IMU/camera tracking
 driver, calibration, lens distortion profile, or display timing interface.
 Those hardware-specific inputs are required before a real world-locked 6DoF
 OpenXR shell can replace the present stereo renderer. Gamescope and Steam do
-not provide head tracking by themselves.
+not provide head tracking by themselves, and Valve's VRLink transport cannot
+turn an unspecified Pi display into a Steam Frame headset.
+
+The image includes an opt-in `stearlight-xr` OpenRC service and
+`/usr/local/libexec/stearlight/xr-run`. After a tested Monado hardware driver
+has been installed and configured, enable the standalone runtime with
+`STEARLIGHT_XR_ENABLE=1` in `/etc/conf.d/stearlight-xr`, start
+`rc-service stearlight-xr start`, then launch an OpenXR application through
+`/usr/local/libexec/stearlight/xr-run`. If the service is not already running,
+the wrapper starts Monado on demand and cleans up only that instance when the
+application exits. Set `STEARLIGHT_XR_AUTOSTART=0` when another supervisor owns
+the runtime; if its socket is not present, the wrapper fails before launching
+the application. The wrapper validates the application, sets `XR_RUNTIME_JSON`
+and the user runtime directory, and leaves the default Steam Frame session
+unchanged. When standalone XR is explicitly enabled, the normal session also
+exports the same OpenXR variables to Steam-launched games. The wrapper uses a
+startup lock, per-launch leases, and the OpenRC supervisor pidfile, so repeated
+or parallel game launches share Monado without terminating it while another
+game is active or touching an externally owned service. `STEARLIGHT_XR_RUNTIME_SOCKET`, `STEARLIGHT_XR_MONADO_SERVICE`, and
+`STEARLIGHT_STEAM_LINK_URI` are available
+for a board-specific runtime layout, test harness, or Valve client URI variant.
+For a Steam library title that needs the standalone runtime, enable the
+configuration and set this per-game launch option:
+`/usr/local/libexec/stearlight/launch-xr-game %command%`. Steam still owns the
+title and its Proton/FEX/Steam Input lifecycle; the prefix only starts or
+reuses Monado for that command and cleans up an instance it owns.
+Native OpenXR titles work with that prefix without another dependency. Older
+OpenVR titles additionally need an ARM64 OpenVR-to-OpenXR bridge such as an
+ARM64 build of xrizer or OpenComposite. Set
+`STEARLIGHT_XR_OPENVR_RUNTIME=/home/stearlight/.local/share/stearlight/xrizer`
+and, for a title that requires it, set
+`STEARLIGHT_XR_OPENVR_REQUIRED=1`. The wrapper exports `VR_OVERRIDE`, creates
+the missing `openvrpaths.vrpath` registry without replacing an existing one,
+maps the OpenXR manifest into the Steam Linux Runtime container, and exposes
+`monado_comp_ipc` through `PRESSURE_VESSEL_FILESYSTEMS_RW`. An x86_64 bridge
+archive with only a `bin/linux64` library cannot run on the ARM64 Pi and is
+rejected. Leaving the bridge path empty keeps native OpenXR support available
+and fails only when a game has explicitly required the bridge.
+Build the bridge on an ARM64 Linux target with its upstream release/build
+instructions (the resulting directory must contain
+`bin/linuxarm64/vrclient.so`) and keep it under the Steam user's home
+directory so Pressure Vessel can see it. The OS build does not silently
+download an architecture-incompatible third-party binary.
+For a keyboard-only bring-up, set `STEARLIGHT_XR_ACTIVE_CONFIG=qwerty`; the
+service and wrapper enable Monado's qwerty device and debug GUI together. This
+They use the session's `:8` X display by default; override it with
+`STEARLIGHT_XR_DISPLAY` when using another display. This is a diagnostic input
+path, not a substitute for the target headset's tracked driver.
+The default Steam Link URI is `steamlink://lookup/`, the discovery route
+exposed by Valve's `streaming_client`. Do not enable this service as a
+substitute for Valve's Steam Link or VRLink transport.
 
 The current service therefore proves the OS, silent boot, Steam/glibc boundary,
 Gamescope session, 1440x1600-per-eye output, startup media, and curved shell
 without falsely claiming synthetic tracking as 6DoF. The next hardware port is
 to implement the headset driver in Monado and render the Steam surface as an
 OpenXR quad/cylinder layer.
+
+The legacy receiver follows the same rule: synthetic pose is disabled by
+default and is available only for a test harness with
+`SVRT_ENABLE_SYNTHETIC_POSE=1`. It is not a replacement for an IMU, camera, or
+controller driver.
+
+The repository's OpenXR check compiles a loader probe on any Alpine build host:
+
+```sh
+bash os/tests/openxr-runtime-test.sh
+STEARLIGHT_XR_TEST_DISCOVERY=1 bash os/tests/openxr-runtime-test.sh
+bash os/tests/xr-bridge-env-test.sh
+bash os/tests/xr-lifecycle-test.sh
+```
+
+The second command checks that the installed Monado package exposes a qwerty or
+simulated device builder without starting a compositor. Set
+`STEARLIGHT_XR_TEST_START_MONADO=1` only on a target with a configured headset
+driver and compositor; Docker/QEMU cannot provide that hardware session.
 
 ## VM smoke test
 
@@ -139,7 +230,7 @@ monitor. Add `-MeasureFps` to verify boot animation frame changes.
 
 ```powershell
 .\os\build-vm.ps1
-.\os\test-vm.ps1 -BootSeconds 45
+.\os\test-vm.ps1 -BootSeconds 300
 ```
 
 The VM-only files are kept at the `os/` root (`Dockerfile.vm`,

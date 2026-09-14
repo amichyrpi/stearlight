@@ -7,8 +7,14 @@ enable_testing()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-option(SVRT_BUILD_DRIVER "Build the SteamVR virtual-HMD driver" ON)
-option(SVRT_BUILD_RECEIVER "Build the Raspberry Pi receiver" ON)
+option(SVRT_BUILD_DRIVER
+  "Build the legacy custom SteamVR transport driver (off by default)" OFF)
+option(SVRT_BUILD_RECEIVER
+  "Build the legacy custom Steam Link receiver (off by default)" OFF)
+option(SVRT_BUILD_VRLINK_RESOURCES
+  "Build optional SteamVR resources for one explicitly named headset product" OFF)
+set(SVRT_VRLINK_PRODUCT "" CACHE STRING
+  "Exact headset product name sent by Steam Link (required for VRLink resources)")
 option(SVRT_BUILD_OS_SHELL
   "Build the standalone SteamOS shell without Steam Link receiver logic" OFF)
 option(SVRT_BUILD_PI_LIBRARY "Build the Raspberry Pi HEVC/DRM library" ON)
@@ -26,13 +32,22 @@ option(SVRT_BUILD_VENDORED_SDL "Build SDL2 with KMSDRM support like Vanilla"
 add_subdirectory(protocol)
 add_subdirectory(pipe)
 add_subdirectory(lib)
-if(SVRT_BUILD_DRIVER)
+if(WIN32)
   add_subdirectory(steamvr-driver)
 endif()
 if(SVRT_BUILD_UTILITY AND WIN32)
   add_subdirectory(utility)
 endif()
+if(SVRT_STEARLIGHT_OS AND SVRT_BUILD_RECEIVER)
+  message(FATAL_ERROR
+    "Stearlight OS uses Valve's native Steam client/Steam Frame path; "
+    "disable SVRT_BUILD_RECEIVER instead of enabling the legacy custom receiver")
+endif()
 if(SVRT_BUILD_RECEIVER AND UNIX)
+  # This is retained only for the legacy H.265 receiver. The Stearlight OS
+  # appliance builds os/stearlight-shell with SVRT_BUILD_RECEIVER=OFF and
+  # never embeds or calls IHSlib; Valve's Steam client owns Steam Frame
+  # pairing, authorization, transport and its UI there.
   include(FetchContent)
   set(IHSLIB_SAMPLES OFF CACHE BOOL "" FORCE)
   set(IHSLIB_CODEGEN OFF CACHE BOOL "" FORCE)

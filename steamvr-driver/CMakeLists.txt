@@ -1,4 +1,39 @@
-if(NOT SVRT_BUILD_DRIVER OR NOT WIN32)
+if(NOT WIN32)
+  return()
+endif()
+
+# Valve's SteamVR already contains the VRLink transport. A third-party
+# resource-only package is optional: Steam Link selects its settings by the
+# exact android/os/Build/PRODUCT value sent by the headset. Never ship a
+# package with guessed aliases that can silently apply the wrong settings.
+if(SVRT_BUILD_VRLINK_RESOURCES)
+  if(NOT SVRT_VRLINK_PRODUCT)
+    message(FATAL_ERROR
+      "SVRT_VRLINK_PRODUCT must be set to the exact Steam Link headset product")
+  endif()
+  if(NOT SVRT_VRLINK_PRODUCT MATCHES "^[A-Za-z0-9._-]+$")
+    message(FATAL_ERROR
+      "SVRT_VRLINK_PRODUCT may contain only ASCII letters, digits, '.', '_' or '-'")
+  endif()
+  set(SVRT_VRLINK_PACKAGE_DIR "${CMAKE_BINARY_DIR}/svrt-vrlink")
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/default.vrsettings.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/svrt-vrlink-default.vrsettings" @ONLY)
+  add_custom_target(svrt-vrlink-package ALL
+    COMMAND ${CMAKE_COMMAND} -E remove_directory
+            "${SVRT_VRLINK_PACKAGE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/svrt-vrlink"
+            "${SVRT_VRLINK_PACKAGE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${SVRT_VRLINK_PACKAGE_DIR}/resources/settings"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_CURRENT_BINARY_DIR}/svrt-vrlink-default.vrsettings"
+            "${SVRT_VRLINK_PACKAGE_DIR}/resources/settings/default.vrsettings"
+    COMMENT "Packaging optional Steam Frame/VRLink resources")
+endif()
+
+if(NOT SVRT_BUILD_DRIVER)
   return()
 endif()
 
@@ -34,4 +69,6 @@ set_target_properties(driver_svrt PROPERTIES
 add_custom_command(TARGET driver_svrt POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E remove_directory
           ${CMAKE_BINARY_DIR}/svrt/resources
-  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/svrt ${CMAKE_BINARY_DIR}/svrt)
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/svrt
+          ${CMAKE_BINARY_DIR}/svrt
+  )
