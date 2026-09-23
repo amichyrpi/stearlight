@@ -1,6 +1,17 @@
 #!/bin/sh
 set -eu
 
+# Keep early VM supervisor failures visible on the serial console. This only
+# reports the exit status and shell line, never account or environment data.
+vm_console_exit() {
+  vm_console_status=$?
+  printf 'STEARLIGHT VM CONSOLE EXIT status=%s line=%s\n' \
+    "$vm_console_status" "${LINENO:-unknown}" >>/dev/ttyS0 2>/dev/null || true
+  exit "$vm_console_status"
+}
+trap vm_console_exit EXIT
+printf '%s\n' 'STEARLIGHT VM CONSOLE START' >>/dev/ttyS0
+
 # QEMU's Bochs/VGA scanout is backed by llvmpipe.  SDL's OpenGL renderer can
 # create a context there but does not reliably present its swapchain to the
 # Xorg framebuffer, leaving the guest black after the boot movie.  Use SDL's
@@ -24,6 +35,7 @@ export DISPLAY=:0
 export LANG=${LANG:-C.UTF-8}
 export LC_ALL=${LC_ALL:-C.UTF-8}
 export LC_CTYPE=${LC_CTYPE:-C.UTF-8}
+export XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/home/stearlight/.config}
 export SVRT_FONTCONFIG_FILE=${SVRT_FONTCONFIG_FILE:-/etc/fonts/stearlight-fonts.conf}
 if [ -r "$SVRT_FONTCONFIG_FILE" ]; then
   export FONTCONFIG_FILE="$SVRT_FONTCONFIG_FILE"
@@ -48,6 +60,31 @@ export SVRT_STEAMUI_PATCH_ENABLED=${SVRT_STEAMUI_PATCH_ENABLED:-0}
 export SVRT_STEAM_RUNTIME_SEED=/usr/lib/steam
 export SVRT_STEAM_RUNTIME_WATCH=/usr/local/libexec/stearlight/steam-runtime-watch
 export SVRT_STEAM_SOFTWARE_GL=1
+# The x86_64 VM contains Valve's authorized SteamVR runtime.  Start its
+# coordinator by default so vrserver/vrdashboard own the dashboard bar and
+# laser; set this to 0 only for the old SDL diagnostic session.
+export STEARLIGHT_NATIVE_STEAMVR=${STEARLIGHT_NATIVE_STEAMVR:-1}
+export STEARLIGHT_STEAMVR_ROOT=${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}
+# QEMU has no physical HMD or tracked controllers. Enable the VM-only OpenVR
+# provider installed in the image; it supplies a tracking-only HMD plus two
+# stable Steam Frame controller poses while Valve's compositor owns the mirror
+# window. This variable is intentionally absent from the production Pi session.
+export STEARLIGHT_FAKE_TRACKING=${STEARLIGHT_FAKE_TRACKING:-1}
+# Keep the synthetic HMD in tracking-only mode so it cannot claim a physical
+# display or force DRM direct mode on the QEMU VGA output.
+export STEARLIGHT_FAKE_CONTROLLERS_ONLY=${STEARLIGHT_FAKE_CONTROLLERS_ONLY:-0}
+# A display-redirect device intentionally remains disabled in the QEMU
+# profile. It advertises Valve's direct-display route, while this VM needs the
+# native compositor's mirror window on the VGA scanout.
+export STEARLIGHT_FAKE_DISPLAY_REDIRECT=${STEARLIGHT_FAKE_DISPLAY_REDIRECT:-0}
+# Advance the Valve Steam Frame first-run surface once in QEMU. This only
+# affects the VM's deterministic fake controller and is not used on the Pi.
+export STEARLIGHT_FAKE_AUTO_SELECT=${STEARLIGHT_FAKE_AUTO_SELECT:-1}
+# Valve's vrcompositor-launcher normally re-enters Steam Runtime. The VM's
+# Alpine host has no complete scout runtime for shell utilities, so use Valve's
+# documented safety bypass after vm-console has established the SteamVR loader
+# environment. This is VM-only; the production Pi keeps the normal hand-off.
+export VALVE_SKIP_RUNTIME_SAFETY=${VALVE_SKIP_RUNTIME_SAFETY:-1}
 # VM boots are intentionally traceable: this overlay is only used by the
 # disposable QEMU image and the serial log is the only diagnostic channel.
 # Production Pi sessions keep the variable unset and do not inherit this
@@ -462,7 +499,8 @@ if [ -x "$SVRT_STEAM_PREPARE" ]; then
   chown -R stearlight:stearlight "$SVRT_STEAM_HOME/.local/share/Steam" \
     "$SVRT_STEAM_HOME/.steam" "$SVRT_STEAM_HOME/.config" \
     "$SVRT_STEAM_HOME/.cache" 2>/dev/null || true
-fi
+ fi
+printf '%s\n' 'STEARLIGHT VM CONSOLE AFTER PREPARE' >>/dev/ttyS0
 
 # Steam's IPC and WebUI bind loopback sockets (including the local remote
 # debugger). Minimal Alpine boots can leave `lo` down until a desktop network
@@ -480,14 +518,31 @@ if [ -w /etc/hosts ] && ! grep -Eq '^[[:space:]]*127\.0\.0\.1[[:space:]].*([[:sp
 fi
 
 mkdir -p /home/stearlight/.steam /home/stearlight/.local/share
+# SteamVR's vrstartup/vrpathreg pair runs before the client has a chance to
+# create desktop-session state. Provision the user paths it requires up front
+# so its registry, logs, D-Bus cookie, and runtime socket are writable when the
+# Valve binaries are launched as stearlight.
+mkdir -p /home/stearlight/.config/openvr /home/stearlight/.dbus \
+  /home/stearlight/.steam/steam/config /home/stearlight/.steam/steam/logs \
+  /run/user/1000
+chmod 0700 /home/stearlight/.dbus /run/user/1000
+printf '%s\n' 'STEARLIGHT VM CONSOLE AFTER CHMOD' >>/dev/ttyS0
+chown -R stearlight:stearlight /home/stearlight/.config \
+  /home/stearlight/.dbus /home/stearlight/.steam /run/user/1000
+printf '%s\n' 'STEARLIGHT VM CONSOLE AFTER USER PATH CHOWN' >>/dev/ttyS0
+export VR_PATHREG_OVERRIDE=/home/stearlight/.config/openvr/openvrpaths.vrpath
 # Steam's client and pressure-vessel logger expect this directory to exist
 # before the first WebHelper/update process starts.  A sealed image otherwise
 # reaches Steam's updater and then aborts in CFrameFunctionMgr while trying to
 # initialize its assertion dump path.
 mkdir -p "$steam_data/logs"
+printf '%s\n' 'STEARLIGHT VM CONSOLE AFTER STEAM LOG DIR' >>/dev/ttyS0
 ln -sfn /home/stearlight/.local/share/Steam /home/stearlight/.steam/root
+printf '%s\n' 'STEARLIGHT VM CONSOLE AFTER ROOT LINK' >>/dev/ttyS0
 ln -sfn /home/stearlight/.local/share/Steam /home/stearlight/.steam/steam
+printf '%s\n' 'STEARLIGHT VM CONSOLE AFTER STEAM LINK' >>/dev/ttyS0
 chown -R stearlight:stearlight /home/stearlight/.steam /home/stearlight/.local
+printf '%s\n' 'STEARLIGHT VM CONSOLE BEFORE XORG' >>/dev/ttyS0
 
 xorg_pid=
 window_clamp_pid=
@@ -509,6 +564,8 @@ if [ "$SVRT_VM_SESSION_MODE" != gamescope ] || [ "$gamescope_backend" != drm ]; 
   done
   [ -S /tmp/.X11-unix/X0 ] || exit 1
 fi
+printf 'STEARLIGHT VM CONSOLE AFTER XORG mode=%s backend=%s\n' \
+  "$SVRT_VM_SESSION_MODE" "$gamescope_backend" >>/dev/ttyS0
 
 # A native Gamescope/DRM diagnostic must show the boot movie before Gamescope
 # takes DRM ownership.  The normal VM shell owns boot.mkv and loop.mkv in one
@@ -562,6 +619,7 @@ if [ -n "$xorg_pid" ]; then
     printf '%s\n' 'STEARLIGHT XORG LOG END' >>/dev/ttyS0
   fi
 fi
+printf '%s\n' 'STEARLIGHT VM CONSOLE AFTER XRANDR' >>/dev/ttyS0
 
 # Let dhcpcd obtain the user-mode NAT lease before Steam performs its first
 # manifest request in the native Gamescope path.  The shell bridge can start
@@ -588,6 +646,46 @@ shell_pid=
 watcher_pid=
 steam_log_tail_pid=
 steam_process_trace_pid=
+native_steamvr_pid=
+native_ready_pid=
+start_native_steamvr() {
+  [ "${STEARLIGHT_NATIVE_STEAMVR:-1}" != 0 ] || return 0
+  [ -x /usr/local/libexec/stearlight/steamvr-native ] || {
+    printf '%s\n' 'STEARLIGHT NATIVE STEAMVR HELPER MISSING' >>/dev/ttyS0
+    return 0
+  }
+  if [ ! -x "${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}/bin/linux64/vrserver" ] ||
+     [ ! -x "${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}/bin/linux64/vrdashboard" ]; then
+    printf 'STEARLIGHT NATIVE STEAMVR RUNTIME MISSING root=%s\n' \
+      "${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}" >>/dev/ttyS0
+    return 0
+  fi
+  native_display=${STEARLIGHT_STEAMVR_DISPLAY:-$DISPLAY}
+  # The standalone SDL diagnostic owns Steam's private Xvfb display. The
+  # native dashboard must use that same display if it is explicitly enabled;
+  # x11 and Gamescope sessions inherit their real display below.
+  if [ "$SVRT_VM_SESSION_MODE" = shell ]; then
+    native_display=${STEARLIGHT_STEAMVR_DISPLAY:-:8}
+  fi
+  printf 'STEARLIGHT NATIVE STEAMVR STARTING root=%s display=%s\n' \
+    "${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}" "$native_display" >>/dev/ttyS0
+  su-exec stearlight env USER=stearlight LOGNAME=stearlight \
+    HOME="$SVRT_STEAM_HOME" DISPLAY="$native_display" \
+    XDG_CONFIG_HOME="$XDG_CONFIG_HOME" \
+    XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+    VR_PATHREG_OVERRIDE="$VR_PATHREG_OVERRIDE" \
+    STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM=1 \
+    STEAM_BASE_FOLDER="$steam_data" \
+    STEARLIGHT_STEAMVR_ROOT="${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}" \
+    STEARLIGHT_FAKE_TRACKING="$STEARLIGHT_FAKE_TRACKING" \
+    STEARLIGHT_FAKE_CONTROLLERS_ONLY="$STEARLIGHT_FAKE_CONTROLLERS_ONLY" \
+    STEARLIGHT_FAKE_DISPLAY_REDIRECT="$STEARLIGHT_FAKE_DISPLAY_REDIRECT" \
+    STEARLIGHT_FAKE_AUTO_SELECT="$STEARLIGHT_FAKE_AUTO_SELECT" \
+    dbus-launch --exit-with-session \
+    /usr/local/libexec/stearlight/steamvr-native startup \
+    >>/dev/ttyS0 2>&1 &
+  native_steamvr_pid=$!
+}
 cleanup_session() {
   if [ -n "${shell_pid:-}" ]; then
     kill "$shell_pid" 2>/dev/null || true
@@ -604,6 +702,14 @@ cleanup_session() {
   if [ -n "${steam_process_trace_pid:-}" ]; then
     kill "$steam_process_trace_pid" 2>/dev/null || true
     wait "$steam_process_trace_pid" 2>/dev/null || true
+  fi
+  if [ -n "${native_steamvr_pid:-}" ]; then
+    kill "$native_steamvr_pid" 2>/dev/null || true
+    wait "$native_steamvr_pid" 2>/dev/null || true
+  fi
+  if [ -n "${native_ready_pid:-}" ]; then
+    kill "$native_ready_pid" 2>/dev/null || true
+    wait "$native_ready_pid" 2>/dev/null || true
   fi
   if [ -n "${window_clamp_pid:-}" ]; then
     kill "$window_clamp_pid" 2>/dev/null || true
@@ -692,13 +798,48 @@ elif [ "$SVRT_VM_SESSION_MODE" = x11 ]; then
     2>>/dev/ttyS0 &
 else
   # Explicit diagnostic fallback: the standalone shell captures an X11
-  # surface into its stereo renderer when gamescope cannot run on a host.
+  # surface into its stereo renderer when gamescope cannot run on a host. The
+  # shell is compiled without dashboard chrome; Valve's native runtime is
+  # still started below when explicitly enabled.
   su-exec stearlight env USER=stearlight LOGNAME=stearlight HOME="$SVRT_STEAM_HOME" \
     dbus-launch --exit-with-session \
     /usr/bin/stearlight-shell \
     2>>/dev/ttyS0 &
 fi
 shell_pid=$!
+# Gamescope publishes its private display from inside gamescope-session-plus,
+# so that script starts the native coordinator itself after the socket is
+# ready. The x11 and explicit shell paths can start it here.
+if [ "$SVRT_VM_SESSION_MODE" != gamescope ]; then
+  start_native_steamvr
+fi
+if [ "${STEARLIGHT_NATIVE_STEAMVR:-1}" != 0 ]; then
+  # Coordinator startup alone is not proof that Valve's dock can render.
+  # The compositor must finish GPU setup and the dashboard must remain live.
+  (
+    compositor_log="$SVRT_STEAM_HOME/.local/share/Steam/logs/vrcompositor.txt"
+    dashboard_log="$SVRT_STEAM_HOME/.local/share/Steam/logs/vrdashboard.txt"
+    attempts=0
+    while [ "$attempts" -lt 300 ] && kill -0 "$shell_pid" 2>/dev/null; do
+      if busybox pidof vrcompositor >/dev/null 2>&1 &&
+         busybox pidof vrdashboard >/dev/null 2>&1 &&
+         [ -r "$compositor_log" ] && [ -r "$dashboard_log" ] &&
+         awk '/vrcompositor .* startup with PID=/{start=NR}
+              /End GPU speed/{done=NR}
+              END{exit !(start>0 && done>start)}' "$compositor_log" &&
+         awk '/vrdashboard .* startup with PID=/{start=NR}
+              /VR_Init failed/{failed=NR}
+              END{exit !(start>0 && failed<start)}' "$dashboard_log"; then
+        printf '%s\n' 'STEARLIGHT NATIVE COMPONENTS READY' >>/dev/ttyS0
+        exit 0
+      fi
+      attempts=$((attempts + 1))
+      sleep 1
+    done
+    printf '%s\n' 'STEARLIGHT NATIVE COMPONENTS NOT READY' >>/dev/ttyS0
+  ) &
+  native_ready_pid=$!
+fi
 if [ "${SVRT_TRACE_STEAM_PROCESSES:-0}" != 0 ]; then
   # The WebUI transport log reports the PID that owns the connecting socket.
   # Keep a short process/namespace sample in the serial log so a VM-only
@@ -781,5 +922,17 @@ shell_pid=
 if [ -n "$xorg_pid" ]; then
   kill "$xorg_pid" 2>/dev/null || true
   wait "$xorg_pid" 2>/dev/null || true
+fi
+if [ -e /tmp/steamos-suspend-sentinel ]; then
+  rm -f /tmp/steamos-suspend-sentinel
+  if [ -w /sys/power/state ]; then
+    printf '%s\n' mem >/sys/power/state || true
+  fi
+elif [ -e "${REBOOT_SENTINEL:-/tmp/steamos-reboot-sentinel}" ]; then
+  rm -f "${REBOOT_SENTINEL:-/tmp/steamos-reboot-sentinel}"
+  reboot || true
+elif [ -e "${SHUTDOWN_SENTINEL:-/tmp/steamos-shutdown-sentinel}" ]; then
+  rm -f "${SHUTDOWN_SENTINEL:-/tmp/steamos-shutdown-sentinel}"
+  poweroff || true
 fi
 exit "$shell_status"

@@ -5,7 +5,9 @@
 #include <X11/keysym.h>
 #include <X11/Xutil.h>
 #include <X11/extensions/Xcomposite.h>
+#include <X11/extensions/Xfixes.h>
 #include <X11/extensions/XTest.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -17,11 +19,65 @@
 #include <unistd.h>
 
 #define STEARLIGHT_STEAM_DISPLAY ":8"
-#define STEARLIGHT_STEAM_WIDTH 1024
-#define STEARLIGHT_STEAM_HEIGHT 640
+#ifndef STEARLIGHT_STEAM_WIDTH
+#define STEARLIGHT_STEAM_WIDTH 1280
+#endif
+#ifndef STEARLIGHT_STEAM_HEIGHT
+#define STEARLIGHT_STEAM_HEIGHT 800
+#endif
 #ifndef SVRT_STEAM_CAPTURE_INTERVAL_MS
 #define SVRT_STEAM_CAPTURE_INTERVAL_MS 16
 #endif
+
+static int contains_case_insensitive(const char *value, const char *needle) {
+    if (!value || !needle || !needle[0]) return 0;
+    const size_t needle_length = strlen(needle);
+    for (; *value; ++value) {
+        size_t index = 0;
+        while (index < needle_length && value[index] &&
+               tolower((unsigned char)value[index]) ==
+                   tolower((unsigned char)needle[index]))
+            ++index;
+        if (index == needle_length) return 1;
+    }
+    return 0;
+}
+
+static int equals_case_insensitive(const char *left, const char *right) {
+    if (!left || !right) return 0;
+    while (*left && *right) {
+        if (tolower((unsigned char)*left) !=
+            tolower((unsigned char)*right))
+            return 0;
+        ++left;
+        ++right;
+    }
+    return !*left && !*right;
+}
+
+static void update_pointer_style(stearlight_steam_client *client) {
+    if (!client || !client->display || !client->xfixes_cursor_event_base)
+        return;
+    Display *display = (Display *)client->display;
+    XEvent event;
+    while (XCheckTypedEvent(display,
+                            client->xfixes_cursor_event_base +
+                                XFixesCursorNotify,
+                            &event)) {
+        const XFixesCursorNotifyEvent *cursor_event =
+            (const XFixesCursorNotifyEvent *)&event;
+        char *name = cursor_event->cursor_name != None ?
+            XGetAtomName(display, cursor_event->cursor_name) : NULL;
+        client->pointer_style = name &&
+            (contains_case_insensitive(name, "xterm") ||
+             contains_case_insensitive(name, "ibeam") ||
+             equals_case_insensitive(name, "text") ||
+             equals_case_insensitive(name, "vertical-text")) ?
+                STEARLIGHT_STEAM_POINTER_IBEAM :
+                STEARLIGHT_STEAM_POINTER_DEFAULT;
+        if (name) XFree(name);
+    }
+}
 
 static const char *steam_home(void) {
     const char *configured = getenv("SVRT_STEAM_HOME");
@@ -323,6 +379,9 @@ static pid_t start_display(void) {
     pid_t pid = fork();
     if (pid) return pid;
     setpgid(0, 0);
+    char screen_geometry[32];
+    snprintf(screen_geometry, sizeof(screen_geometry), "%dx%dx24",
+             STEARLIGHT_STEAM_WIDTH, STEARLIGHT_STEAM_HEIGHT);
     /* Xvfb is the X server Steam connects to; it must not inherit the
        client-side Mesa search path.  In particular, LIBGL_DRIVERS_PATH is
        ABI-specific and points at Steam's 32-bit DRI directory.  Xvfb's GLX
@@ -347,12 +406,12 @@ static pid_t start_display(void) {
     const char *glx = getenv("SVRT_STEAM_XVFB_GLX");
     if (!glx || !glx[0] || strcmp(glx, "0") != 0) {
         execlp("Xvfb", "Xvfb", STEARLIGHT_STEAM_DISPLAY, "-screen", "0",
-               "1024x640x24", "+extension", "GLX", "+extension",
+               screen_geometry, "+extension", "GLX", "+extension",
                "Composite", "+extension", "XTEST", "-ac",
                "-nolisten", "tcp", "-noreset", NULL);
     } else {
         execlp("Xvfb", "Xvfb", STEARLIGHT_STEAM_DISPLAY, "-screen", "0",
-               "1024x640x24", "-extension", "GLX", "+extension", "XTEST",
+               screen_geometry, "-extension", "GLX", "+extension", "XTEST",
                "-ac", "-nolisten", "tcp", "-noreset", NULL);
     }
     report_exec_failure("Xvfb");
@@ -384,6 +443,10 @@ static pid_t start_steam(void) {
     }
     if (gamescope && gamescope[0] && strcmp(gamescope, "0") &&
         access(launcher, X_OK) == 0) {
+        char width_text[16];
+        char height_text[16];
+        snprintf(width_text, sizeof(width_text), "%d", STEARLIGHT_STEAM_WIDTH);
+        snprintf(height_text, sizeof(height_text), "%d", STEARLIGHT_STEAM_HEIGHT);
         /* gamescope is an Alpine/musl host process.  Do not let it inherit
            the glibc ICD selected for Valve's 32/64-bit Steam children: the
            loader can open that library but then loses VK_KHR_surface during
@@ -395,13 +458,15 @@ static pid_t start_steam(void) {
             setenv("VK_ICD_FILENAMES", gamescope_icd, 1);
         if (steam_frame_enabled())
             execlp("gamescope", "gamescope", "-e", "--backend", "sdl", "-b",
-                   "-W", "1024", "-H", "640", "-w", "1024", "-h", "640",
+                   "-W", width_text, "-H", height_text,
+                   "-w", width_text, "-h", height_text,
                    "-r", "60", "--expose-wayland", "--", launcher,
                    "-gamepadui", "-steamos3", "-steampal", "-steamdeck",
                    "-steamframe", NULL);
         else
             execlp("gamescope", "gamescope", "-e", "--backend", "sdl", "-b",
-                   "-W", "1024", "-H", "640", "-w", "1024", "-h", "640",
+                   "-W", width_text, "-H", height_text,
+                   "-w", width_text, "-h", height_text,
                    "-r", "60", "--expose-wayland", "--", launcher,
                    "-gamepadui", "-steamos3", "-steampal", "-steamdeck", NULL);
         report_exec_failure("gamescope");
@@ -464,6 +529,17 @@ static void connect_display(stearlight_steam_client *client, uint32_t now_ms) {
             return;
         }
         client->root = DefaultRootWindow((Display *)client->display);
+        int xfixes_error_base = 0;
+        if (XFixesQueryExtension((Display *)client->display,
+                                 &client->xfixes_cursor_event_base,
+                                 &xfixes_error_base)) {
+            XFixesSelectCursorInput((Display *)client->display,
+                                    (Window)client->root,
+                                    XFixesDisplayCursorNotifyMask);
+            XFlush((Display *)client->display);
+        } else {
+            client->xfixes_cursor_event_base = 0;
+        }
         int glx_event = 0;
         int glx_error = 0;
         int glx_opcode = 0;
@@ -944,6 +1020,7 @@ void stearlight_steam_client_update(stearlight_steam_client *client,
     if (!client->display && !ensure_display(client, now_ms)) return;
     connect_display(client, now_ms);
     if (!client->display || !client->steam_pid) return;
+    update_pointer_style(client);
     if (child_exited(client->steam_pid)) {
         const pid_t exited_pid = client->steam_pid;
         client->steam_pid = 0;
@@ -1061,6 +1138,11 @@ SDL_Texture *stearlight_steam_client_frame(
 const char *stearlight_steam_client_detail(
     const stearlight_steam_client *client) {
     return client && client->detail[0] ? client->detail : NULL;
+}
+
+stearlight_steam_pointer_style stearlight_steam_client_pointer_style(
+    const stearlight_steam_client *client) {
+    return client ? client->pointer_style : STEARLIGHT_STEAM_POINTER_DEFAULT;
 }
 
 static void stop_process_group(pid_t pid) {

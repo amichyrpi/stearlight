@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$ImagePath = (Join-Path $PSScriptRoot '..\out\stearlight-vm\stearlight-os-vm-x86_64.vdi'),
+    [string]$ImagePath,
     [string]$Name = 'Stearlight-OS-Test',
     # A clean Steam tree may spend about two minutes in Valve's bootstrap and
     # WebHelper startup before it maps the first Gamepad UI surface. Keep the
@@ -29,6 +29,26 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $ImagePath) {
+    foreach ($driveName in @('F', 'G')) {
+        $drive = Get-PSDrive -Name $driveName -PSProvider FileSystem `
+            -ErrorAction SilentlyContinue
+        if (-not $drive) { continue }
+        $candidate = Join-Path "$($drive.Name):\" `
+            'StearlightBuild\vm\stearlight-os-vm-x86_64.vdi'
+        if (Test-Path -LiteralPath $candidate) {
+            $ImagePath = $candidate
+            break
+        }
+    }
+}
+if (-not $ImagePath) {
+    throw 'No VM image was found on F: or G:; refusing to use C: output.'
+}
+$requestedImage = [IO.Path]::GetFullPath($ImagePath)
+if ([IO.Path]::GetPathRoot($requestedImage) -notin @('F:\', 'G:\')) {
+    throw "VM image must be on F: or G:, not '$requestedImage'."
+}
 $vbox = 'C:\Program Files\Oracle\VirtualBox\VBoxManage.exe'
 $image = (Resolve-Path -LiteralPath $ImagePath).Path
 $output = Split-Path -Parent $image
@@ -47,6 +67,16 @@ function Read-SerialLog {
         return Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
     } catch {
         return ''
+    }
+}
+
+function Assert-NoNativeGpuFatal {
+    $serial = Read-SerialLog -Path $serialLog
+    if ($serial -match 'VUID-VkExportSemaphoreCreateInfo-handleTypes-01124') {
+        throw "Valve compositor requires exportable Vulkan semaphore FDs, but this VM GPU does not provide them. Serial log: $serialLog"
+    }
+    if ($serial -match 'Fatal : VkResult is') {
+        throw "Valve compositor exited after a fatal Vulkan error. Serial log: $serialLog"
     }
 }
 
@@ -76,8 +106,9 @@ function Wait-SerialReady {
         $steamSessionReady = $serial -match "(?i)(STEARLIGHT STEAM SESSION STARTING|STEARLIGHT STEAM SHELL STARTING)"
         $steamFrameReady = $serial -match '(?i)STEARLIGHT STEAM FRAME READY [0-9]+x[0-9]+'
         $gamescopeSessionReady = $serial -match '(?i)STEARLIGHT GAMESCOPE READY [0-9]+x[0-9]+ @ [0-9]+Hz'
+        $x11SessionReady = $serial -match '(?i)STEARLIGHT VM CONSOLE AFTER XORG mode=x11'
         if ($displayReady -and $steamSessionReady -and
-            ($steamFrameReady -or $gamescopeSessionReady)) {
+            ($steamFrameReady -or $gamescopeSessionReady -or $x11SessionReady)) {
             return $serial
         }
         if ($Process -and $Process.HasExited) { break }
@@ -423,6 +454,7 @@ function Assert-VisibleScreenshot {
     }
 
     if ($visibleSamples -lt 5) {
+        Assert-NoNativeGpuFatal
         throw "VM framebuffer remained black ($visibleSamples visible samples). See $serialLog"
     }
     Write-Host "Framebuffer check: $visibleSamples visible samples ($expectedWidth`x$expectedHeight)"
@@ -470,6 +502,7 @@ function Assert-StereoScreenshot {
             }
         }
         if ($leftSamples -lt 1 -or $rightSamples -lt 1) {
+            Assert-NoNativeGpuFatal
             throw "Stereo framebuffer is incomplete (left $leftSamples, right $rightSamples samples)."
         }
         Write-Host "Stereo check: left $leftSamples, right $rightSamples visible samples"
@@ -507,9 +540,9 @@ function Assert-CentralSteamSurface {
         for ($eye = 0; $eye -lt 2; ++$eye) {
             $firstX = $eye * $half + [int]($half * 0.12)
             $lastX = $eye * $half + [int]($half * 0.88)
-            # The lower navigation bar is shell chrome and must not satisfy
-            # this check. Sample only the upper/central Steam surface, where
-            # Valve's WebHelper page and welcome text are rendered.
+            # The lower dashboard chrome must not satisfy this check. Sample
+            # only the upper/central Steam surface, where Valve's WebHelper
+            # page and welcome text are rendered.
             for ($y = [int]($height * 0.12); $y -lt [int]($height * 0.68); $y += 8) {
                 for ($x = $firstX; $x -lt $lastX; $x += 8) {
                     $position = $pixelOffset + (([int64]$y * $width + $x) * 3)
@@ -522,6 +555,7 @@ function Assert-CentralSteamSurface {
             }
         }
         if ($leftSamples -lt 20 -or $rightSamples -lt 20) {
+            Assert-NoNativeGpuFatal
             throw "Central Steam surface is missing (left $leftSamples, right $rightSamples samples)."
         }
         Write-Host "Central Steam surface check: left $leftSamples, right $rightSamples visible samples"
@@ -530,60 +564,36 @@ function Assert-CentralSteamSurface {
     }
 }
 
-function Assert-LaserCursor {
+function Assert-NativeSteamVrReady {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
-                               [IO.FileAccess]::Read,
-                               [IO.FileShare]::ReadWrite)
-    try {
-        if ((Read-PpmToken -Stream $stream) -ne 'P6') {
-            throw "Laser cursor check requires a binary PPM screenshot: $Path"
-        }
-        $width = 0; $height = 0; $maxValue = 0
-        if (-not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$width) -or
-            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$height) -or
-            -not [int]::TryParse((Read-PpmToken -Stream $stream), [ref]$maxValue) -or
-            $width -ne $expectedWidth -or $height -ne $expectedHeight -or
-            $maxValue -ne 255) {
-            throw "Laser cursor check received a ${width}x${height} PPM; expected ${expectedWidth}x${expectedHeight}."
-        }
-        $pixelBytes = [int64]$width * [int64]$height * 3
-        if ($stream.Length -lt $pixelBytes) {
-            throw "Laser cursor screenshot is truncated: $Path"
-        }
-        $pixelOffset = $stream.Length - $pixelBytes
-        $half = [int]($width / 2)
-        $eyeSamples = @(0, 0)
-        $pixel = New-Object byte[] 3
-        # The laser starts near the lower-left of every eye. Scan that small
-        # origin region instead of relying on the current pointer target,
-        # which may be different when a human is inspecting the VM.
-        for ($eye = 0; $eye -lt 2; $eye++) {
-            $firstX = $eye * $half
-            $lastX = $firstX + [int]($half * 0.15)
-            for ($y = [int]($height * 0.72); $y -lt [int]($height * 0.99); $y += 4) {
-                for ($x = $firstX; $x -lt $lastX; $x += 4) {
-                    $position = $pixelOffset + (([int64]$y * $width + $x) * 3)
-                    [void]$stream.Seek($position, [IO.SeekOrigin]::Begin)
-                    if ($stream.Read($pixel, 0, 3) -ne 3) { continue }
-                    $red = [int]$pixel[0]
-                    $green = [int]$pixel[1]
-                    $blue = [int]$pixel[2]
-                    if ($blue -gt 150 -and $green -gt 80 -and
-                        $blue -gt ($red + 60)) {
-                        $eyeSamples[$eye]++
-                    }
-                }
-            }
-        }
-        if ($eyeSamples[0] -lt 3 -or $eyeSamples[1] -lt 3) {
-            throw "Blue laser cursor is missing (left $($eyeSamples[0]), right $($eyeSamples[1]) samples)."
-        }
-        Write-Host "Laser cursor check: left $($eyeSamples[0]), right $($eyeSamples[1]) blue samples"
-    } finally {
-        $stream.Dispose()
+    if (-not [IO.File]::Exists($Path)) {
+        throw "Native SteamVR launch check requires the serial log: $Path"
     }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+        try {
+            $stream = [IO.File]::Open($Path, [IO.FileMode]::Open,
+                                      [IO.FileAccess]::Read,
+                                      [IO.FileShare]::ReadWrite)
+            try {
+                $reader = New-Object IO.StreamReader($stream)
+                $serial = $reader.ReadToEnd()
+                $reader.Dispose()
+            } finally {
+                $stream.Dispose()
+            }
+        } catch {
+            $serial = ''
+        }
+        if ($serial -match 'STEARLIGHT NATIVE COMPONENTS READY') {
+            Write-Host 'Valve compositor and dashboard readiness markers found.'
+            return
+        }
+        Assert-NoNativeGpuFatal
+        Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw 'Valve compositor/dashboard did not become ready; a coordinator launch or Steam loading screen is insufficient.'
 }
 
 # QEMU is the supported fallback on machines without VirtualBox.  Keep all
@@ -802,7 +812,7 @@ public static class StearlightQemuWindow {
         )
     }
     $qemuDisplay = if ($Headless) {
-        'none'
+        if ($QemuGpu -eq 'virtio-gl') { 'egl-headless,gl=on' } else { 'none' }
     } else {
         'gtk,gl=on,zoom-to-fit=on,show-menubar=off,window-close=on'
     }
@@ -850,9 +860,17 @@ public static class StearlightQemuWindow {
     )
     $qemuProcess = $null
     $testSucceeded = $false
+    $qemuErrorLog = Join-Path $output 'stearlight-vm-qemu-stderr.log'
     try {
-        $qemuProcess = Start-Process -FilePath $qemu -ArgumentList $qemuArgs `
-            -WorkingDirectory $output -PassThru
+        $qemuStart = @{
+            FilePath = $qemu
+            ArgumentList = $qemuArgs
+            WorkingDirectory = $output
+            RedirectStandardError = $qemuErrorLog
+            PassThru = $true
+        }
+        if ($Headless) { $qemuStart.WindowStyle = 'Hidden' }
+        $qemuProcess = Start-Process @qemuStart
         [void](Set-QemuWindowAspect -Process $qemuProcess `
             -FramebufferWidth $expectedWidth -FramebufferHeight $expectedHeight)
         [void](Move-QemuWindowToSecondaryMonitor -Process $qemuProcess)
@@ -886,7 +904,11 @@ public static class StearlightQemuWindow {
         Assert-VisibleScreenshot -Path $qemuScreenshot
         Assert-StereoScreenshot -Path $qemuScreenshot
         Assert-CentralSteamSurface -Path $qemuScreenshot
-        Assert-LaserCursor -Path $qemuScreenshot
+        # The production image does not paint an SDL laser. Valve's
+        # compositor and dashboard must both be ready before a framebuffer
+        # capture can be treated as a native-UI test; coordinator startup alone
+        # produced false positives while the VM showed only a loading screen.
+        Assert-NativeSteamVrReady -Path $serialLog
         Write-Host "QEMU framebuffer screenshot: $qemuScreenshot"
         $testSucceeded = $true
     } finally {

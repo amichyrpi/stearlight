@@ -14,6 +14,21 @@
 
 static volatile sig_atomic_t quitting;
 
+static void request_system_action(svrt_ui_action action) {
+    const char *sentinel = NULL;
+    if (action == SVRT_UI_ACTION_SUSPEND)
+        sentinel = "/tmp/steamos-suspend-sentinel";
+    else if (action == SVRT_UI_ACTION_RESTART)
+        sentinel = "/tmp/steamos-reboot-sentinel";
+    else if (action == SVRT_UI_ACTION_SHUTDOWN)
+        sentinel = "/tmp/steamos-shutdown-sentinel";
+    if (!sentinel) return;
+    FILE *file = fopen(sentinel, "w");
+    if (!file) return;
+    fclose(file);
+    quitting = 1;
+}
+
 static void stop_shell(int sig) {
     (void)sig;
     quitting = 1;
@@ -88,9 +103,21 @@ static void open_steam_page(stearlight_steam_client *client,
         case SVRT_UI_ACTION_MEDIA: uri = "steam://open/screenshots"; break;
         case SVRT_UI_ACTION_DOWNLOADS: uri = "steam://open/downloads"; break;
         case SVRT_UI_ACTION_SETTINGS: uri = "steam://open/settings"; break;
+        case SVRT_UI_ACTION_POWER:
+            return;
+        case SVRT_UI_ACTION_FRAME:
+            stearlight_steam_client_open_steam_link(client);
+            return;
         case SVRT_UI_ACTION_PROFILE: uri = "steam://url/CommunityHome"; break;
         case SVRT_UI_ACTION_CONNECTION:
             stearlight_steam_client_open_steam_link(client);
+            return;
+        case SVRT_UI_ACTION_ADD: uri = "steam://open/addgame"; break;
+        case SVRT_UI_ACTION_NETWORK: uri = "steam://open/settings"; break;
+        case SVRT_UI_ACTION_SUSPEND:
+        case SVRT_UI_ACTION_RESTART:
+        case SVRT_UI_ACTION_SHUTDOWN:
+            request_system_action(action);
             return;
         default: break;
     }
@@ -138,6 +165,10 @@ int main(void) {
     while (!quitting) {
         const uint32_t now = SDL_GetTicks();
         stearlight_steam_client_update(&steam, svrt_ui_renderer(&ui), now);
+        svrt_ui_set_pointer_style(
+            &ui, stearlight_steam_client_pointer_style(&steam) ==
+                         STEARLIGHT_STEAM_POINTER_IBEAM ?
+                     SVRT_UI_POINTER_IBEAM : SVRT_UI_POINTER_DEFAULT);
         SDL_Texture *client_frame = stearlight_steam_client_frame(&steam);
         svrt_ui_set_client_frame(&ui, client_frame);
 #if SVRT_UI_MINIMAL_STEAMOS

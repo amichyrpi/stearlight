@@ -1,27 +1,32 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\out\stearlight-vm')
+    [string]$OutputDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$outRoot = Join-Path $repo 'out'
-$resolvedOutput = [IO.Path]::GetFullPath($OutputDirectory)
-$expectedPrefix = [IO.Path]::GetFullPath($outRoot) + [IO.Path]::DirectorySeparatorChar
-$insideRepoOutput = $resolvedOutput.StartsWith(
-    $expectedPrefix, [StringComparison]::OrdinalIgnoreCase)
-$onBuildDrive = [IO.Path]::GetPathRoot($resolvedOutput) -in @('F:\', 'G:\')
-if (-not $insideRepoOutput -and -not $onBuildDrive) {
-    throw "Output directory must remain inside $outRoot or be on the dedicated F: or G: build drive."
+if (-not $OutputDirectory) {
+    foreach ($driveName in @('F', 'G')) {
+        $drive = Get-PSDrive -Name $driveName -PSProvider FileSystem `
+            -ErrorAction SilentlyContinue
+        if ($drive -and $drive.Free -gt 20GB) {
+            $OutputDirectory = Join-Path "$($drive.Name):\" 'StearlightBuild\vm'
+            break
+        }
+    }
 }
-if ([IO.Directory]::Exists($resolvedOutput)) {
-    [IO.Directory]::Delete($resolvedOutput, $true)
+if (-not $OutputDirectory) {
+    throw 'No F: or G: build drive has at least 20 GB free; refusing to write build output on C:.'
+}
+$resolvedOutput = [IO.Path]::GetFullPath($OutputDirectory)
+$outputDriveRoot = [IO.Path]::GetPathRoot($resolvedOutput)
+if ($outputDriveRoot -notin @('F:\', 'G:\')) {
+    throw "Output directory must be on F: or G:, not '$resolvedOutput'."
+}
+if ($resolvedOutput.TrimEnd('\') -eq $outputDriveRoot.TrimEnd('\')) {
+    throw 'Refusing to delete an entire F: or G: volume as the output directory.'
 }
 [IO.Directory]::CreateDirectory($resolvedOutput) | Out-Null
-
-$buildTag = "stearlight-vm-export:$([Guid]::NewGuid().ToString('N'))"
-$containerName = "stearlight-vm-export-$([Guid]::NewGuid().ToString('N'))"
-$containerCreated = $false
 
 $qemuImg = $null
 $qemuCommand = Get-Command qemu-img.exe -ErrorAction SilentlyContinue
@@ -40,78 +45,102 @@ if ($qemuCommand) {
 }
 if (-not $qemuImg) { throw 'qemu-img.exe is required to convert the raw VM image to VDI.' }
 
-$eDrive = Get-PSDrive -Name E -PSProvider FileSystem -ErrorAction SilentlyContinue
-$temporaryRoot = $resolvedOutput
-if ($eDrive -and $eDrive.Free -gt 20GB) {
-    # The raw disk expands beyond the final VDI's logical size on Windows.
-    # Keep both transient artifacts off F: when the separate work volume has
-    # enough room; only the final VDI is retained on the build drive.
-    $temporaryRoot = 'E:\StearlightBuildTemp'
-    [IO.Directory]::CreateDirectory($temporaryRoot) | Out-Null
-}
+$temporaryRoot = Join-Path $outputDriveRoot 'StearlightBuildTemp'
+# Keep the staged VDI on the same approved volume as the final output. This
+# lets the final replacement be a same-volume operation and preserves an
+# existing image if Docker or qemu-img fails halfway through a rebuild.
+[IO.Directory]::CreateDirectory($temporaryRoot) | Out-Null
 $raw = Join-Path $temporaryRoot (
     ".stearlight-vm-raw-$([Guid]::NewGuid().ToString('N')).raw")
+$exportDirectory = Join-Path $temporaryRoot (
+    ".stearlight-vm-export-$([Guid]::NewGuid().ToString('N'))")
 $image = Join-Path $resolvedOutput 'stearlight-os-vm-x86_64.vdi'
 $checksum = Join-Path $resolvedOutput 'stearlight-os-vm-x86_64.vdi.sha256'
+$stagedImage = Join-Path $temporaryRoot (
+    ".stearlight-vm-vdi-$([Guid]::NewGuid().ToString('N')).vdi")
+$backupImage = Join-Path $temporaryRoot (
+    ".stearlight-vm-backup-$([Guid]::NewGuid().ToString('N')).vdi")
 $conversionSucceeded = $false
 
 try {
-    # Load the scratch image into the daemon, then copy its raw artifact from a
-    # short-lived, uniquely named container to the temporary work volume.
-    & docker buildx build --platform linux/amd64 --target image `
-        --tag $buildTag --load --progress plain `
+    # Export the FROM-scratch image directly to the approved temporary volume.
+    # Loading the raw disk into Docker first makes Docker unpack the entire
+    # multi-gigabyte image into its own store and is both slow and unnecessary.
+    $steamVrDump = 'F:\StearlightBuildArchive\steamvr-linux\steamvr-linux'
+    if (-not [IO.Directory]::Exists($steamVrDump)) {
+        throw "SteamVR dump is required at '$steamVrDump'."
+    }
+    foreach ($requiredSteamVrFile in @(
+        'bin\vrenv.sh',
+        'bin\linux64\vrstartup',
+        'bin\linux64\vrserver',
+        'bin\linux64\vrdashboard',
+        'bin\linux64\vrcompositor',
+        'drivers\vrlink\driver.vrdrivermanifest',
+        'drivers\null\driver.vrdrivermanifest',
+        'drivers\null\bin\linux64\driver_null.so',
+        'content',
+        'tools\tools.vrmanifest',
+        'steamxr_linux64.json')) {
+        $requiredPath = Join-Path $steamVrDump $requiredSteamVrFile
+        $exists = if ([IO.Path]::GetExtension($requiredSteamVrFile)) {
+            [IO.File]::Exists($requiredPath)
+        } else {
+            [IO.Directory]::Exists($requiredPath)
+        }
+        if (-not $exists) {
+            throw "SteamVR dump is incomplete; missing '$requiredPath'."
+        }
+    }
+    if ([IO.Directory]::Exists($exportDirectory)) {
+        [IO.Directory]::Delete($exportDirectory, $true)
+    }
+    [IO.Directory]::CreateDirectory($exportDirectory) | Out-Null
+    $buildkitExportPath = $exportDirectory -replace '\\', '/'
+    & docker buildx build --platform linux/amd64 --build-context `
+        "steamvr=$steamVrDump" --target image `
+        --output "type=local,dest=$buildkitExportPath" --progress plain `
         --file (Join-Path $PSScriptRoot 'Dockerfile.vm') $repo
     if ($LASTEXITCODE -ne 0) { throw 'Stearlight VM image build failed.' }
 
-    # The export stage is FROM scratch and therefore has no default command.
-    # Supplying one lets Docker create the stopped container; docker cp reads
-    # its filesystem without starting it.
-    & docker create --name $containerName $buildTag /bin/true | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Stearlight VM export container could not be created.' }
-    $containerCreated = $true
-
-    Write-Host "Copying ${containerName}:/stearlight-vm.raw to temporary raw image $raw"
-    & docker cp "${containerName}:/stearlight-vm.raw" $raw
-    if ($LASTEXITCODE -ne 0) { throw 'Stearlight VM raw image could not be copied from Docker.' }
-
-    # Write the dynamic VDI directly to its final F:/G: path. A cross-volume
-    # Move-Item would first allocate the VDI's full logical size on the target
-    # drive, even when sparse blocks would fit there.
-    Write-Host "Converting $raw directly to $image with $qemuImg"
-    & $qemuImg convert -p -S 1M -f raw -O vdi $raw $image
-    if ($LASTEXITCODE -ne 0) { throw 'Raw-to-VDI conversion failed.' }
-    if (-not [IO.File]::Exists($image)) {
-        throw "VM image was not created: $image"
+    $raw = Join-Path $exportDirectory 'stearlight-vm.raw'
+    if (-not [IO.File]::Exists($raw)) {
+        throw "Stearlight VM raw image was not exported: $raw"
     }
 
-    $hash = (Get-FileHash -LiteralPath $image -Algorithm SHA256).Hash.ToLowerInvariant()
+    # Stage the dynamic VDI beside the raw export. Do not overwrite an older
+    # known-good image until conversion and hashing have both succeeded.
+    Write-Host "Converting $raw to staged image $stagedImage with $qemuImg"
+    & $qemuImg convert -p -S 1M -f raw -O vdi $raw $stagedImage
+    if ($LASTEXITCODE -ne 0) { throw 'Raw-to-VDI conversion failed.' }
+    if (-not [IO.File]::Exists($stagedImage)) {
+        throw "VM image was not created: $stagedImage"
+    }
+
+    $hash = (Get-FileHash -LiteralPath $stagedImage -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ([IO.File]::Exists($image)) {
+        # Windows PowerShell's four-argument File.Replace overload rejects a
+        # null backup path on some .NET Framework builds. An explicit backup
+        # keeps the operation atomic and preserves the previous known-good
+        # image until the replacement has succeeded.
+        [IO.File]::Replace($stagedImage, $image, $backupImage, $true)
+        [IO.File]::Delete($backupImage)
+    } else {
+        [IO.File]::Move($stagedImage, $image)
+    }
     [IO.File]::WriteAllText(
         $checksum,
         "$hash  $([IO.Path]::GetFileName($image))$([Environment]::NewLine)")
     $conversionSucceeded = $true
 } finally {
-    if ([IO.File]::Exists($raw)) {
-        [IO.File]::Delete($raw)
+    if ([IO.Directory]::Exists($exportDirectory)) {
+        [IO.Directory]::Delete($exportDirectory, $true)
     }
-    if (-not $conversionSucceeded -and [IO.File]::Exists($image)) {
-        [IO.File]::Delete($image)
+    if ([IO.File]::Exists($stagedImage)) {
+        [IO.File]::Delete($stagedImage)
     }
-    if ($containerCreated) {
-        $previousErrorAction = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try { & docker rm $containerName *> $null } finally {
-            $ErrorActionPreference = $previousErrorAction
-        }
-    }
-    $previousErrorAction = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & docker image inspect $buildTag *> $null
-        if ($LASTEXITCODE -eq 0) {
-            & docker image rm $buildTag *> $null
-        }
-    } finally {
-        $ErrorActionPreference = $previousErrorAction
+    if ($conversionSucceeded -and [IO.File]::Exists($backupImage)) {
+        [IO.File]::Delete($backupImage)
     }
 }
 Write-Host "Built $image"

@@ -24,3 +24,13 @@ buildroot
 build-win64-msvc
 docker
 .github
+
+# The VM build compiles the small VM-only OpenVR fake controller provider.
+# Keep the legacy Windows driver and large assets excluded while allowing the
+# source and manifest needed by SVRT_BUILD_FAKE_TRACKING through the context.
+!steamvr-driver/
+steamvr-driver/*
+!steamvr-driver/CMakeLists.txt
+!steamvr-driver/fake_tracking.cpp
+!steamvr-driver/svrt-fake/
+!steamvr-driver/svrt-fake/**

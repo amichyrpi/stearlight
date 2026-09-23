@@ -31,7 +31,7 @@ if [ ! -x "$launcher" ]; then
     exit 1
 fi
 
-Xvfb :99 -screen 0 1024x640x24 +extension GLX +iglx \
+Xvfb :99 -screen 0 1280x800x24 +extension GLX +iglx \
     -nolisten tcp -noreset >"$home/stearlight-xvfb.log" 2>&1 &
 xvfb_pid=$!
 steam_pid=''

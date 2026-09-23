@@ -19,6 +19,11 @@ typedef enum stearlight_steam_client_state {
     STEARLIGHT_STEAM_CLIENT_FAILED
 } stearlight_steam_client_state;
 
+typedef enum stearlight_steam_pointer_style {
+    STEARLIGHT_STEAM_POINTER_DEFAULT,
+    STEARLIGHT_STEAM_POINTER_IBEAM
+} stearlight_steam_pointer_style;
+
 typedef struct stearlight_steam_client {
     pid_t display_pid;
     pid_t steam_pid;
@@ -31,6 +36,8 @@ typedef struct stearlight_steam_client {
     int frame_announced;
     uint32_t next_connect_ms;
     uint32_t next_capture_ms;
+    int xfixes_cursor_event_base;
+    stearlight_steam_pointer_style pointer_style;
     unsigned int launch_failures;
     unsigned int x_modifiers;
     stearlight_steam_client_state state;
@@ -50,6 +57,8 @@ void stearlight_steam_client_update(stearlight_steam_client *client,
 SDL_Texture *stearlight_steam_client_frame(
     const stearlight_steam_client *client);
 const char *stearlight_steam_client_detail(
+    const stearlight_steam_client *client);
+stearlight_steam_pointer_style stearlight_steam_client_pointer_style(
     const stearlight_steam_client *client);
 void stearlight_steam_client_stop(stearlight_steam_client *client);
 void stearlight_steam_client_open_uri(

@@ -1,0 +1,230 @@
+#!/bin/sh
+set -eu
+
+# Launch Valve's SteamVR runtime without interposing a second dashboard
+# implementation.  vrstartup owns vrserver, vrcompositor and vrdashboard;
+# the latter creates the native VRDashboardBar overlay and laser cursor.
+#
+# This helper is deliberately architecture-aware.  The SteamVR dump used by
+# the x86_64 VM contains bin/linux64; an ARM image must provide Valve's native
+# ARM64 runtime separately instead of attempting to execute an incompatible
+# binary.
+
+machine=$(uname -m)
+case "$machine" in
+  x86_64|amd64) platform=linux64 ;;
+  aarch64|arm64) platform=linuxarm64 ;;
+  *)
+    printf 'STEARLIGHT NATIVE STEAMVR: unsupported architecture %s\n' "$machine" >&2
+    exit 126
+    ;;
+esac
+
+root=${STEARLIGHT_STEAMVR_ROOT:-}
+if [ -z "$root" ]; then
+  for candidate in \
+      /opt/steamvr \
+      "${HOME:-/home/stearlight}/.local/share/Steam/steamapps/common/SteamVR"; do
+    if [ -x "$candidate/bin/$platform/vrstartup" ] ||
+       [ -x "$candidate/bin/$platform/vrserver" ]; then
+      root=$candidate
+      break
+    fi
+  done
+fi
+
+if [ -z "$root" ] || [ ! -d "$root" ]; then
+  printf 'STEARLIGHT NATIVE STEAMVR: runtime not installed (expected /opt/steamvr)\n' >&2
+  exit 127
+fi
+
+bindir="$root/bin/$platform"
+envdir="$root/bin/vrenv.sh"
+if [ ! -x "$envdir" ] || [ ! -x "$bindir/vrstartup" ] ||
+   [ ! -x "$bindir/vrserver" ] || [ ! -x "$bindir/vrcompositor" ] ||
+   [ ! -x "$bindir/vrdashboard" ] || [ ! -x "$bindir/vrpathreg" ]; then
+  printf 'STEARLIGHT NATIVE STEAMVR: incomplete Valve runtime at %s\n' "$root" >&2
+  exit 127
+fi
+
+export STEAMVR_TOOLSDIR="$root"
+export STEAMVR_ROOT="$root"
+export VR_OVERRIDE="$root"
+export STEAM_BASE_FOLDER="${STEAM_BASE_FOLDER:-${HOME:-/home/stearlight}/.local/share/Steam}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
+export DISPLAY="${DISPLAY:-:0}"
+steam_home=${HOME:-/home/stearlight}
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$steam_home/.config}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$steam_home/.cache}"
+export VR_PATHREG_OVERRIDE="${VR_PATHREG_OVERRIDE:-$XDG_CONFIG_HOME/openvr/openvrpaths.vrpath}"
+# SteamVR resolves the settings filename relative to VR_CONFIG_PATH.  Do not
+# put an absolute path in VR_SETTINGS_FILE: Valve would concatenate it with
+# the config directory and silently load a nonexistent file, restoring the
+# default direct-mode=true behavior.
+export VR_CONFIG_PATH="${VR_CONFIG_PATH:-$steam_home/.steam/steam/config}"
+unset VR_SETTINGS_FILE
+
+# vrenv.sh is Valve's own loader boundary.  Keep the runtime's Qt and
+# SteamVR libraries ahead of the distro copies while retaining the host glibc
+# and PipeWire/X11 libraries supplied by the VM image.
+export LD_LIBRARY_PATH="$bindir:$bindir/qt/lib:${LD_LIBRARY_PATH:-}"
+export VRCOMPOSITOR_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+export PATH="$bindir:$PATH"
+
+mkdir -p "$STEAM_BASE_FOLDER/config" "$STEAM_BASE_FOLDER/logs" \
+  "$steam_home/.config/openvr" "$steam_home/.dbus" \
+  "$steam_home/.steam/steam/config" "$steam_home/.steam/steam/logs" \
+  "$XDG_RUNTIME_DIR" 2>/dev/null || true
+chmod 0700 "$steam_home/.dbus" "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+# vrstartup delegates path registration to Valve's vrpathreg.  A sealed
+# appliance has no Steam desktop first-run step to create this per-user file,
+# so seed it through Valve's own registry tool before starting the coordinator.
+# This keeps the runtime/config/log paths writable and lets vrserver discover
+# the shipped VRLink driver without inventing a replacement registry format.
+registry_ready=0
+if [ -s "$VR_PATHREG_OVERRIDE" ]; then
+  registry_ready=1
+fi
+if [ "$registry_ready" = 0 ]; then
+  "$envdir" "$bindir/vrpathreg" setruntime "$root" >/dev/null 2>&1 || true
+fi
+"$envdir" "$bindir/vrpathreg" setconfig "$steam_home/.steam/steam/config" \
+  >/dev/null 2>&1 || true
+"$envdir" "$bindir/vrpathreg" setlog "$steam_home/.steam/steam/logs" \
+  >/dev/null 2>&1 || true
+if [ "$registry_ready" = 0 ]; then
+  "$envdir" "$bindir/vrpathreg" adddriver "$root/drivers/vrlink" \
+    >/dev/null 2>&1 || true
+fi
+fake_tracking=${STEARLIGHT_FAKE_TRACKING:-0}
+if [ "$fake_tracking" = 1 ]; then
+  # The VM image carries svrt-fake, a public OpenVR server driver that adds
+  # stable Steam Frame controller poses and input components. Register it
+  # through Valve's own path tool; never expose it on the production Pi
+  # session. The fake HMD exposes the ordinary display component so Valve's
+  # compositor can own the mirror window without claiming a physical panel.
+  # Register the Valve resource-only Frame controller as well.  svrt-fake
+  # supplies the tracked devices; SteamVR resolves its input profile, legacy
+  # bindings, icons and render model from Valve's frame_controller resources.
+  for fake_driver in svrt-fake frame_controller; do
+    if [ -d "$root/drivers/$fake_driver" ]; then
+      "$envdir" "$bindir/vrpathreg" adddriver "$root/drivers/$fake_driver" \
+        >/dev/null 2>&1 || true
+    fi
+  done
+  # The same driver supplies the synthetic HMD and controller inputs; Valve's
+  # compositor and dashboard still own rendering and input behavior.
+  # Seed only a missing per-user file so Steam remains the owner after the
+  # first successful boot.
+  fake_settings="$steam_home/.steam/steam/config/steamvr.vrsettings"
+  # SteamVR refuses to create its X11 mirror when this geometry is absent (the
+  # compositor reports "Found bad mirror window settings"). Keep the setting
+  # in the VM's deterministic fake profile; real user profiles and the Pi
+  # path never enter this branch.
+  if [ ! -s "$fake_settings" ] ||
+     ! grep -q '"mirrorViewGeometry"' "$fake_settings" 2>/dev/null; then
+    umask 077
+    printf '%s\n' \
+      '{' \
+      '  "steamvr": {' \
+      '    "requireHmd": false,' \
+      '    "activateMultipleDrivers": true,' \
+      '    "allowDisplayLockedMode": true,' \
+      '    "allowFallbackMirrorWindowLinux": true,' \
+      '    "enableLinuxVulkanAsync": false,' \
+      '    "mirrorViewGeometry": "0 0 2880 1600",' \
+      '    "mirrorViewGeometryMaximized": false,' \
+      '    "showLegacyMirrorView": true,' \
+      '    "showMirrorView": true,' \
+      '    "mirrorView": 2' \
+      '  },' \
+      '  "direct_mode": {' \
+      '    "enable": false' \
+      '  }' \
+      '}' >"$fake_settings" 2>/dev/null || true
+  fi
+fi
+# Keep a deterministic last-resort registry for first boot.  Valve's tool is
+# still the primary writer above; this only covers an image where its helper
+# cannot create the file because Steam has not created every parent yet.  The
+# fields match OpenVR's documented path-registry shape and all referenced
+# directories were created above.
+if [ ! -s "$VR_PATHREG_OVERRIDE" ]; then
+  umask 077
+  if [ "$fake_tracking" = 1 ] && [ -d "$root/drivers/svrt-fake" ]; then
+    printf '{\n  "config" : [ "%s" ],\n  "external_drivers" : [ "%s/drivers/vrlink", "%s/drivers/svrt-fake", "%s/drivers/frame_controller" ],\n  "jsonid" : "vrpathreg",\n  "log" : [ "%s" ],\n  "runtime" : [ "%s" ]\n}\n' \
+      "$steam_home/.steam/steam/config" \
+      "$root" "$root" "$root" \
+      "$steam_home/.steam/steam/logs" \
+      "$root" >"$VR_PATHREG_OVERRIDE" 2>/dev/null || true
+  else
+    printf '{\n  "config" : [ "%s" ],\n  "external_drivers" : [ "%s/drivers/vrlink" ],\n  "jsonid" : "vrpathreg",\n  "log" : [ "%s" ],\n  "runtime" : [ "%s" ]\n}\n' \
+      "$steam_home/.steam/steam/config" \
+      "$root" \
+      "$steam_home/.steam/steam/logs" \
+      "$root" >"$VR_PATHREG_OVERRIDE" 2>/dev/null || true
+  fi
+fi
+
+steam_process_present() {
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [ -r "$cmdline" ] || continue
+    process_command=$(tr '\000' ' ' <"$cmdline" 2>/dev/null || true)
+    case "$process_command" in
+      *steam.sh*|*steamwebhelper*|*steamrt*|*/steam\ *|*/steam)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Valve normally starts vrstartup from an already-running Steam client.  The
+# appliance supervisor starts both processes, so close that race explicitly;
+# otherwise vrstartup can initialize without SteamAPI and leave vrserver in a
+# pending state even though every binary is present.
+if [ "${STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM:-1}" != 0 ]; then
+  attempt=0
+  while [ "$attempt" -lt 120 ] && ! steam_process_present; do
+    attempt=$((attempt + 1))
+    sleep 0.25
+  done
+fi
+
+component=${1:-startup}
+if [ "$#" -gt 0 ]; then shift; fi
+valve_binary=$component
+case "$component" in
+  startup) valve_binary=vrstartup ;;
+  server) valve_binary=vrserver ;;
+esac
+launch_valve_component() {
+  if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] ||
+     ! command -v dbus-launch >/dev/null 2>&1; then
+    exec "$envdir" "$bindir/$valve_binary" "$@"
+  fi
+  # vrdashboard and the VRLink web/mailboxes use the Steam session bus.  The
+  # Gamescope path already inherits one; the X11 diagnostic path does not.
+  exec dbus-launch --exit-with-session "$envdir" "$bindir/$valve_binary" "$@"
+}
+case "$component" in
+  startup)
+    # vrstartup is the Valve coordinator. It starts vrserver and then lets
+    # vrserver bring up vrcompositor/vrdashboard when the selected HMD driver
+    # is available. Running through Valve's vrenv.sh preserves that exact
+    # process and library contract without invoking the interactive pkexec
+    # setup prompt from vrsetup.sh.
+    launch_valve_component "$@"
+    ;;
+  server)
+    launch_valve_component "$@"
+    ;;
+  vrdashboard|vrcompositor|vrmonitor)
+    launch_valve_component "$@"
+    ;;
+  *)
+    printf 'usage: %s [startup|server|vrdashboard|vrcompositor|vrmonitor] [args...]\n' "$0" >&2
+    exit 2
+    ;;
+esac

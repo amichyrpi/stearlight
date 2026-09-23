@@ -1,0 +1,45 @@
+<!doctype html>
+<html style="width:100%;height:100%">
+<head>
+  <meta charset="utf-8">
+  <title>SteamVR dashboard</title>
+  <style>
+    @font-face { font-family: "Motiva Sans"; src: url("fonts/motiva-sans-regular.ttf") format("truetype"); font-weight: 400; }
+    @font-face { font-family: "Motiva Sans"; src: url("fonts/motiva-sans-bold.ttf") format("truetype"); font-weight: 700; }
+  </style>
+  <script>window.STEARLIGHT_DOCK_PREVIEW = true;</script>
+  <script src="stearlight-vrhtml-shim.js"></script>
+  <script defer src="dashboard/libraries/libraries~989880c99.js"></script>
+  <script defer src="dashboard/libraries/libraries~8012d0c89.js"></script>
+  <script defer src="dashboard/libraries/libraries~837d8d061.js"></script>
+  <script defer src="dashboard/chunk~8012d0c89.js"></script>
+  <script defer src="dashboard/chunk~bd288592d.js"></script>
+  <script defer src="dashboard/chunk~56fe39318.js"></script>
+  <script defer src="dashboard/chunk~1a88854fa.js"></script>
+  <script defer src="dashboard/chunk~336cd93ad.js"></script>
+  <script defer src="dashboard/systemui.js"></script>
+  <link href="dashboard/css/chunk~66c0d1388.css" rel="stylesheet">
+  <link href="dashboard/css/chunk~93a8598f9.css" rel="stylesheet">
+  <link href="dashboard/css/chunk~b48d3fba7.css" rel="stylesheet">
+  <link href="dashboard/css/systemui.css" rel="stylesheet">
+</head>
+<body style="width:100%;height:100%;margin:0;overflow:hidden;background:#000">
+  <div id="root" style="height:100%;width:100%"></div>
+  <script>
+    /* The shipped dashboard normally receives visibility from vrserver.  The
+       preview has no compositor, so expose the same Valve legacy control bar
+       only after the bundle has mounted. */
+    window.addEventListener("load", function () {
+      var reveal = function () {
+        if (window.DashboardStore) {
+          window.DashboardStore.m_bShowLegacyDashboardBar = true;
+          window.DashboardStore.m_eVisibilityState = 1;
+          return;
+        }
+        window.setTimeout(reveal, 50);
+      };
+      reveal();
+    });
+  </script>
+</body>
+</html>

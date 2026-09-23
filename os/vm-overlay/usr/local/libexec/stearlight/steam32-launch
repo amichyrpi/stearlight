@@ -277,7 +277,7 @@ if [ "${SVRT_STEAM_COMPOSITOR:-}" = weston ]; then
     # starts and turn into an unexplained black capture.
     # Weston 16 resolves the backend selector name through its built-in module
     # search path; an absolute plugin path is rejected as an unknown backend.
-    weston_args="--backend=x11 --renderer=pixman --xwayland --socket=$socket --width=1024 --height=640 --idle-time=0 --no-config"
+    weston_args="--backend=x11 --renderer=pixman --xwayland --socket=$socket --width=1280 --height=800 --idle-time=0 --no-config"
     # Weston and its Xwayland child are native 64-bit Alpine processes.  The
     # Steam bootstrap below is deliberately started with the 32-bit seed, but
     # leaking that DRI path into Weston makes Xwayland's GL loader open the

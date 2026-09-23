@@ -23,8 +23,9 @@ Build and run an automated screenshot test from PowerShell:
 .\os\test-vm.ps1 -BootSeconds 300
 ```
 
-Outputs are written to `out/stearlight-vm/` unless an explicit output directory
-is supplied. With VirtualBox installed the test captures a framebuffer; without
+Outputs are written to `F:\StearlightBuild\vm` (or `G:` when F: is absent),
+unless an explicit F:/G: output directory is supplied. C: output is rejected.
+With VirtualBox installed the test captures a framebuffer; without
 it, `test-vm.ps1` starts QEMU with WHPX (falling back to multi-threaded TCG),
 GTK/OpenGL presentation, and a `zoom-to-fit` window. It corrects the outer
 window height for the 2880x1600 aspect ratio (the guest remains 2880x1600 while

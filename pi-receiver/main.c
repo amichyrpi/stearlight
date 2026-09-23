@@ -158,6 +158,9 @@ static void open_steam_page(svrt_steam_client *client,
             break;
         case SVRT_UI_ACTION_DOWNLOADS: uri = "steam://open/downloads"; break;
         case SVRT_UI_ACTION_SETTINGS: uri = "steam://open/settings"; break;
+        case SVRT_UI_ACTION_POWER: uri = "steam://open/settings"; break;
+        case SVRT_UI_ACTION_ADD: uri = "steam://open/addgame"; break;
+        case SVRT_UI_ACTION_NETWORK: uri = "steam://open/settings"; break;
         case SVRT_UI_ACTION_PROFILE:
             uri = "steam://url/CommunityHome";
             break;

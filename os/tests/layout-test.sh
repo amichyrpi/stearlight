@@ -109,6 +109,49 @@ grep -q '"Build the legacy custom Steam Link receiver (off by default)" OFF' \
   "${repo}/CMakeLists.txt"
 grep -q 'SVRT_BUILD_OS_SHELL=ON' "${base}/Dockerfile"
 grep -q 'native Steam client/Steam Frame path' "${repo}/CMakeLists.txt"
+grep -q 'SVRT_UI_SHOW_NAV_CHROME=0' "${base}/CMakeLists.txt"
+grep -q 'SVRT_UI_NATIVE_DASHBOARD=1' "${base}/CMakeLists.txt"
+grep -q 'COPY --from=steamvr /bin /opt/steamvr/bin' "${base}/Dockerfile.vm"
+grep -q 'COPY --from=steamvr /drivers /opt/steamvr/drivers' "${base}/Dockerfile.vm"
+grep -q 'COPY --from=steamvr /content /opt/steamvr/content' "${base}/Dockerfile.vm"
+grep -q 'COPY --from=steamvr /tools /opt/steamvr/tools' "${base}/Dockerfile.vm"
+grep -q 'steamvr-native' "${base}/Dockerfile.vm" \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console" \
+  "${base}/overlay/usr/share/gamescope-session-plus/gamescope-session-plus"
+grep -q 'vrserver' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+grep -q 'vrdashboard' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+grep -q 'vrpathreg' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+grep -q 'valve_binary=vrstartup' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+grep -q 'valve_binary=vrserver' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+grep -q 'VR_PATHREG_OVERRIDE' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native" \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -q 'STEARLIGHT_FAKE_TRACKING' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native" \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+test -f "${repo}/steamvr-driver/fake_tracking.cpp"
+test -f "${repo}/steamvr-driver/svrt-fake/driver.vrdrivermanifest"
+test -f "${repo}/steamvr-driver/svrt-fake/resources/input/fake_controller_profile.json"
+grep -q 'SVRT_BUILD_FAKE_TRACKING' "${repo}/CMakeLists.txt" \
+  "${repo}/steamvr-driver/CMakeLists.txt" \
+  "${base}/Dockerfile.vm"
+grep -q 'driver_svrt-fake' "${repo}/steamvr-driver/CMakeLists.txt" \
+  "${base}/Dockerfile.vm"
+grep -q 'drivers/svrt-fake' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+grep -q '"alwaysActivate": true' \
+  "${repo}/steamvr-driver/svrt-fake/driver.vrdrivermanifest"
+grep -q '"hmd_presence"' \
+  "${repo}/steamvr-driver/svrt-fake/driver.vrdrivermanifest"
+grep -q 'VALVE_SKIP_RUNTIME_SAFETY' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
+grep -q 'direct_mode' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
 test -f "${repo}/steamvr-driver/svrt-vrlink/driver.vrdrivermanifest"
 grep -q '"resourceOnly": true' \
   "${repo}/steamvr-driver/svrt-vrlink/driver.vrdrivermanifest"
@@ -134,6 +177,28 @@ grep -q 'never enters the legacy custom pairing' "${repo}/README.md"
 grep -q 'XTestFakeMotionEvent' "${base}/steam_client.c"
 grep -q 'XTestFakeButtonEvent' "${base}/steam_client.c"
 grep -q 'XTestFakeKeyEvent' "${base}/steam_client.c"
+test -f "${repo}/gui/dashboard_layout.c"
+test -f "${repo}/gui/dashboard_layout.h"
+test -f "${repo}/assets/steamvr-dashboard/overlay_pointer.png"
+test -f "${repo}/assets/steamvr-dashboard/overlay_pointer_circle.png"
+test -f "${repo}/assets/steamvr-dashboard/motiva-sans-regular.ttf"
+grep -q 'SVRT_DASHBOARD_NAV_ITEMS 8' "${repo}/gui/dashboard_layout.h"
+grep -q 'SVRT_STEAMFRAME_CONTROL_BAR_WIDTH_PX 1800' \
+  "${repo}/gui/dashboard_layout.h"
+grep -q 'SVRT_STEAMFRAME_STATUS_BAR_WIDTH_PX 1860' \
+  "${repo}/gui/dashboard_layout.h"
+grep -q 'SVRT_STEAMFRAME_CONTROL_BAR_HEIGHT_PX 180' \
+  "${repo}/gui/dashboard_layout.h"
+grep -q 'SVRT_UI_PANEL_ARC_DEGREES' "${repo}/gui/ui.h" "${repo}/gui/ui.c"
+grep -q 'SVRT_STEAM_SURFACE_WIDTH' "${repo}/CMakeLists.txt"
+grep -q 'dashboard_layout.c' "${base}/CMakeLists.txt"
+grep -q 'dashboard_layout.c' "${repo}/pi-receiver/CMakeLists.txt"
+grep -q 'SVRT_UI_ACTION_FRAME' "${repo}/gui/ui.h" "${base}/shell.c"
+grep -q 'overlay_pointer' "${repo}/gui/ui.c"
+grep -q 'overlay_pointer_ibeam' "${base}/CMakeLists.txt"
+grep -q 'F:' "${base}/build-local.ps1" "${base}/build-vm.ps1"
+grep -q 'G:' "${base}/build-local.ps1" "${base}/build-vm.ps1"
+! grep -q "E:\\StearlightBuildTemp" "${base}/build-vm.ps1"
 grep -q 'SVRT_UI_INPUT_KEY_DOWN' "${repo}/gui/ui.h" "${repo}/gui/ui.c"
 grep -q 'SDL_INIT_GAMECONTROLLER' "${repo}/gui/ui.c"
 grep -q 'SDL_CONTROLLERAXISMOTION' "${repo}/gui/ui.c"
@@ -235,7 +300,7 @@ grep -q 'STEARLIGHT_REFRESH_HZ="60"' \
 grep -q 'SVRT_DISPLAY_WIDTH=2880' "${base}/CMakeLists.txt"
 grep -q 'SVRT_DISPLAY_HEIGHT=1600' "${base}/CMakeLists.txt"
 grep -q 'SVRT_DISPLAY_REFRESH_HZ=60' "${base}/CMakeLists.txt"
-grep -q 'SVRT_UI_FORCE_PANEL_STRIPS=1' "${base}/CMakeLists.txt"
+grep -q 'SVRT_UI_FORCE_PANEL_STRIPS=0' "${base}/CMakeLists.txt"
 grep -q 'SVRT_ENFORCE_DISPLAY_MODE=1' "${base}/CMakeLists.txt"
 grep -q 'set(SVRT_OS_BOOT_ASSET "boot.mkv")' "${base}/CMakeLists.txt"
 grep -q 'PATTERN "\*\.mkv"' "${base}/CMakeLists.txt"
@@ -364,6 +429,10 @@ grep -q 'initial X11 tree query' "${base}/steam_client.c"
 grep -q 'bridge heartbeat' "${base}/steam_client.c"
 grep -q 'STEARLIGHT STEAM FRAME READY' "${base}/steam_client.c"
 grep -q 'STEARLIGHT STEAM FRAME READY' "${base}/test-vm.ps1"
+grep -q 'STEARLIGHT NATIVE COMPONENTS READY' \
+  "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console" \
+  "${base}/test-vm.ps1"
+! grep -q 'Assert-NativeSteamVrLaunch' "${base}/test-vm.ps1"
 ! grep -q '/usr/lib/i386-linux-gnu/dri' "${base}/steam_client.c"
 grep -q 'stearlight_steam_client_start' "${base}/shell.c"
 ! grep -R -q 'SVRT_VM_RECEIVER_ONLY' "${base}/Dockerfile.vm" \
@@ -419,7 +488,9 @@ grep -q 'Virtual 2880 1600' \
 grep -q 'STEARLIGHT VM DISPLAY READY 2880x1600 @ 60Hz' \
   "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
 grep -q 'os/genimage-vm.cfg' "${base}/Dockerfile.vm"
-grep -q 'size = 8192M' "${base}/genimage-vm.cfg"
+grep -q 'size = 12288M' "${base}/genimage-vm.cfg"
+grep -q 'lazy_itable_init=1' "${base}/genimage-vm.cfg"
+! grep -q 'lazy_journal_init' "${base}/genimage-vm.cfg"
 grep -q 'os/vm-systemd-loader.conf' "${base}/Dockerfile.vm"
 grep -q 'os/vm-systemd-entry.conf' "${base}/Dockerfile.vm"
 grep -q 'systemd-boot' "${base}/Dockerfile.vm"

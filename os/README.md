@@ -9,7 +9,9 @@ an appliance image, not an in-place conversion of Raspberry Pi OS.
 - Native aarch64 Mesa/V3DV, Gamescope, PipeWire/WirePlumber, and Monado/OpenXR.
 - A Debian glibc runtime isolated with Bubblewrap for the Steam ARM64 beta.
 - Valve's native ARM64 Steam client launched with the standard SteamOS Gamepad UI
-  contract and rendered by the standalone Stearlight stereo shell. The OS image does not
+  contract. When a matching Valve SteamVR runtime is present, its native
+  compositor/dashboard owns the overlay; otherwise the standalone shell only
+  carries the Steam page surface. The OS image does not
   build or start the legacy custom Steam Link receiver; Valve's client owns
   discovery, pairing, authorization, transport, and its Steam Frame UI. On a
   custom Pi headset, device tracking and controller support still require the
@@ -32,6 +34,28 @@ an appliance image, not an in-place conversion of Raspberry Pi OS.
 - No password-based SSH service or bundled host credentials. The image has no
   remote login path enabled by default.
 
+The shell launches Valve's client in `-steamframe` mode and mirrors only its
+page surface. The VM image also carries the supplied x86_64 SteamVR runtime
+under `/opt/steamvr` (including Valve's `bin`, `drivers`, `resources`,
+`content`, and `tools` trees); its `steamvr-native` launcher provisions the
+Valve path registry through `vrpathreg` and enters Valve's own `vrstartup`
+coordinator, which starts `vrserver`, `vrcompositor` and `vrdashboard`. That
+is the owner of the real `VRDashboardBar`, laser cursor, controller input and
+dock behavior. The production shell is compiled without
+the old SDL rail/dock/laser approximation, so it cannot drift from Valve's
+source UI. Set `STEARLIGHT_NATIVE_STEAMVR=0` only for an explicit shell
+diagnostic. The Raspberry Pi image enables the native path automatically when
+an architecture-compatible Valve ARM64 SteamVR runtime is installed; the
+x86_64 dump cannot run on the Pi.
+
+The disposable x86_64 VM also sets `STEARLIGHT_FAKE_TRACKING=1`. The native
+launcher registers Valve's shipped `drivers/null` HMD and the small
+`svrt-fake` OpenVR server driver. That driver contributes connected left/right
+controller devices with SteamVR input profiles, poses, roles, and battery
+properties, so `vrserver` and `vrdashboard` exercise the real dashboard bar
+and laser path even though QEMU has no headset hardware. The variable defaults
+to off outside the VM and is never enabled by the production Pi session.
+
 ## Build
 
 Use a Linux host or WSL2 with Docker Desktop and BuildKit. Expect the first
@@ -39,7 +63,7 @@ build to download several gigabytes because Steam and its glibc runtime are
 baked into the image to avoid doing that work during the first headset boot.
 
 ```sh
-bash ./os/build.sh
+STEARLIGHT_OUTPUT_DIR=/mnt/f/StearlightBuild/local bash ./os/build.sh
 ```
 
 On Windows, the local wrapper invokes the WSL2 builder without importing host
@@ -49,15 +73,20 @@ credentials:
 .\os\build-local.ps1
 ```
 
+The Windows wrapper selects `F:\StearlightBuild\local` first and `G:` as a
+fallback. Use `-OutputDirectory F:\...` or `G:\...` to choose a different
+approved location; it refuses `C:` and every other drive. The result is
+`F:\StearlightBuild\local\image\stearlight-os-YYYYMMDDrp4.img.gz` (or the
+equivalent `G:` path) with a SHA-256 file.
+
 Set `STEARLIGHT_BAKE_STEAM=0` for a small developer rootfs without Steam. The
-result is `out/stearlight-os/image/stearlight-os-YYYYMMDDrp4.img.gz` with a
-SHA-256 file.
-The builder never writes to a disk. On Windows, the guarded flash helper checks
+builder never writes build artifacts to the source checkout. On Windows, the
+guarded flash helper checks
 the USB disk serial number and exact size before elevating Raspberry Pi Imager:
 
 ```powershell
 .\os\flash-windows.ps1 `
-  -ImagePath .\out\stearlight-os\image\stearlight-os-YYYYMMDDrp4.img.gz `
+  -ImagePath F:\StearlightBuild\local\image\stearlight-os-YYYYMMDDrp4.img.gz `
   -DiskNumber 4 -ExpectedSerial 'SERIAL' -ExpectedSize 15836643328
 ```
 
@@ -108,11 +137,11 @@ is an explicit diagnostic escape hatch for the old ten-foot X11 mode;
 `SVRT_STEAM_FRAME` and `SVRT_START_IN_STREAMING_MODE` belong only to the
 separately built legacy receiver.
 
-For VM bring-up and boards with a normal SDL-mapped gamepad, the shell also
-provides a mouse-like fallback: the left stick and D-pad move the blue laser,
-A selects, B sends Steam's back key, and the right stick scrolls. This fallback
-only drives the local Steam UI; it does not replace Valve's VRLink pose or
-controller transport when a real Steam Frame-compatible headset is connected.
+For an explicit diagnostic run with `STEARLIGHT_NATIVE_STEAMVR=0`, the shell
+retains a mouse-like fallback: the left stick and D-pad move the local pointer,
+A selects, B sends Steam's back key, and the right stick scrolls. It is not used
+by the native VM dashboard and never replaces Valve's VRLink pose or controller
+transport when a real Steam Frame-compatible headset is connected.
 
 ## Hide the Pi 4 EEPROM diagnostic screen
 
@@ -232,6 +261,16 @@ monitor. Add `-MeasureFps` to verify boot animation frame changes.
 .\os\build-vm.ps1
 .\os\test-vm.ps1 -BootSeconds 300
 ```
+
+The VM builder uses `F:\StearlightBuild\vm` (then `G:` when F: is absent)
+for the VDI, raw scratch image, screenshots, and serial logs. Both scripts
+reject C: paths.
+
+The VM build requires the authorized SteamVR Linux dump at
+`F:\StearlightBuildArchive\steamvr-linux\steamvr-linux`. The builder checks
+for Valve's `vrstartup`, `vrserver`, `vrdashboard`, `vrcompositor`, and the
+native `vrlink` manifest before BuildKit starts. The resulting x86_64 image
+launches that runtime directly; it does not substitute the SDL dock.
 
 The VM-only files are kept at the `os/` root (`Dockerfile.vm`,
 `vm-overlay/`, `genimage-vm.cfg`, and the systemd-boot loader entries) so there is no separate

@@ -19,7 +19,7 @@ USER root
 
 FROM --platform=$TARGETPLATFORM alpine:${ALPINE_TAG} AS shell-build
 RUN apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
-    libx11-dev libxcomposite-dev libxtst-dev ninja pkgconf \
+    libx11-dev libxcomposite-dev libxfixes-dev libxtst-dev ninja pkgconf \
     sdl2-dev sdl2_ttf-dev
 WORKDIR /src
 COPY . .
@@ -47,7 +47,7 @@ RUN printf '%s\n' \
       mesa-egl mesa-gbm mesa-gles mesa-vulkan-broadcom vulkan-loader mbedtls3 monado openxr openrc \
       pipewire pipewire-alsa pipewire-pulse raspberrypi-bootloader tzdata \
       sdl2 sdl2_ttf shadow su-exec util-linux-misc wireplumber xauth xvfb \
-      libxtst \
+      libxfixes libxtst \
       xwayland
 RUN for group in audio input render video wheel; do \
       grep -q "^${group}:" /etc/group || addgroup -S "${group}"; \

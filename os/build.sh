@@ -3,7 +3,11 @@ set -euo pipefail
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "${script_dir}/.." && pwd)
-output_dir=${STEARLIGHT_OUTPUT_DIR:-"${repo_dir}/out/stearlight-os"}
+if [[ -z ${STEARLIGHT_OUTPUT_DIR:-} ]]; then
+  echo "Set STEARLIGHT_OUTPUT_DIR to an F:/ or G:/ mounted path; C: output is disabled." >&2
+  exit 1
+fi
+output_dir=${STEARLIGHT_OUTPUT_DIR}
 image_tag=${STEARLIGHT_IMAGE_TAG:-stearlight-os-rootfs:dev}
 bake_steam=${STEARLIGHT_BAKE_STEAM:-1}
 build_date=${STEARLIGHT_BUILD_DATE:-$(date -u +%Y%m%d)}
@@ -14,12 +18,37 @@ command -v docker >/dev/null 2>&1 || {
 }
 docker buildx version >/dev/null
 
+case "${output_dir}" in
+  *..*)
+    echo "Refusing an output path containing parent traversal: ${output_dir}" >&2
+    exit 1
+    ;;
+  /mnt/f/*|/mnt/g/*) ;;
+  /mnt/*)
+    echo "Refusing a Windows-mounted output outside /mnt/f or /mnt/g: ${output_dir}" >&2
+    exit 1
+    ;;
+esac
 mkdir -p "${output_dir}"
 output_dir=$(CDPATH= cd -- "${output_dir}" && pwd)
 case "${output_dir}" in
+  /mnt/f|/mnt/g)
+    echo "Refusing to use an entire F: or G: volume as the output directory." >&2
+    exit 1
+    ;;
+  /mnt/f/*|/mnt/g/*) ;;
+  /mnt/*)
+    echo "Refusing canonical output on an unapproved Windows-mounted drive: ${output_dir}" >&2
+    exit 1
+    ;;
   /|"${repo_dir}"|"${repo_dir}/os"|"${script_dir}"|"${repo_dir}/build"|"${repo_dir}/out")
     echo "Refusing unsafe output directory: ${output_dir}" >&2
     exit 1
+    ;;
+  *)
+    # Native Linux CI/workstations do not expose Windows drive letters; keep
+    # their explicit output directories usable while the WSL /mnt path stays
+    # restricted to F: and G: above.
     ;;
 esac
 rm -rf "${output_dir}/image"

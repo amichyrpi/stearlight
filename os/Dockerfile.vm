@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1.7
 ARG ALPINE_TAG=edge
 
-FROM --platform=$TARGETPLATFORM debian:bookworm-slim AS steam-bootstrap
+# The full Bookworm image is used here because Docker Desktop's WSL/containerd
+# importer can omit the compressed layer from bookworm-slim on this host.
+# Keeping the glibc stages on the complete image makes /bin/sh and the Steam
+# bootstrap files available deterministically.
+FROM --platform=$TARGETPLATFORM debian:bookworm AS steam-bootstrap
 RUN dpkg --add-architecture i386 \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
          ca-certificates curl dbus-x11 libc-bin libc6:i386 \
          libdrm2 libdrm2:i386 libegl1 libegl1:i386 libgl1 libgl1:i386 \
          libgl1-mesa-dri libgl1-mesa-dri:i386 \
@@ -138,13 +142,51 @@ ENV HOME=/home/steam
 RUN /usr/local/bin/preextract-steam-client.sh /out/usr/bin/steam
 USER root
 
+# The native Steam Gamepad UI uses these exact glyphs for the Frame rail and
+# frame controls. Rasterize the supplied SVGs once during the image build so
+# the small SDL shell can use the same artwork without adding a browser or an
+# SVG runtime to the Pi appliance.
+FROM debian:bookworm AS steamvr-ui-assets
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends librsvg2-bin \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=steamvr /resources/webinterface/dashboard/images/icons /tmp/icons
+COPY --from=steamvr /resources/webinterface/fonts/motiva-sans-regular.ttf /out/motiva-sans-regular.ttf
+COPY assets/steamframe-native/icons /tmp/native-icons
+RUN mkdir -p /out/icons \
+    && for spec in \
+         "home:icon_home" "library:svr_library" "store:svr_store" \
+         "friends:svr_people_a" "media:svr_items" "downloads:svr_desktop" \
+         "settings:svr_settings" "eye:svr_eye" "vr:steamframe_vr" "add:icon_add" \
+         "steam:vr_steam" "controller:svr_controller"; do \
+         source="${spec%%:*}"; target="${spec##*:}"; \
+         sed 's/currentColor/#ffffff/g' \
+             "/tmp/native-icons/$source.svg" > "/tmp/$target-native.svg" \
+         && rsvg-convert -w 256 -h 256 \
+              -o "/out/icons/$target.png" "/tmp/$target-native.svg"; \
+       done \
+    && for icon in svr_power svr_volume; do \
+         sed -e 's/#000000/#ffffff/g' -e 's/#000/#ffffff/g' \
+             -e 's/black/#ffffff/g' \
+             -e 's/<svg /<svg fill="#ffffff" color="#ffffff" /' \
+             "/tmp/icons/$icon.svg" > "/tmp/$icon.svg" \
+         && rsvg-convert -w 256 -h 256 \
+              -o "/out/icons/$icon.png" "/tmp/$icon.svg"; \
+       done
+
 FROM alpine:${ALPINE_TAG} AS shell-build
-RUN apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
-    libx11-dev libxcomposite-dev libxtst-dev ninja pkgconf sdl2-dev sdl2_ttf-dev
+RUN for attempt in 1 2 3 4 5; do \
+      apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
+        libx11-dev libxcomposite-dev libxfixes-dev libxtst-dev ninja pkgconf sdl2-dev sdl2_ttf-dev \
+        && exit 0; \
+      echo "apk shell dependency download failed (attempt $attempt/5); retrying" >&2; \
+      sleep 5; \
+    done; exit 1
 WORKDIR /src
 COPY . .
 RUN cmake -S . -B /build -G Ninja \
       -DSVRT_BUILD_DRIVER=OFF -DSVRT_BUILD_RECEIVER=OFF \
+      -DSVRT_BUILD_FAKE_TRACKING=OFF \
       -DSVRT_BUILD_OS_SHELL=ON -DSVRT_BUILD_UTILITY=OFF \
       -DSVRT_BUILD_PI_LIBRARY=OFF \
       -DSVRT_BUILD_TESTS=OFF -DSVRT_BUILD_VENDORED_SDL=OFF \
@@ -153,21 +195,57 @@ RUN cmake -S . -B /build -G Ninja \
     && cmake --build /build --parallel \
     && DESTDIR=/staging cmake --install /build
 
+# SteamVR is a glibc process even though the OS shell is Alpine/musl. Build
+# the VM-only OpenVR provider against glibc so vrserver can dlopen it; a musl
+# shared object would carry libc.musl-x86_64.so.1 and be rejected by Valve's
+# runtime loader.
+FROM debian:bookworm AS fake-tracking-build
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY steamvr-driver/fake_tracking.cpp /src/fake_tracking.cpp
+COPY steamvr-driver/svrt-fake /src/svrt-fake
+RUN for attempt in 1 2 3 4 5; do \
+      rm -rf /tmp/openvr; \
+      git -c http.version=HTTP/1.1 clone --depth 1 --branch v2.15.6 \
+        https://github.com/ValveSoftware/openvr.git /tmp/openvr && exit 0; \
+      echo "OpenVR source download failed (attempt $attempt/5); retrying" >&2; \
+      sleep 5; \
+    done; exit 1
+RUN mkdir -p /out/svrt-fake/bin/linux64 \
+    && c++ -std=c++17 -fPIC -shared \
+         -I/tmp/openvr/headers /src/fake_tracking.cpp \
+         -static-libstdc++ -static-libgcc \
+         -o /out/svrt-fake/bin/linux64/driver_svrt-fake.so \
+    && cp -a /src/svrt-fake/. /out/svrt-fake/ \
+    && chmod 0755 /out/svrt-fake/bin/linux64/driver_svrt-fake.so
+
 FROM alpine:${ALPINE_TAG} AS gamescope-build
 ARG GAMESCOPE_VERSION=3.16.24
-RUN apk add --no-cache \
-      benchmark-dev build-base cmake git glm-dev glslang-dev hwdata-dev \
-      libavif-dev libcap-dev libdecor-dev libdisplay-info-dev libdrm-dev \
-      libei-dev libinput-dev libseat-dev libx11-dev libxcomposite-dev \
-      libxcursor-dev libxdamage-dev libxkbcommon-dev libxmu-dev \
-      libxrender-dev libxres-dev libxtst-dev libxxf86vm-dev luajit-dev \
-      meson ninja pipewire-dev pixman-dev pkgconf sdl2-dev spirv-headers \
-      stb vulkan-loader-dev wayland-protocols xcb-util-errors-dev \
-      xcb-util-wm-dev xwayland-dev
+RUN for attempt in 1 2 3 4 5; do \
+      apk add --no-cache \
+        benchmark-dev build-base cmake git glm-dev glslang-dev hwdata-dev \
+        libavif-dev libcap-dev libdecor-dev libdisplay-info-dev libdrm-dev \
+        libei-dev libinput-dev libseat-dev libx11-dev libxcomposite-dev \
+        libxcursor-dev libxdamage-dev libxkbcommon-dev libxmu-dev \
+        libxrender-dev libxres-dev libxtst-dev libxxf86vm-dev luajit-dev \
+        meson ninja pipewire-dev pixman-dev pkgconf sdl2-dev spirv-headers \
+        stb vulkan-loader-dev wayland-protocols xcb-util-errors-dev \
+        xcb-util-wm-dev xwayland-dev && exit 0; \
+      echo "apk dependency download failed (attempt $attempt/5); retrying" >&2; \
+      sleep 5; \
+    done; exit 1
 WORKDIR /src
-RUN git clone --depth 1 --branch "${GAMESCOPE_VERSION}" \
-      --recurse-submodules --shallow-submodules \
-      https://github.com/ValveSoftware/gamescope.git .
+RUN for attempt in 1 2 3 4 5; do \
+      rm -rf /tmp/gamescope && mkdir -p /tmp/gamescope; \
+      git -c http.version=HTTP/1.1 clone --depth 1 --branch "${GAMESCOPE_VERSION}" \
+        --recurse-submodules --shallow-submodules \
+        https://github.com/ValveSoftware/gamescope.git /tmp/gamescope \
+        && cp -a /tmp/gamescope/. /src/ && exit 0; \
+      echo "gamescope source download failed (attempt $attempt/5); retrying" >&2; \
+      sleep 5; \
+    done; exit 1
 COPY os/patches/gamescope-lavapipe.patch /tmp/gamescope-lavapipe.patch
 RUN git apply --unidiff-zero --whitespace=nowarn /tmp/gamescope-lavapipe.patch \
     && meson setup /build \
@@ -186,16 +264,20 @@ RUN git apply --unidiff-zero --whitespace=nowarn /tmp/gamescope-lavapipe.patch \
     && install -Dm0755 /build/src/gamescope /out/usr/bin/gamescope-svrt
 
 FROM alpine:${ALPINE_TAG} AS rootfs
-RUN apk add --no-cache \
-      alpine-base alsa-lib bash bubblewrap coreutils dbus dbus-glib dhcpcd e2fsprogs eudev ffmpeg \
-      ca-certificates fontconfig font-dejavu font-noto font-noto-all font-noto-cjk font-noto-emoji gcompat ibus linux-virt mesa-dri-gallium mesa-egl mesa-gbm mesa-gles \
-      mesa-vulkan-swrast mesa-vulkan-virtio vulkan-loader dbus-x11 gamescope mbedtls3 openrc sdl2 sdl2_ttf shadow \
-      monado openxr \
-      libxcb libxcomposite libxscrnsaver libxtst \
-      weston weston-backend-x11 weston-shell-desktop weston-xwayland \
-      lsof pciutils python3 su-exec tar tzdata util-linux-misc xauth xf86-input-libinput \
-      xf86-video-vmware xorg-server xrandr xwayland xwininfo xvfb \
-      xz
+RUN for attempt in 1 2 3 4 5; do \
+      apk add --no-cache \
+        alpine-base alsa-lib bash bubblewrap coreutils dbus dbus-glib dhcpcd e2fsprogs eudev ffmpeg \
+        ca-certificates fontconfig font-dejavu font-noto font-noto-all font-noto-cjk font-noto-emoji gcompat ibus linux-virt mesa-dri-gallium mesa-egl mesa-gbm mesa-gles \
+        mesa-vulkan-swrast mesa-vulkan-virtio vulkan-loader dbus-x11 gamescope mbedtls3 openrc sdl2 sdl2_ttf shadow \
+        monado openxr pipewire \
+        libxcb libxcomposite libxfixes libxscrnsaver libxtst \
+        weston weston-backend-x11 weston-shell-desktop weston-xwayland \
+        lsof pciutils python3 su-exec tar tzdata util-linux-misc xauth xf86-input-libinput \
+        xf86-video-vmware xorg-server xrandr xwayland xwininfo xvfb \
+        xz && exit 0; \
+      echo "apk rootfs dependency download failed (attempt $attempt/5); retrying" >&2; \
+      sleep 5; \
+    done; exit 1
 RUN if [ -x /usr/bin/xwininfo ] && [ ! -e /usr/bin/xwininfo.real ]; then \
       mv /usr/bin/xwininfo /usr/bin/xwininfo.real; \
     fi
@@ -213,6 +295,27 @@ COPY --from=gamescope-build /out/ /
 COPY --from=steam-bootstrap /out/ /
 COPY --from=steam-bootstrap --chown=1000:1000 \
      /home/steam/.local/share/Steam /home/stearlight/.local/share/Steam
+# The VM is x86_64, so it can run the authorized Linux SteamVR payload
+# directly. Keep Valve's binaries, web helper, dashboard resources and all
+# shipped drivers together; vrstartup then owns vrserver/vrcompositor/
+# vrdashboard and creates the real VRDashboardBar overlay.
+COPY --from=steamvr /bin /opt/steamvr/bin
+COPY --from=steamvr /drivers /opt/steamvr/drivers
+COPY --from=steamvr /resources /opt/steamvr/resources
+COPY --from=steamvr /content /opt/steamvr/content
+COPY --from=steamvr /tools /opt/steamvr/tools
+COPY --from=steamvr /steamxr_linux64.json /opt/steamvr/steamxr_linux64.json
+COPY --from=fake-tracking-build \
+     /out/svrt-fake \
+     /opt/steamvr/drivers/svrt-fake
+RUN chmod -R a+rX /opt/steamvr \
+    && find /opt/steamvr/bin -type f -exec chmod a+rx {} +
+COPY --from=steamvr-ui-assets /out/ /usr/share/svrt/assets/steamvr-native/
+# Keep Valve's shipped SteamVR Gamepad UI bundle in the image as the native
+# dashboard source of truth. It is consumed by vrdashboard; the SDL shell is
+# compiled without navigation chrome in the production VM image.
+COPY --from=shell-build /staging/usr/share/svrt/assets/steamframe-native/ \
+     /usr/share/svrt/assets/steamframe-native/
 COPY os/steam-firstboot /usr/local/libexec/stearlight/steam-firstboot
 COPY os/patch-steam-runtime.sh /usr/local/libexec/stearlight/patch-steam-runtime
 COPY os/vm-overlay/ /
@@ -226,6 +329,7 @@ COPY os/overlay/etc/init.d/stearlight-xr /etc/init.d/stearlight-xr
 COPY os/overlay/usr/local/libexec/stearlight/xr-service /usr/local/libexec/stearlight/xr-service
 COPY os/overlay/usr/local/libexec/stearlight/xr-run /usr/local/libexec/stearlight/xr-run
 COPY os/overlay/usr/local/libexec/stearlight/launch-xr-game /usr/local/libexec/stearlight/launch-xr-game
+COPY os/overlay/usr/local/libexec/stearlight/steamvr-native /usr/local/libexec/stearlight/steamvr-native
 RUN cp /etc/fonts/stearlight-fonts.conf /etc/fonts/fonts.conf \
     && cp /etc/fonts/stearlight-fonts.conf /usr/share/fontconfig/fonts.conf \
     && rm -f /etc/fonts/conf.d/48-guessfamily.conf \
@@ -259,6 +363,7 @@ RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
                    /usr/local/libexec/stearlight/patch-steamui-network \
                    /usr/local/libexec/stearlight/patch-steam-runtime \
                    /usr/local/libexec/stearlight/steam-runtime-watch \
+                   /usr/local/libexec/stearlight/steamvr-native \
                    /etc/init.d/stearlight-xr \
                    /usr/local/libexec/stearlight/xr-service \
                    /usr/local/libexec/stearlight/xr-run \
@@ -293,7 +398,11 @@ RUN chown -R stearlight:stearlight /home/stearlight /var/lib/stearlight \
     && rc-update add stearlight-vm-session default
 
 FROM alpine:${ALPINE_TAG} AS image-build
-RUN apk add --no-cache dosfstools e2fsprogs genimage mtools systemd-boot
+RUN for attempt in 1 2 3 4 5; do \
+      apk add --no-cache dosfstools e2fsprogs genimage mtools systemd-boot && exit 0; \
+      echo "apk image dependency download failed (attempt $attempt/5); retrying" >&2; \
+      sleep 5; \
+    done; exit 1
 WORKDIR /work
 COPY --from=rootfs / /work/rootfs/
 COPY os/genimage-vm.cfg /work/genimage.cfg
@@ -315,5 +424,19 @@ RUN mkdir -p /work/input/efi/EFI/BOOT /work/input/efi/loader/entries \
          --tmppath /work/tmp \
     && rm -f /work/output/efi.vfat /work/output/root.ext4
 
+# Keep the BuildKit export small enough for Docker Desktop's client session.
+# The raw disk is intentionally sparse, but a local exporter still walks every
+# logical byte.  Compressing it inside the builder preserves the cacheable
+# image-build stage and avoids the five-minute export-session timeout.
+FROM alpine:${ALPINE_TAG} AS image-compress
+RUN for attempt in 1 2 3 4 5; do \
+      apk add --no-cache zstd && exit 0; \
+      echo "apk image compression dependency download failed (attempt $attempt/5); retrying" >&2; \
+      sleep 5; \
+    done; exit 1
+COPY --from=image-build /work/output/stearlight-vm.raw /work/output/stearlight-vm.raw
+RUN zstd -T0 -1 --rm /work/output/stearlight-vm.raw \
+      -o /work/output/stearlight-vm.raw.zst
+
 FROM scratch AS image
-COPY --from=image-build /work/output/ /
+COPY --from=image-compress /work/output/ /

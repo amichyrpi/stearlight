@@ -44,6 +44,26 @@ export STEARLIGHT_STEAM_BETA=steamdeck_publicbeta
 # explicit legacy ten-foot diagnostic; pairing and streaming are still owned by
 # Steam's own steamlink:// and streaming_client path.
 export STEARLIGHT_STEAM_FRAME=${STEARLIGHT_STEAM_FRAME:-1}
+# If a Valve ARM64 SteamVR runtime is installed on the target, let its
+# vrstartup coordinator own the compositor/dashboard. The stock image leaves
+# this disabled because the authorized dump supplied for the x86 VM contains
+# only bin/linux64; it must never be emulated with the SDL dock.
+if [ -z "${STEARLIGHT_NATIVE_STEAMVR:-}" ]; then
+  if [ -x "${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}/bin/linuxarm64/vrserver" ]; then
+    export STEARLIGHT_NATIVE_STEAMVR=1
+  else
+    export STEARLIGHT_NATIVE_STEAMVR=0
+  fi
+fi
+# A native SteamVR dashboard needs a compositor-owned display. If a matching
+# Valve runtime is present, use the Gamescope session so gamescope publishes
+# that display before the Steam client and vrdashboard start. Set
+# STEARLIGHT_NATIVE_STEAMVR_ALLOW_SHELL=1 only for a shell/X11 diagnostic.
+if [ "$STEARLIGHT_NATIVE_STEAMVR" = 1 ] &&
+   [ "$STEARLIGHT_SESSION_MODE" = shell ] &&
+   [ "${STEARLIGHT_NATIVE_STEAMVR_ALLOW_SHELL:-0}" != 1 ]; then
+  export STEARLIGHT_SESSION_MODE=gamescope
+fi
 # Standalone XR is deliberately opt-in. When enabled, pass the same OpenXR
 # runtime contract to games launched by Steam; with the default disabled value
 # these variables stay unset so Valve's Steam Frame/VRLink path is untouched.
@@ -205,6 +225,23 @@ if [ "$STEARLIGHT_SESSION_MODE" = gamescope ] &&
       2>>/var/log/stearlight-ui.log'
 fi
 
-exec openvt -c 1 -f -s -w -- su-exec stearlight sh -c \
+set +e
+openvt -c 1 -f -s -w -- su-exec stearlight sh -c \
   'exec dbus-launch --exit-with-session /usr/bin/stearlight-shell \
     2>>/var/log/stearlight-ui.log'
+shell_status=$?
+set -e
+
+if [ -e /tmp/steamos-suspend-sentinel ]; then
+  rm -f /tmp/steamos-suspend-sentinel
+  if [ -w /sys/power/state ]; then
+    printf '%s\n' mem >/sys/power/state || true
+  fi
+elif [ -e "${REBOOT_SENTINEL:-/tmp/steamos-reboot-sentinel}" ]; then
+  rm -f "${REBOOT_SENTINEL:-/tmp/steamos-reboot-sentinel}"
+  reboot || true
+elif [ -e "${SHUTDOWN_SENTINEL:-/tmp/steamos-shutdown-sentinel}" ]; then
+  rm -f "${SHUTDOWN_SENTINEL:-/tmp/steamos-shutdown-sentinel}"
+  poweroff || true
+fi
+exit "$shell_status"

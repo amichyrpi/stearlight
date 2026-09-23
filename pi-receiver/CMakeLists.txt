@@ -16,7 +16,8 @@ add_executable(svrt-receiver
   steam_link_pairing.c steam_link_pairing.h)
 target_sources(svrt-receiver PRIVATE
   ../gui/pairing.c ../gui/pairing.h
-  ../gui/ui.c ../gui/ui.h)
+  ../gui/ui.c ../gui/ui.h
+  ../gui/dashboard_layout.c ../gui/dashboard_layout.h)
 target_include_directories(svrt-receiver PRIVATE ../gui .)
 target_compile_definitions(svrt-receiver PRIVATE
   SVRT_GUI_FONT_PATH="${CMAKE_INSTALL_FULL_DATADIR}/svrt/assets/D-DINExp-Bold.otf"
@@ -59,7 +60,7 @@ if(SVRT_BUILD_TESTS)
   add_test(NAME svrt-gui-loadtest COMMAND svrt-gui-loadtest)
 
   add_executable(svrt-ui-transition-test
-    ../gui/tests/transition_test.c ../gui/ui.c)
+    ../gui/tests/transition_test.c ../gui/ui.c ../gui/dashboard_layout.c)
   target_include_directories(svrt-ui-transition-test PRIVATE
     ../gui ${SVRT_SDL_INCLUDE_DIRS} ${SVRT_SDL_TTF_INCLUDE_DIRS})
   target_compile_definitions(svrt-ui-transition-test PRIVATE

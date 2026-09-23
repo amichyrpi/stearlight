@@ -85,6 +85,10 @@ mkfifo -- "$socket" "$stats"
 export GAMESCOPE_STATS="$stats"
 
 cleanup() {
+    if [[ -n "${native_steamvr_pid:-}" ]]; then
+        kill "$native_steamvr_pid" 2>/dev/null || true
+        wait "$native_steamvr_pid" 2>/dev/null || true
+    fi
     if [[ -n "${gamescope_pid:-}" ]]; then
         kill "$gamescope_pid" 2>/dev/null || true
         wait "$gamescope_pid" 2>/dev/null || true
@@ -92,6 +96,8 @@ cleanup() {
     rm -rf -- "$tmpdir"
 }
 trap cleanup EXIT INT TERM
+
+native_steamvr_pid=''
 
 gamescope_args=(
     --backend "$BACKEND"
@@ -180,9 +186,22 @@ fi
 
 # CLIENTCMD is intentionally a session variable, matching Armada's session
 # contract. It can be replaced by /etc or ~/.config without rebuilding the
-# image, while the default always starts Valve's real Gamepad UI.
+# image, while the default always starts Valve's real Gamepad UI. Start the
+# optional Valve SteamVR coordinator only after Gamescope has published the
+# display and Steam itself is launching; vrstartup then owns vrserver,
+# vrcompositor and vrdashboard rather than a second SDL dashboard.
 printf '%s\n' 'STEARLIGHT STEAM SESSION STARTING' >&2
-eval "$CLIENTCMD"
+client_pid=''
+eval "$CLIENTCMD" &
+client_pid=$!
+if [[ "${STEARLIGHT_NATIVE_STEAMVR:-0}" != 0 &&
+      -x /usr/local/libexec/stearlight/steamvr-native ]]; then
+    printf 'STEARLIGHT NATIVE STEAMVR STARTING root=%s display=%s\n' \
+        "${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}" "$DISPLAY" >&2
+    /usr/local/libexec/stearlight/steamvr-native startup >&2 &
+    native_steamvr_pid=$!
+fi
+wait "$client_pid"
 
 post_client_shutdown
 

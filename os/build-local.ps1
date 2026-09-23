@@ -1,9 +1,33 @@
 [CmdletBinding()]
 param(
-    [string]$WslDistribution
+    [string]$WslDistribution,
+    [string]$OutputDirectory
 )
 
 $ErrorActionPreference = 'Stop'
+$repoDirectory = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+if (-not $OutputDirectory) {
+    foreach ($driveName in @('F', 'G')) {
+        $drive = Get-PSDrive -Name $driveName -PSProvider FileSystem `
+            -ErrorAction SilentlyContinue
+        if ($drive) {
+            $OutputDirectory = Join-Path "$($drive.Name):\" 'StearlightBuild\local'
+            break
+        }
+    }
+}
+if (-not $OutputDirectory) {
+    throw 'No F: or G: build drive is available; refusing to write build output on C:.'
+}
+$resolvedOutput = [IO.Path]::GetFullPath($OutputDirectory)
+$outputDriveRoot = [IO.Path]::GetPathRoot($resolvedOutput)
+if ($outputDriveRoot -notin @('F:\', 'G:\')) {
+    throw "Output directory must be on F: or G:, not '$resolvedOutput'."
+}
+if ($resolvedOutput.TrimEnd('\') -eq $outputDriveRoot.TrimEnd('\')) {
+    throw 'Refusing to use an entire F: or G: volume as the output directory.'
+}
 
 $linuxScript = if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
     # Passing a native Windows path through wsl.exe can cause its backslashes
@@ -28,7 +52,14 @@ if ($WslDistribution) {
 $wslHasBash = $LASTEXITCODE -eq 0
 
 if ($wslHasBash) {
-    & wsl.exe @wslPrefix -- bash $linuxScript
+    $linuxOutput = & wsl.exe @wslPrefix -- wslpath -a -u `
+        ($resolvedOutput -replace '\\', '/')
+    if ($LASTEXITCODE -ne 0 -or -not $linuxOutput) {
+        throw "WSL could not translate the output path '$resolvedOutput'."
+    }
+    $linuxOutput = $linuxOutput.Trim()
+    & wsl.exe @wslPrefix -- env "STEARLIGHT_OUTPUT_DIR=$linuxOutput" `
+        bash $linuxScript
     if ($LASTEXITCODE -ne 0) {
         throw "Stearlight OS build failed with exit code $LASTEXITCODE."
     }
@@ -43,14 +74,12 @@ if (-not $docker) { throw 'Docker Desktop with buildx is required.' }
 & $docker.Source buildx version | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Docker buildx is not available.' }
 
-$repoDirectory = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$outputRoot = Join-Path $repoDirectory 'out\stearlight-os'
-$imageDirectory = Join-Path $outputRoot 'image'
-$safePrefix = [IO.Path]::GetFullPath($outputRoot) + [IO.Path]::DirectorySeparatorChar
+$imageDirectory = Join-Path $resolvedOutput 'image'
+$safePrefix = $resolvedOutput.TrimEnd('\') + [IO.Path]::DirectorySeparatorChar
 $resolvedImageDirectory = [IO.Path]::GetFullPath($imageDirectory)
 if (-not $resolvedImageDirectory.StartsWith(
         $safePrefix, [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'Refusing to replace an output directory outside out/stearlight-os.'
+    throw 'Refusing to replace an image directory outside the F:/G: output directory.'
 }
 if ([IO.Directory]::Exists($resolvedImageDirectory)) {
     [IO.Directory]::Delete($resolvedImageDirectory, $true)

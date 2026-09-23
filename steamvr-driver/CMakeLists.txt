@@ -1,3 +1,35 @@
+if(SVRT_BUILD_FAKE_TRACKING)
+  if(NOT UNIX)
+    message(FATAL_ERROR "SVRT_BUILD_FAKE_TRACKING is supported on Unix VM builds only")
+  endif()
+
+  # The VM fake driver uses the public Valve OpenVR server-driver ABI. Keep
+  # the SDK out of the runtime image: FetchContent supplies only the header
+  # while CMake builds a small self-contained shared object.
+  include(FetchContent)
+  FetchContent_Declare(openvr_fake_sdk
+    GIT_REPOSITORY https://github.com/ValveSoftware/openvr.git
+    GIT_TAG v2.15.6
+    GIT_SHALLOW TRUE)
+  FetchContent_GetProperties(openvr_fake_sdk)
+  if(NOT openvr_fake_sdk_POPULATED)
+    FetchContent_Populate(openvr_fake_sdk)
+  endif()
+
+  add_library(driver_svrt_fake SHARED fake_tracking.cpp)
+  target_compile_features(driver_svrt_fake PRIVATE cxx_std_17)
+  target_include_directories(driver_svrt_fake PRIVATE
+    "${openvr_fake_sdk_SOURCE_DIR}/headers")
+  set_target_properties(driver_svrt_fake PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "driver_svrt-fake"
+    LIBRARY_OUTPUT_DIRECTORY "$<1:${CMAKE_BINARY_DIR}/svrt-fake/bin/linux64>")
+  install(TARGETS driver_svrt_fake
+    LIBRARY DESTINATION "lib/stearlight/steamvr/drivers/svrt-fake/bin/linux64")
+  install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/svrt-fake/"
+    DESTINATION "lib/stearlight/steamvr/drivers/svrt-fake")
+endif()
+
 if(NOT WIN32)
   return()
 endif()
