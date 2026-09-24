@@ -29,22 +29,9 @@ set(SVRT_STEAM_SURFACE_WIDTH "1280" CACHE STRING
 set(SVRT_STEAM_SURFACE_HEIGHT "800" CACHE STRING
   "Height of the private Steam/Gamepad UI capture surface")
 set(SVRT_UI_PANEL_ARC_DEGREES "50.0" CACHE STRING
-  "Steam Frame curved-panel arc in degrees")
+  "Legacy SDL projection arc for the captured Steam surface in degrees")
 set(SVRT_UI_PANEL_HEIGHT_METERS "2.73" CACHE STRING
-  "Steam Frame curved-panel height in scene meters")
-set(SVRT_UI_DASHBOARD_RAIL_WIDTH_RATIO "0.047" CACHE STRING
-  "Dashboard rail width as a fraction of one eye")
-set(SVRT_UI_DASHBOARD_RAIL_EXPANDED_WIDTH_RATIO "0.185" CACHE STRING
-  "Expanded dashboard rail width as a fraction of one eye")
-set(SVRT_UI_DASHBOARD_RAIL_HEIGHT_RATIO "0.43" CACHE STRING
-  "Dashboard rail height as a fraction of the display")
-set(SVRT_UI_DASHBOARD_DOCK_Y_RATIO "0.807" CACHE STRING
-  "Dashboard bottom dock top as a fraction of the display")
-set(SVRT_UI_DASHBOARD_DOCK_WIDTH_RATIO "0.40" CACHE STRING
-  "Dashboard status dock width as a fraction of one eye")
-set(SVRT_UI_NATIVE_DASHBOARD_SOURCE "steamframe-native/webinterface/dashboard"
-  CACHE STRING
-  "Valve SteamVR dashboard web bundle copied into the OS image")
+  "Legacy SDL projection height for the captured Steam surface in meters")
 set(SVRT_VENDORED_SDL_DEFAULT OFF)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
    CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|armv[67].*)$")

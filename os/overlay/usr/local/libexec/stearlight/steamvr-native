@@ -77,26 +77,64 @@ mkdir -p "$STEAM_BASE_FOLDER/config" "$STEAM_BASE_FOLDER/logs" \
   "$XDG_RUNTIME_DIR" 2>/dev/null || true
 chmod 0700 "$steam_home/.dbus" "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
-# vrstartup delegates path registration to Valve's vrpathreg.  A sealed
-# appliance has no Steam desktop first-run step to create this per-user file,
-# so seed it through Valve's own registry tool before starting the coordinator.
-# This keeps the runtime/config/log paths writable and lets vrserver discover
-# the shipped VRLink driver without inventing a replacement registry format.
-registry_ready=0
-if [ -s "$VR_PATHREG_OVERRIDE" ]; then
-  registry_ready=1
+vrpathreg() {
+  "$envdir" "$bindir/vrpathreg" "$@"
+}
+
+register_driver() {
+  driver_path=$1
+  driver_name=$2
+  if [ ! -d "$driver_path" ]; then
+    printf 'STEARLIGHT NATIVE STEAMVR: required driver directory missing: %s\n' \
+      "$driver_path" >&2
+    return 1
+  fi
+  if registered_path=$(vrpathreg finddriver "$driver_name" 2>/dev/null); then
+    if [ "$registered_path" = "$driver_path" ]; then
+      return 0
+    fi
+    printf 'STEARLIGHT NATIVE STEAMVR: driver %s resolves to %s, expected %s\n' \
+      "$driver_name" "$registered_path" "$driver_path" >&2
+    return 1
+  else
+    find_status=$?
+    if [ "$find_status" -ne 1 ]; then
+      printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg found ambiguous driver %s\n' \
+        "$driver_name" >&2
+      return 1
+    fi
+  fi
+  if ! vrpathreg adddriver "$driver_path" >/dev/null 2>&1; then
+    printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg could not add driver: %s\n' \
+      "$driver_path" >&2
+    return 1
+  fi
+  if registered_path=$(vrpathreg finddriver "$driver_name" 2>/dev/null) &&
+     [ "$registered_path" = "$driver_path" ]; then
+    return 0
+  fi
+  printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg did not resolve driver %s to %s\n' \
+    "$driver_name" "$driver_path" >&2
+  return 1
+}
+
+# Reconcile the path registry on every start. A valid file may still point at
+# another runtime or omit a required driver; preserving it based only on file
+# existence leaves vrstartup free to bind the wrong runtime.
+if ! vrpathreg setruntime "$root" >/dev/null 2>&1; then
+  printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg could not set runtime %s\n' \
+    "$root" >&2
+  exit 1
 fi
-if [ "$registry_ready" = 0 ]; then
-  "$envdir" "$bindir/vrpathreg" setruntime "$root" >/dev/null 2>&1 || true
+if ! vrpathreg setconfig "$steam_home/.steam/steam/config" >/dev/null 2>&1; then
+  printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg could not set config path\n' >&2
+  exit 1
 fi
-"$envdir" "$bindir/vrpathreg" setconfig "$steam_home/.steam/steam/config" \
-  >/dev/null 2>&1 || true
-"$envdir" "$bindir/vrpathreg" setlog "$steam_home/.steam/steam/logs" \
-  >/dev/null 2>&1 || true
-if [ "$registry_ready" = 0 ]; then
-  "$envdir" "$bindir/vrpathreg" adddriver "$root/drivers/vrlink" \
-    >/dev/null 2>&1 || true
+if ! vrpathreg setlog "$steam_home/.steam/steam/logs" >/dev/null 2>&1; then
+  printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg could not set log path\n' >&2
+  exit 1
 fi
+register_driver "$root/drivers/vrlink" vrlink || exit 1
 fake_tracking=${STEARLIGHT_FAKE_TRACKING:-0}
 if [ "$fake_tracking" = 1 ]; then
   # The VM image carries svrt-fake, a public OpenVR server driver that adds
@@ -107,12 +145,8 @@ if [ "$fake_tracking" = 1 ]; then
   # Register the Valve resource-only Frame controller as well.  svrt-fake
   # supplies the tracked devices; SteamVR resolves its input profile, legacy
   # bindings, icons and render model from Valve's frame_controller resources.
-  for fake_driver in svrt-fake frame_controller; do
-    if [ -d "$root/drivers/$fake_driver" ]; then
-      "$envdir" "$bindir/vrpathreg" adddriver "$root/drivers/$fake_driver" \
-        >/dev/null 2>&1 || true
-    fi
-  done
+  register_driver "$root/drivers/svrt-fake" svrt-fake || exit 1
+  register_driver "$root/drivers/frame_controller" frame_controller || exit 1
   # The same driver supplies the synthetic HMD and controller inputs; Valve's
   # compositor and dashboard still own rendering and input behavior.
   # Seed only a missing per-user file so Steam remains the owner after the
@@ -145,36 +179,25 @@ if [ "$fake_tracking" = 1 ]; then
       '}' >"$fake_settings" 2>/dev/null || true
   fi
 fi
-# Keep a deterministic last-resort registry for first boot.  Valve's tool is
-# still the primary writer above; this only covers an image where its helper
-# cannot create the file because Steam has not created every parent yet.  The
-# fields match OpenVR's documented path-registry shape and all referenced
-# directories were created above.
-if [ ! -s "$VR_PATHREG_OVERRIDE" ]; then
-  umask 077
-  if [ "$fake_tracking" = 1 ] && [ -d "$root/drivers/svrt-fake" ]; then
-    printf '{\n  "config" : [ "%s" ],\n  "external_drivers" : [ "%s/drivers/vrlink", "%s/drivers/svrt-fake", "%s/drivers/frame_controller" ],\n  "jsonid" : "vrpathreg",\n  "log" : [ "%s" ],\n  "runtime" : [ "%s" ]\n}\n' \
-      "$steam_home/.steam/steam/config" \
-      "$root" "$root" "$root" \
-      "$steam_home/.steam/steam/logs" \
-      "$root" >"$VR_PATHREG_OVERRIDE" 2>/dev/null || true
-  else
-    printf '{\n  "config" : [ "%s" ],\n  "external_drivers" : [ "%s/drivers/vrlink" ],\n  "jsonid" : "vrpathreg",\n  "log" : [ "%s" ],\n  "runtime" : [ "%s" ]\n}\n' \
-      "$steam_home/.steam/steam/config" \
-      "$root" \
-      "$steam_home/.steam/steam/logs" \
-      "$root" >"$VR_PATHREG_OVERRIDE" 2>/dev/null || true
-  fi
-fi
-
-steam_process_present() {
+steam_client_present() {
   for cmdline in /proc/[0-9]*/cmdline; do
     [ -r "$cmdline" ] || continue
     process_command=$(tr '\000' ' ' <"$cmdline" 2>/dev/null || true)
     case "$process_command" in
-      *steam.sh*|*steamwebhelper*|*steamrt*|*/steam\ *|*/steam)
+      *steam.sh*|*steamrt*|*/steam\ *|*/steam)
         return 0
         ;;
+    esac
+  done
+  return 1
+}
+
+steam_webhelper_present() {
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [ -r "$cmdline" ] || continue
+    process_command=$(tr '\000' ' ' <"$cmdline" 2>/dev/null || true)
+    case "$process_command" in
+      *steamwebhelper*) return 0 ;;
     esac
   done
   return 1
@@ -186,10 +209,25 @@ steam_process_present() {
 # pending state even though every binary is present.
 if [ "${STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM:-1}" != 0 ]; then
   attempt=0
-  while [ "$attempt" -lt 120 ] && ! steam_process_present; do
+  wait_seconds=${STEARLIGHT_NATIVE_STEAM_WAIT_SECONDS:-150}
+  case "$wait_seconds" in
+    ''|*[!0-9]*)
+      printf 'STEARLIGHT NATIVE STEAMVR: invalid Steam wait timeout: %s\n' \
+        "$wait_seconds" >&2
+      exit 2
+      ;;
+  esac
+  wait_attempts=$((wait_seconds * 4))
+  while [ "$attempt" -lt "$wait_attempts" ] &&
+        { ! steam_client_present || ! steam_webhelper_present; }; do
     attempt=$((attempt + 1))
     sleep 0.25
   done
+  if ! steam_client_present || ! steam_webhelper_present; then
+    printf 'STEARLIGHT NATIVE STEAMVR: Steam client/WebHelper did not become ready within %s seconds; not starting vrstartup\n' \
+      "$wait_seconds" >&2
+    exit 1
+  fi
 fi
 
 component=${1:-startup}

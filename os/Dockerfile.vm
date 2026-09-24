@@ -142,38 +142,6 @@ ENV HOME=/home/steam
 RUN /usr/local/bin/preextract-steam-client.sh /out/usr/bin/steam
 USER root
 
-# The native Steam Gamepad UI uses these exact glyphs for the Frame rail and
-# frame controls. Rasterize the supplied SVGs once during the image build so
-# the small SDL shell can use the same artwork without adding a browser or an
-# SVG runtime to the Pi appliance.
-FROM debian:bookworm AS steamvr-ui-assets
-RUN apt-get -o Acquire::Retries=5 update \
-    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends librsvg2-bin \
-    && rm -rf /var/lib/apt/lists/*
-COPY --from=steamvr /resources/webinterface/dashboard/images/icons /tmp/icons
-COPY --from=steamvr /resources/webinterface/fonts/motiva-sans-regular.ttf /out/motiva-sans-regular.ttf
-COPY assets/steamframe-native/icons /tmp/native-icons
-RUN mkdir -p /out/icons \
-    && for spec in \
-         "home:icon_home" "library:svr_library" "store:svr_store" \
-         "friends:svr_people_a" "media:svr_items" "downloads:svr_desktop" \
-         "settings:svr_settings" "eye:svr_eye" "vr:steamframe_vr" "add:icon_add" \
-         "steam:vr_steam" "controller:svr_controller"; do \
-         source="${spec%%:*}"; target="${spec##*:}"; \
-         sed 's/currentColor/#ffffff/g' \
-             "/tmp/native-icons/$source.svg" > "/tmp/$target-native.svg" \
-         && rsvg-convert -w 256 -h 256 \
-              -o "/out/icons/$target.png" "/tmp/$target-native.svg"; \
-       done \
-    && for icon in svr_power svr_volume; do \
-         sed -e 's/#000000/#ffffff/g' -e 's/#000/#ffffff/g' \
-             -e 's/black/#ffffff/g' \
-             -e 's/<svg /<svg fill="#ffffff" color="#ffffff" /' \
-             "/tmp/icons/$icon.svg" > "/tmp/$icon.svg" \
-         && rsvg-convert -w 256 -h 256 \
-              -o "/out/icons/$icon.png" "/tmp/$icon.svg"; \
-       done
-
 FROM alpine:${ALPINE_TAG} AS shell-build
 RUN for attempt in 1 2 3 4 5; do \
       apk add --no-cache alsa-lib-dev build-base cmake ffmpeg-dev git \
@@ -310,12 +278,9 @@ COPY --from=fake-tracking-build \
      /opt/steamvr/drivers/svrt-fake
 RUN chmod -R a+rX /opt/steamvr \
     && find /opt/steamvr/bin -type f -exec chmod a+rx {} +
-COPY --from=steamvr-ui-assets /out/ /usr/share/svrt/assets/steamvr-native/
-# Keep Valve's shipped SteamVR Gamepad UI bundle in the image as the native
-# dashboard source of truth. It is consumed by vrdashboard; the SDL shell is
-# compiled without navigation chrome in the production VM image.
-COPY --from=shell-build /staging/usr/share/svrt/assets/steamframe-native/ \
-     /usr/share/svrt/assets/steamframe-native/
+# The complete Valve dashboard bundle and its laser resources are already
+# shipped under /opt/steamvr/resources by the SteamVR stage above. Do not copy
+# the legacy SDL dock preview or rasterized dashboard-icon duplicate here.
 COPY os/steam-firstboot /usr/local/libexec/stearlight/steam-firstboot
 COPY os/patch-steam-runtime.sh /usr/local/libexec/stearlight/patch-steam-runtime
 COPY os/vm-overlay/ /

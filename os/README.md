@@ -39,7 +39,10 @@ page surface. The VM image also carries the supplied x86_64 SteamVR runtime
 under `/opt/steamvr` (including Valve's `bin`, `drivers`, `resources`,
 `content`, and `tools` trees); its `steamvr-native` launcher provisions the
 Valve path registry through `vrpathreg` and enters Valve's own `vrstartup`
-coordinator, which starts `vrserver`, `vrcompositor` and `vrdashboard`. That
+coordinator only after both Steam and Steam WebHelper are available; by default
+it waits up to 150 seconds (`STEARLIGHT_NATIVE_STEAM_WAIT_SECONDS`) rather than
+starting into a SteamAPI connection race. The coordinator starts `vrserver`,
+`vrcompositor` and `vrdashboard`. That
 is the owner of the real `VRDashboardBar`, laser cursor, controller input and
 dock behavior. The production shell is compiled without
 the old SDL rail/dock/laser approximation, so it cannot drift from Valve's
@@ -47,6 +50,10 @@ source UI. Set `STEARLIGHT_NATIVE_STEAMVR=0` only for an explicit shell
 diagnostic. The Raspberry Pi image enables the native path automatically when
 an architecture-compatible Valve ARM64 SteamVR runtime is installed; the
 x86_64 dump cannot run on the Pi.
+
+Reverse-engineering notes for the bundled x86_64 binaries, including the
+dashboard's OpenVR interface requirements and the compositor-owned cursor
+path, are in [`docs/reverse-engineering/steamvr-runtime-contract.md`](../docs/reverse-engineering/steamvr-runtime-contract.md).
 
 The disposable x86_64 VM also sets `STEARLIGHT_FAKE_TRACKING=1`. The native
 launcher registers Valve's shipped `drivers/null` HMD and the small

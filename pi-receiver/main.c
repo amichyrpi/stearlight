@@ -142,36 +142,6 @@ static int authorize_steam_link(int headless, svrt_status_server *status,
     return finish_steam_link_pairing(&pairing, headless, status, ui);
 }
 
-static void open_steam_page(svrt_steam_client *client,
-                            svrt_ui_action action) {
-    const char *uri = NULL;
-    switch (action) {
-        /* Keep the compatibility receiver on Valve's URI handlers too. The
-           native Steam Frame path never calls the legacy pairing code, but a
-           user must not get a different client navigation contract merely
-           by selecting the explicit legacy build. */
-        case SVRT_UI_ACTION_HOME: uri = "steam://open/bigpicture"; break;
-        case SVRT_UI_ACTION_LIBRARY: uri = "steam://open/games"; break;
-        case SVRT_UI_ACTION_SHOP: uri = "steam://store"; break;
-        case SVRT_UI_ACTION_FRIENDS:
-            uri = "steam://url/SteamIDFriendsPage";
-            break;
-        case SVRT_UI_ACTION_DOWNLOADS: uri = "steam://open/downloads"; break;
-        case SVRT_UI_ACTION_SETTINGS: uri = "steam://open/settings"; break;
-        case SVRT_UI_ACTION_POWER: uri = "steam://open/settings"; break;
-        case SVRT_UI_ACTION_ADD: uri = "steam://open/addgame"; break;
-        case SVRT_UI_ACTION_NETWORK: uri = "steam://open/settings"; break;
-        case SVRT_UI_ACTION_PROFILE:
-            uri = "steam://url/CommunityHome";
-            break;
-        case SVRT_UI_ACTION_CONNECTION:
-            svrt_steam_client_open_steam_link(client);
-            return;
-        default: break;
-    }
-    if (uri) svrt_steam_client_open_uri(client, uri);
-}
-
 int main(int argc, char **argv) {
     int headless = 0;
     uint16_t port = 9944;
@@ -273,11 +243,9 @@ int main(int argc, char **argv) {
                          steam_client_started ?
                              svrt_steam_client_detail(&steam_client) :
                              "VM receiver-only UI", now);
-            const svrt_ui_action action = svrt_ui_take_action(&ui);
             const int connection_requested =
                 svrt_ui_take_connection_request(&ui);
-            if (action == SVRT_UI_ACTION_CONNECTION ||
-                connection_requested) {
+            if (connection_requested) {
                 if (steam_client_started && steam_frame_client_enabled()) {
                     /* Valve's Steam client owns Steam Link/VRLink pairing,
                        authorization, transport and its Steam Frame UI. Do
@@ -291,8 +259,7 @@ int main(int argc, char **argv) {
                     svrt_ui_set_streaming_mode(&ui, 1);
                     fprintf(stderr, "SVRT: legacy connection tile selected\n");
                 }
-            } else if (steam_client_started)
-                open_steam_page(&steam_client, action);
+            }
             sleep_ui_frame(&idle_ui_deadline_ns);
         }
         if (quitting) break;
@@ -357,17 +324,14 @@ int main(int argc, char **argv) {
                     svrt_get_stats(running, &ui_stats);
                     const uint32_t now = SDL_GetTicks();
                     if (have_ui) {
-                        const svrt_ui_action action = svrt_ui_take_action(&ui);
                         const int connection_requested =
                             svrt_ui_take_connection_request(&ui);
-                        if (action == SVRT_UI_ACTION_CONNECTION ||
-                            connection_requested) {
+                        if (connection_requested) {
                             streaming_mode = !streaming_mode;
                             svrt_ui_set_streaming_mode(&ui, streaming_mode);
                             fprintf(stderr, "SVRT: switched to %s mode\n",
                                     streaming_mode ? "streaming" : "Steam");
-                        } else if (steam_client_started)
-                            open_steam_page(&steam_client, action);
+                        }
                         if (steam_client_started &&
                             (!streaming_mode || ui_stats.decoded_frames == 0)) {
                             svrt_steam_client_update(&steam_client,

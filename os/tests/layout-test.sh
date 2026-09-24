@@ -109,10 +109,11 @@ grep -q '"Build the legacy custom Steam Link receiver (off by default)" OFF' \
   "${repo}/CMakeLists.txt"
 grep -q 'SVRT_BUILD_OS_SHELL=ON' "${base}/Dockerfile"
 grep -q 'native Steam client/Steam Frame path' "${repo}/CMakeLists.txt"
-grep -q 'SVRT_UI_SHOW_NAV_CHROME=0' "${base}/CMakeLists.txt"
-grep -q 'SVRT_UI_NATIVE_DASHBOARD=1' "${base}/CMakeLists.txt"
+! grep -q 'SVRT_UI_SHOW_NAV_CHROME' "${base}/CMakeLists.txt"
+! grep -q 'SVRT_UI_NATIVE_DASHBOARD' "${base}/CMakeLists.txt"
 grep -q 'COPY --from=steamvr /bin /opt/steamvr/bin' "${base}/Dockerfile.vm"
 grep -q 'COPY --from=steamvr /drivers /opt/steamvr/drivers' "${base}/Dockerfile.vm"
+grep -q 'COPY --from=steamvr /resources /opt/steamvr/resources' "${base}/Dockerfile.vm"
 grep -q 'COPY --from=steamvr /content /opt/steamvr/content' "${base}/Dockerfile.vm"
 grep -q 'COPY --from=steamvr /tools /opt/steamvr/tools' "${base}/Dockerfile.vm"
 grep -q 'steamvr-native' "${base}/Dockerfile.vm" \
@@ -124,10 +125,22 @@ grep -q 'vrdashboard' \
   "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
 grep -q 'vrpathreg' \
   "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+grep -q 'steam_webhelper_present' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+grep -q 'STEARLIGHT_NATIVE_STEAM_WAIT_SECONDS' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+! grep -q '"jsonid".*vrpathreg' \
+  "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
 grep -q 'valve_binary=vrstartup' \
   "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
 grep -q 'valve_binary=vrserver' \
   "${base}/overlay/usr/local/libexec/stearlight/steamvr-native"
+test -f "${repo}/docs/reverse-engineering/steamvr-runtime-contract.md"
+test -f "${repo}/tools/re/ExportSteamDashboard.java"
+grep -q 'IVROverlay_029' \
+  "${repo}/docs/reverse-engineering/steamvr-runtime-contract.md"
+grep -q 'overlay_pointer_circle.png' \
+  "${repo}/docs/reverse-engineering/steamvr-runtime-contract.md"
 grep -q 'VR_PATHREG_OVERRIDE' \
   "${base}/overlay/usr/local/libexec/stearlight/steamvr-native" \
   "${base}/vm-overlay/usr/local/libexec/stearlight/vm-console"
@@ -177,25 +190,28 @@ grep -q 'never enters the legacy custom pairing' "${repo}/README.md"
 grep -q 'XTestFakeMotionEvent' "${base}/steam_client.c"
 grep -q 'XTestFakeButtonEvent' "${base}/steam_client.c"
 grep -q 'XTestFakeKeyEvent' "${base}/steam_client.c"
-test -f "${repo}/gui/dashboard_layout.c"
-test -f "${repo}/gui/dashboard_layout.h"
-test -f "${repo}/assets/steamvr-dashboard/overlay_pointer.png"
-test -f "${repo}/assets/steamvr-dashboard/overlay_pointer_circle.png"
-test -f "${repo}/assets/steamvr-dashboard/motiva-sans-regular.ttf"
-grep -q 'SVRT_DASHBOARD_NAV_ITEMS 8' "${repo}/gui/dashboard_layout.h"
-grep -q 'SVRT_STEAMFRAME_CONTROL_BAR_WIDTH_PX 1800' \
-  "${repo}/gui/dashboard_layout.h"
-grep -q 'SVRT_STEAMFRAME_STATUS_BAR_WIDTH_PX 1860' \
-  "${repo}/gui/dashboard_layout.h"
-grep -q 'SVRT_STEAMFRAME_CONTROL_BAR_HEIGHT_PX 180' \
-  "${repo}/gui/dashboard_layout.h"
 grep -q 'SVRT_UI_PANEL_ARC_DEGREES' "${repo}/gui/ui.h" "${repo}/gui/ui.c"
 grep -q 'SVRT_STEAM_SURFACE_WIDTH' "${repo}/CMakeLists.txt"
-grep -q 'dashboard_layout.c' "${base}/CMakeLists.txt"
-grep -q 'dashboard_layout.c' "${repo}/pi-receiver/CMakeLists.txt"
-grep -q 'SVRT_UI_ACTION_FRAME' "${repo}/gui/ui.h" "${base}/shell.c"
-grep -q 'overlay_pointer' "${repo}/gui/ui.c"
-grep -q 'overlay_pointer_ibeam' "${base}/CMakeLists.txt"
+grep -q -- '--dashboard-control-bar-width: 1800px' \
+  "${repo}/assets/steamframe-native/webinterface/dashboard/css/chunk~93a8598f9.css"
+grep -q -- '--dashboard-control-bar-height: 180px' \
+  "${repo}/assets/steamframe-native/webinterface/dashboard/css/chunk~93a8598f9.css"
+grep -q -- '--dashboard-control-bar-width: calc(2000px' \
+  "${repo}/assets/steamframe-native/webinterface/dashboard/css/chunk~66c0d1388.css"
+! grep -q 'SVRT_UI_DASHBOARD_RAIL\|SVRT_UI_DASHBOARD_DOCK' \
+  "${repo}/CMakeLists.txt" "${base}/CMakeLists.txt"
+! grep -q 'draw_dashboard\|draw_laser_cursor\|navigation_action_at' \
+  "${repo}/gui/ui.c"
+! test -e "${repo}/gui/dashboard_layout.c"
+! test -e "${repo}/assets/steamframe-native/webinterface/stearlight-dock.html"
+! test -e "${repo}/assets/steamframe-native/webinterface/stearlight-vrhtml-shim.js"
+grep -q 'svrt_ui_take_connection_request' \
+  "${repo}/gui/ui.h" "${base}/shell.c"
+! grep -q 'SVRT_UI_ACTION_\|open_steam_page\|request_system_action' \
+  "${base}/shell.c"
+! grep -q 'steamframe-native/webinterface\|steamframe-native/laser_pointer' \
+  "${base}/CMakeLists.txt" "${base}/Dockerfile.vm"
+grep -q 'PATTERN "steamframe-native" EXCLUDE' "${base}/CMakeLists.txt"
 grep -q 'F:' "${base}/build-local.ps1" "${base}/build-vm.ps1"
 grep -q 'G:' "${base}/build-local.ps1" "${base}/build-vm.ps1"
 ! grep -q "E:\\StearlightBuildTemp" "${base}/build-vm.ps1"
@@ -225,17 +241,6 @@ grep -q 'steamlink://\*' "${repo}/scripts/launch-steam-arm64-pi.sh"
 grep -q 'steamlink://\*' \
   "${base}/overlay/usr/local/libexec/stearlight/launch-steam" \
   "${base}/overlay/home/stearlight/.local/share/Steam/launch-steam.sh"
-for steam_uri in \
-  'steam://open/bigpicture' \
-  'steam://open/games' \
-  'steam://store' \
-  'steam://url/SteamIDFriendsPage' \
-  'steam://open/screenshots' \
-  'steam://open/downloads' \
-  'steam://open/settings' \
-  'steam://url/CommunityHome'; do
-  grep -q "${steam_uri}" "${base}/shell.c"
-done
 for native_steam_path in \
   "${base}/steam_client.c" \
   "${base}/overlay/usr/local/libexec/stearlight/session" \
@@ -300,7 +305,7 @@ grep -q 'STEARLIGHT_REFRESH_HZ="60"' \
 grep -q 'SVRT_DISPLAY_WIDTH=2880' "${base}/CMakeLists.txt"
 grep -q 'SVRT_DISPLAY_HEIGHT=1600' "${base}/CMakeLists.txt"
 grep -q 'SVRT_DISPLAY_REFRESH_HZ=60' "${base}/CMakeLists.txt"
-grep -q 'SVRT_UI_FORCE_PANEL_STRIPS=0' "${base}/CMakeLists.txt"
+! grep -q 'SVRT_UI_FORCE_PANEL_STRIPS' "${base}/CMakeLists.txt"
 grep -q 'SVRT_ENFORCE_DISPLAY_MODE=1' "${base}/CMakeLists.txt"
 grep -q 'set(SVRT_OS_BOOT_ASSET "boot.mkv")' "${base}/CMakeLists.txt"
 grep -q 'PATTERN "\*\.mkv"' "${base}/CMakeLists.txt"
@@ -613,6 +618,7 @@ for script in \
   "${base}/scripts/sanitize-steam-profile.sh" \
   "${base}/tests/steam-firstboot-test.sh" \
   "${base}/tests/steam-runtime-patch-test.sh" \
+  "${base}/tests/steamvr-native-test.sh" \
   "${base}/steam-firstboot" \
   "${base}/overlay/usr/bin/jupiter-biosupdate" \
   "${base}/overlay/usr/bin/jupiter-dock-updater" \
@@ -652,6 +658,7 @@ done
 
 "${base}/tests/steam-firstboot-test.sh"
 bash "${base}/tests/steam-runtime-patch-test.sh"
+bash "${base}/tests/steamvr-native-test.sh"
 
 for documentation in \
   "${base}/README.md" "${base}/VM.md" \
