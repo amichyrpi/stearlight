@@ -1,17 +1,11 @@
-# Third-party notices
+# Third-party components
 
-## IHSlib (legacy receiver only)
+The Stearlight VM build does not check SteamVR binaries or Steam Frame recovery files into
+this repository. The build consumes an authorized x86_64 SteamVR tree supplied
+by the developer and downloads Steam Frame UI resources from Valve's recovery
+index. Valve's terms apply to those binaries and resources.
 
-The optional legacy `svrt-receiver` target dynamically links to
-[IHSlib](https://github.com/mariotaku/ihslib) commit
-`560908104b1f884792f90d8f98e33ec8c61106f5` for Steam Remote Play discovery
-and authorization.
-
-The Stearlight OS appliance does not build this target or use IHSlib. Its
-native Steam Frame path launches Valve's Steam client, which owns discovery,
-pairing, authorization, transport, and the Steam Frame UI.
-
-IHSlib is licensed under the GNU Lesser General Public License, version 3.0.
-Its complete license text is installed as `share/licenses/svrt/IHSlib-LICENSE`.
-The corresponding source is available from the upstream repository at the
-commit recorded above.
+The fake tracking driver is compiled against Valve's public OpenVR driver API;
+the Dockerfile downloads the OpenVR headers from ValveSoftware/openvr at tag
+`v2.15.6`. The VM installs Gamescope from Alpine's package repositories.
+Refer to each upstream project for its license and notices.

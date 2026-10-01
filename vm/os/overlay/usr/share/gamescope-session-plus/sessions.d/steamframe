@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Steam Frame recovery 20260922.5152327: Gamescope OpenVR session defaults.
+# The QEMU scanout/mirror resolution is independent of these overlay sizes.
+source /usr/share/gamescope-session-plus/sessions.d/steam
+
+export BACKEND=openvr
+export VR_OVERRIDE=/opt/steamvr
+export SCREEN_WIDTH=1920 SCREEN_HEIGHT=1080
+export OUTPUT_WIDTH=1920 OUTPUT_HEIGHT=1080
+export INTERNAL_WIDTH=1280 INTERNAL_HEIGHT=720
+export STEARLIGHT_FRAME_VR_SESSION=1
+export STEARLIGHT_GAMESCOPE_FULLSCREEN=0
+export STEARLIGHT_NATIVE_STEAMVR=0
+export CLIENTCMD=/usr/local/bin/stearlight-steamframe-session
+export CURSOR_FILE=/usr/share/steamos/steamos-cursor.png

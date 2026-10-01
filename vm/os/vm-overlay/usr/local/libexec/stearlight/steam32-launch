@@ -1,0 +1,214 @@
+#!/bin/sh
+set -eu
+
+# gamescope itself is a 64-bit host process, while Valve's Linux bootstrap
+# client is 32-bit. Keep the Vulkan ICD selection at the ABI boundary instead
+# of exporting one architecture globally (which makes the other loader report
+# VK_ERROR_INCOMPATIBLE_DRIVER). The seed lives outside Steam's replaceable
+# runtime so a client update cannot swap in an ABI-incompatible Mesa stack.
+seed_root=${STEARLIGHT_STEAM_RUNTIME_SEED:-/usr/lib/steam}
+steam_root="${STEARLIGHT_STEAM_HOME:-${HOME:-/home/stearlight}}/.local/share/Steam"
+# steam.sh invokes the replaceable Steam Runtime's run.sh in a child shell.
+# Export the seed explicitly so that run.sh can keep the ABI-matched Mesa/XCB
+# directory first in LD_LIBRARY_PATH; relying on a caller's shell variable
+# silently drops it when Steam re-execs the bootstrap.
+export STEARLIGHT_STEAM_RUNTIME_SEED="$seed_root"
+# Do not force an ICD in the parent shell.  steam.sh calls the patched
+# runtime wrapper once to calculate its library path (that invocation is
+# intentionally 32-bit), then starts 64-bit WebHelper children from the same
+# environment.  A globally exported i386 ICD makes those children report
+# missing surface extensions or load the wrong ELF class.  The runtime wrapper
+# selects an ABI-specific ICD for direct runtime launches; normal Mesa Vulkan
+# discovery handles the mixed Steam process tree here.
+unset VK_ICD_FILENAMES
+unset VK_DRIVER_FILES
+# Do not export an ABI-specific DRI directory from the parent process. Steam
+# starts both i386 and x86_64 children (bootstrap, WebHelper and pressure
+# vessel); one inherited path makes the other loader open the wrong ELF class.
+# vm-console seeds the standard multiarch DRI directories so Mesa selects the
+# correct module for each child without modifying Valve's replaceable files.
+unset LIBGL_DRIVERS_PATH
+
+# The VM-only direct-client diagnostic bypasses pressure-vessel for the
+# WebHelper so Steam can validate the loopback peer in the host namespace.
+# Keep the alternate entry point opt-in: the normal SteamOS path continues to
+# use Valve's pressure-vessel runtime unchanged.
+if [ "${STEARLIGHT_STEAM_DIRECT_WEBHELPER:-0}" = 1 ] &&
+   [ -x /usr/local/libexec/stearlight/direct-steam-runtime/_v2-entry-point ]; then
+    export STEAM_RUNTIME_STEAMRT=/usr/local/libexec/stearlight/direct-steam-runtime
+fi
+if [ "${STEARLIGHT_STEAM_FORCE_DIRECT_CLIENT:-0}" = 1 ] &&
+   [ -x /usr/local/libexec/stearlight/direct-steam-runtime/_v2-entry-point ]; then
+    export STEAM_RUNTIME_STEAMRT=/usr/local/libexec/stearlight/direct-steam-runtime
+fi
+
+# Steam's WebUI transport authenticates a WebHelper by inspecting its PID in
+# /proc.  The normal Steam Runtime entry point may create a private PID
+# namespace, which is fine on SteamOS but cannot be mapped by the minimal VM's
+# host bridge.  Ask pressure-vessel to share the PID namespace explicitly;
+# this retains its glibc/CEF/graphics setup while fixing the VM-only transport
+# handshake. The variable is scoped to this launcher.
+if [ "${STEARLIGHT_VM_SHARE_PIDS:-1}" = 1 ]; then
+    export PRESSURE_VESSEL_SHARE_PID=1
+fi
+
+# The first Steam bootstrap window is a 32-bit GLX client.  Its Mesa loader
+# does not reliably honor the multiarch fallback once Valve's glibc runtime
+# is active, so the VM gives that process an explicit i386 DRI directory.  A
+# Bash BASH_ENV hook removes the override when steamwebhelper.sh starts its
+# 64-bit CEF process; leave this variable unset unless diagnosing bootstrap.
+if [ -n "${STEARLIGHT_STEAM_BOOTSTRAP_DRI:-}" ]; then
+    export LIBGL_DRIVERS_PATH="$STEARLIGHT_STEAM_BOOTSTRAP_DRI"
+fi
+if [ -r /usr/local/libexec/stearlight/steam-webhelper-env ]; then
+    export BASH_ENV=/usr/local/libexec/stearlight/steam-webhelper-env
+fi
+
+# Steam reconstructs the WebHelper environment after this launcher returns;
+# that path drops DISPLAY and GAMESCOPE_WAYLAND_DISPLAY before it invokes
+# steamwebhelper.sh.  BASH_ENV is not reliable across that service boundary.
+# Point only the VM's WebHelper entry point at a small host-side trampoline so
+# the two session values are restored immediately before Valve's real
+# pressure-vessel entry point is called.  Keep the opt-in direct diagnostic
+# entry point above authoritative when it is requested.
+if [ "${STEARLIGHT_STEAM_DIRECT_WEBHELPER:-0}" != 1 ] &&
+   [ "${STEARLIGHT_STEAM_FORCE_DIRECT_CLIENT:-0}" != 1 ] &&
+   [ -x /usr/local/libexec/stearlight/steamrt-webhelper/_v2-entry-point ]; then
+    export STEAM_RUNTIME_STEAMRT=/usr/local/libexec/stearlight/steamrt-webhelper
+fi
+
+# The VM uses Valve's x86 bootstrap.  The bootstrap is deliberately entered
+# through the extracted steam.sh script instead of jumping straight to
+# steamrt64/steam: steam.sh sets STEAM_RUNTIME_LIBRARY_PATH, unpacks/pins the
+# runtime and performs the ABI hand-off before WebHelper is started.  Calling
+# steamrt64/steam directly skips that setup and leaves the updater window alive
+# without ever creating the Gamepad UI surface (the old VM black-screen bug).
+prepare_host_tools() {
+    # Alpine's coreutils are musl-linked. Once steam.sh enters the glibc
+    # runtime it exports an x86 LD_LIBRARY_PATH; an Alpine `mkdir` or `rm`
+    # then tries to load the runtime's libacl/libattr and fails. Put tiny
+    # ABI-resetting shims first in PATH so Valve's scripts can use the host
+    # utilities without changing their files.
+    host_tools=${XDG_RUNTIME_DIR:-/tmp}/stearlight-host-tools
+    mkdir -p "$host_tools"
+    shim="$host_tools/.host-tool"
+    if [ ! -x "$shim" ]; then
+        cat >"$shim" <<'EOF'
+#!/bin/sh
+tool=${0##*/}
+unset LD_LIBRARY_PATH LD_PRELOAD LD_AUDIT
+if [ -x "/usr/bin/$tool" ]; then
+    exec "/usr/bin/$tool" "$@"
+fi
+exec "/bin/$tool" "$@"
+EOF
+        chmod 0755 "$shim"
+    fi
+    for tool in basename cat chmod cp date dirname find grep gzip id ln mkdir \
+                mktemp mv readlink rm rmdir sed sleep tar touch tr uname which \
+                xz; do
+        ln -sfn .host-tool "$host_tools/$tool"
+    done
+    PATH="$host_tools:${PATH:-/usr/bin:/bin}"
+    export PATH
+}
+
+launch_client() {
+    export STEAM_RUNTIME=1
+    # su-exec changes the uid/gid but intentionally preserves the caller's
+    # environment. vm-console starts as root, so without these assignments
+    # Steam Runtime propagates USER=root into WebHelper even though the
+    # process is running as stearlight. SteamOS keeps the identity variables
+    # consistent; WebUI transport and CEF both rely on that session contract.
+    export USER="${STEARLIGHT_STEAM_USER:-stearlight}"
+    export LOGNAME="$USER"
+    export HOME="${STEARLIGHT_STEAM_HOME:-/home/$USER}"
+    # Keep the display handoff explicit at the Steam boundary.  Steam's
+    # bootstrap may reconstruct the WebHelper environment, while these
+    # STEARLIGHT_* values are restored by steam-webhelper-env immediately before
+    # pressure-vessel starts the CEF process.
+    if [ -n "${STEARLIGHT_STEAM_XWAYLAND_DISPLAY:-}" ]; then
+        export DISPLAY="$STEARLIGHT_STEAM_XWAYLAND_DISPLAY"
+    fi
+    if [ -n "${STEARLIGHT_STEAM_GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+        export GAMESCOPE_WAYLAND_DISPLAY="$STEARLIGHT_STEAM_GAMESCOPE_WAYLAND_DISPLAY"
+    fi
+    # Keep Valve's Gamepad UI launch contract explicit at the client boundary.
+    export STEAMOS=1
+    export STEAM_GAMEPADUI=1
+    export STEAM_GAMESCOPE=1
+    export STEAM_GAMESCOPE_WAYLAND=1
+    if [ -x "$steam_root/steam.sh" ] &&
+       [ "${STEARLIGHT_STEAM_FORCE_DIRECT_CLIENT:-0}" != 1 ]; then
+        prepare_host_tools
+        if [ "${STEARLIGHT_STEAM_FORCE_RUN:-0}" = 1 ]; then
+            # --run makes steam.sh perform its normal runtime/update setup and
+            # then hand the 32-bit binary back through the patched run.sh.
+            # This keeps the ABI-selected seed path in effect at exec time;
+            # the ordinary steam.sh final branch can prepend an old runtime
+            # libgcc before Mesa loads its DRI module.
+            # run.sh receives the platform path through this opt-in variable;
+            # --run bypasses steam.sh's later "$PLATFORM" prepend, so without
+            # it steamui.so cannot resolve its bundled libvpx/libav* payload.
+            export STEARLIGHT_STEAM_PLATFORM_LIBRARY_PATH="$steam_root/ubuntu12_32:$steam_root/steamrt32"
+            exec "$steam_root/steam.sh" --run \
+                "$steam_root/ubuntu12_32/steam" "$@"
+        fi
+        # Do not export an ABI-specific DRI directory here.  steam.sh's
+        # bootstrap and its 64-bit WebHelper share this environment, so a
+        # 32-bit path would make WebHelper fail with ELFCLASS32.  Mesa's
+        # standard multiarch DRI directories are ABI-aware and are already
+        # present in the image; the patched run.sh still selects the private
+        # seed when it is explicitly used for a single-ABI child.
+        exec "$steam_root/steam.sh" "$@"
+    fi
+    # The direct SteamRT binary is used in the VM so no Alpine/musl utility is
+    # ever executed with Steam's glibc LD_LIBRARY_PATH.  steam.sh cannot be
+    # used here: after it switches to the x86 runtime, its calls to Alpine's
+    # /bin/mkdir and /bin/rm resolve libacl/libattr from the wrong ABI and the
+    # bootstrap stalls at "Show window" before WebHelper is spawned.
+    platform=$(find "$steam_root/steamrt64/pv-runtime/steam-runtime-steamrt" \
+        -maxdepth 1 -type d -name 'steamrt3c_platform_*' \
+        -print -quit 2>/dev/null || true)
+    runtime_files=${platform:+$platform/files}
+    ld_path="$steam_root/steamrt64:$steam_root/ubuntu12_64"
+    if [ -n "$runtime_files" ]; then
+        ld_path="$ld_path:$runtime_files/lib/x86_64-linux-gnu:$runtime_files/lib:$runtime_files/usr/lib/x86_64-linux-gnu:$runtime_files/usr/lib"
+    fi
+    if [ -d "$seed_root/stearlight_libs_64" ]; then
+        ld_path="$ld_path:$seed_root/stearlight_libs_64"
+    fi
+    export LD_LIBRARY_PATH="$ld_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export STEAM_RUNTIME_LIBRARY_PATH="$ld_path"
+    export PATH="${runtime_files:+$runtime_files/usr/bin:}$steam_root/steamrt64:$PATH"
+    export VK_ICD_FILENAMES="$seed_root/stearlight_libs_64/lvp_icd.json"
+    unset LIBGL_DRIVERS_PATH
+    if [ -x "$steam_root/steamrt64/steam" ]; then
+        exec "$steam_root/steamrt64/steam" "$@"
+    fi
+    exec /usr/bin/steam "$@"
+}
+
+# Keep protocol handoffs on the same Valve client path as a normal session.
+# The OS supplies a URI as the first argument; this launcher owns the
+# architecture-specific Gamepad UI flags and appends the URI last, matching
+# Steam's `steam steam://...` convention.
+case "${1-}" in
+    steam://*|steamlink://*)
+        uri=$1
+        shift
+        set -- -gamepadui -steamos3 -steampal -steamdeck
+        if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+            set -- "$@" -steamframe
+        fi
+        set -- "$@" "$uri"
+        ;;
+    '')
+        set -- -gamepadui -steamos3 -steampal -steamdeck
+        if [ "${STEARLIGHT_STEAM_FRAME:-1}" != 0 ]; then
+            set -- "$@" -steamframe
+        fi
+        ;;
+esac
+
+launch_client "$@"

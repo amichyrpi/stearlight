@@ -1,0 +1,24 @@
+#!/bin/sh
+# Host-side trampoline for Valve's steamwebhelper.sh.  Steam can rebuild the
+# WebHelper environment after the Gamepad UI session starts and omit the
+# display values published by gamescope-session-plus.  Restore them here,
+# immediately before the real Steam Runtime entry point starts pressure-vessel.
+
+set -eu
+
+if [ -n "${STEARLIGHT_STEAM_XWAYLAND_DISPLAY:-}" ]; then
+    export DISPLAY="$STEARLIGHT_STEAM_XWAYLAND_DISPLAY"
+fi
+if [ -n "${STEARLIGHT_STEAM_GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+    export GAMESCOPE_WAYLAND_DISPLAY="$STEARLIGHT_STEAM_GAMESCOPE_WAYLAND_DISPLAY"
+fi
+
+if [ "${STEARLIGHT_TRACE_STEAM_RUNTIME:-0}" != 0 ]; then
+    printf 'STEARLIGHT WEBHELPER TRAMPOLINE DISPLAY=%s GAMESCOPE=%s FONTCONFIG=%s CACHE=%s\n' \
+        "${DISPLAY-}" "${GAMESCOPE_WAYLAND_DISPLAY-}" \
+        "${FONTCONFIG_FILE-}" "${XDG_CACHE_HOME-}" >&2
+fi
+
+steam_home=${STEARLIGHT_STEAM_HOME:-${HOME:-/home/stearlight}}
+runtime_root="$steam_home/.local/share/Steam/steamrt64/pv-runtime/steam-runtime-steamrt"
+exec "$runtime_root/_v2-entry-point" "$@"

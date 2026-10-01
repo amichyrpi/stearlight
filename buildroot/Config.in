@@ -1,4 +1,0 @@
-menu "SVRT packages"
-source "$BR2_EXTERNAL_SVRT_PATH/package/rpi-ffmpeg/Config.in"
-source "$BR2_EXTERNAL_SVRT_PATH/package/svrt/Config.in"
-endmenu

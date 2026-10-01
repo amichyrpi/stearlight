@@ -1,0 +1,10 @@
+build/
+build-*/
+.cache/
+*.vdi
+*.raw
+*.raw.zst
+*.img
+*.img.bz2
+*.ppm
+*.log

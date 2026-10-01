@@ -1,0 +1,153 @@
+# syntax=docker/dockerfile:1.7
+FROM --platform=$TARGETPLATFORM debian:bookworm AS glibc
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libasound2 libatk-bridge2.0-0 libcups2 libdbus-1-3 libdrm2 libegl1 \
+    libgbm1 libgl1 libgtk2.0-0 libibus-1.0-5 libnss3 libva2 \
+    libopenal1 libpulse0 libsdl2-2.0-0 libssh2-1 libssl3 libsystemd0 \
+    libvulkan1 mesa-vulkan-drivers \
+    libx11-6 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 \
+    libxrandr2 libxss1 libxtst6 && rm -rf /var/lib/apt/lists/*
+
+# Steam Frame's extracted Steam Runtime Vulkan loader requires GLIBC_2.38.
+# Keep the Debian Bookworm graphics package stage, but supply a newer glibc
+# runtime from Debian Trixie to the Alpine VM.
+FROM --platform=$TARGETPLATFORM debian:trixie-slim AS glibc-runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libice6 libsm6 libpipewire-0.3-0t64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The Frame Gamescope process must load a glibc Vulkan ICD. Alpine's Venus
+# library uses musl and cannot be loaded into Valve's compositor.
+FROM --platform=$TARGETPLATFORM debian:trixie-slim AS venus
+COPY vm/os/driver/mesa/0001-complete-x11-software-presents.patch /tmp/mesa-wsi.patch
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential curl xz-utils patch meson ninja-build pkg-config \
+      python3-mako python3-yaml python3-packaging libdrm-dev libexpat1-dev \
+      zlib1g-dev libzstd-dev libx11-xcb-dev libxcb-dri3-dev libxcb-present-dev \
+      libxcb-randr0-dev libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev libxshmfence-dev \
+      libxrandr-dev libwayland-dev wayland-protocols \
+    && curl -fL https://deb.debian.org/debian/pool/main/m/mesa/mesa_26.1.6.orig.tar.xz -o /tmp/mesa.tar.xz \
+    && echo '5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606  /tmp/mesa.tar.xz' | sha256sum -c - \
+    && tar -xf /tmp/mesa.tar.xz -C /tmp \
+    && patch -d /tmp/mesa-26.1.6 -p1 < /tmp/mesa-wsi.patch \
+    && meson setup /tmp/mesa-build /tmp/mesa-26.1.6 --buildtype=release \
+      -Dvulkan-drivers=virtio -Dgallium-drivers= -Dplatforms=x11,wayland \
+      -Dopengl=false -Degl=disabled -Dgbm=disabled -Dglx=disabled -Dllvm=disabled \
+      -Dvideo-codecs= -Dbuild-tests=false -Dtools= -Dvalgrind=disabled \
+      -Dlibunwind=disabled -Ddisplay-info=disabled \
+    && ninja -C /tmp/mesa-build -j4 src/virtio/vulkan/libvulkan_virtio.so \
+    && mkdir -p /out \
+    && cp /tmp/mesa-build/src/virtio/vulkan/libvulkan_virtio.so /out/ \
+    && for library in $(ldd /out/libvulkan_virtio.so | awk '/=> \// {print $3}'); do \
+         cp -L "$library" /out/; \
+       done \
+    && printf '%s\n' '{"file_format_version":"1.0.0","ICD":{"library_path":"/opt/stearlight-vulkan/libvulkan_virtio.so","api_version":"1.3.256"}}' > /out/virtio_icd.json \
+    && printf '%s\n' 'Mesa 26.1.6; Stearlight X11 software presentation completion patch' > /out/package-version.txt
+
+FROM --platform=$TARGETPLATFORM debian:bookworm AS fake-tracking
+RUN apt-get update && apt-get install -y --no-install-recommends g++ \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=openvr-headers / /src/openvr/
+COPY vm/os/driver/fake_tracking.cpp /src/fake_tracking.cpp
+COPY vm/os/driver/vulkan_wsi_shim.c /src/vulkan_wsi_shim.c
+COPY vm/os/driver/vulkan_timeline_bridge.inc /src/vulkan_timeline_bridge.inc
+COPY vm/os/driver/vrcompositor_wsi_launcher.c /src/vrcompositor_wsi_launcher.c
+RUN mkdir -p /out && g++ -std=c++17 -fPIC -shared \
+    -I/src/openvr /src/fake_tracking.cpp -static-libstdc++ -static-libgcc \
+    -o /out/driver_stearlight-fake.so \
+    && gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+    /src/vulkan_wsi_shim.c -ldl -pthread -o /out/libstearlight-vulkan-wsi-shim.so \
+    && gcc -std=c11 -Wall -Wextra -Werror \
+    /src/vrcompositor_wsi_launcher.c -o /out/vrcompositor-wsi-launcher
+
+FROM --platform=$TARGETPLATFORM alpine:edge AS rootfs
+RUN apk add --no-cache alpine-base bash coreutils dbus dbus-x11 e2fsprogs \
+    eudev eudev-openrc udev-init-scripts-openrc \
+    font-dejavu grim linux-virt mesa-dri-gallium mesa-egl mesa-vulkan-virtio \
+    mesa-vulkan-swrast mpv seatd util-linux-misc vulkan-loader xorg-server \
+    xf86-input-libinput xrandr xset xwayland \
+    && printf '/dev/vda / ext4 defaults 0 1\n' >> /etc/fstab \
+    && rc-update add localmount boot
+RUN rc-update -q del mdev sysinit || true
+RUN rc-update add udev sysinit \
+    && rc-update add udev-trigger sysinit \
+    && rc-update add udev-settle sysinit \
+    && rc-update add udev-postmount default \
+    && rc-update add dbus default \
+    && rc-update add seatd default \
+    && rc-update add local default \
+    && adduser -D -u 1000 -s /bin/sh stearlight \
+    && addgroup stearlight video \
+    && addgroup -S render \
+    && addgroup stearlight render \
+    && addgroup stearlight seat \
+    && mkdir -p /home/stearlight/.local/share/Steam /run/user/1000
+COPY --from=glibc /usr/lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu/
+COPY --from=glibc /lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu/
+COPY --from=glibc-runtime /usr/lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu/
+COPY --from=glibc-runtime /usr/lib/aarch64-linux-gnu/ /lib/aarch64-linux-gnu/
+COPY --from=glibc-runtime /usr/lib/ld-linux-aarch64.so.1 /usr/lib/ld-linux-aarch64.so.1
+COPY --from=glibc-runtime /etc/ld.so.conf.d/aarch64-linux-gnu.conf /etc/ld.so.conf.d/aarch64-linux-gnu.conf
+COPY --from=glibc /usr/share/vulkan/icd.d/lvp_icd.aarch64.json /usr/share/vulkan/icd.d/lvp_icd.aarch64.json
+RUN ln -s /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 /lib/ld-linux-aarch64.so.1
+COPY --from=frame-runtime / /opt/steamvr/
+COPY --from=frame-runtime /resources/stearlight-session/steamos-cursor.png /usr/share/steamos/steamos-cursor.png
+COPY --from=frame-runtime /resources/stearlight-session/steam_icon.png /usr/share/steamos/steam_icon.png
+COPY --from=frame-runtime /resources/stearlight-session/gamescope/ /opt/frame-gamescope/
+COPY --from=frame-runtime /resources/stearlight-session/gamescope/share/gamescope/ /usr/share/gamescope/
+COPY --from=venus /out/ /opt/stearlight-vulkan/
+COPY --from=steam-client / /opt/steam/
+RUN mkdir -p /home/stearlight/.steam \
+    && ln -s /opt/steam /home/stearlight/.steam/steam
+COPY vm/os/overlay/usr/share/gamescope-session-plus/ /usr/share/gamescope-session-plus/
+COPY vm/os/overlay/usr/bin/gamescope-session-plus /usr/bin/gamescope-session-plus
+COPY --from=fake-tracking /out/libstearlight-vulkan-wsi-shim.so /opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so
+COPY --from=fake-tracking /out/vrcompositor-wsi-launcher /opt/steamvr/bin/linuxarm64/vrcompositor.stearlight-launcher
+COPY --from=fake-tracking /out/driver_stearlight-fake.so /opt/steamvr/drivers/stearlight-fake/bin/linuxarm64/driver_stearlight-fake.so
+COPY --from=frame-runtime /drivers/frame_hmd/resources/frame_hmd_additional.vrsettings /opt/steamvr/drivers/stearlight-fake/resources/frame_hmd_additional.vrsettings
+COPY vm/os/driver/stearlight-fake/driver.vrdrivermanifest /opt/steamvr/drivers/stearlight-fake/driver.vrdrivermanifest
+COPY vm/os/overlay/usr/local/libexec/stearlight/steamvr-native /usr/local/bin/stearlight-steamvr-native
+COPY vm/os/overlay/usr/local/libexec/stearlight/steamframe-session /usr/local/bin/stearlight-steamframe-session
+COPY vm/os/overlay/usr/local/libexec/stearlight/boot-animation /usr/local/bin/stearlight-boot-animation
+COPY vm/os/overlay/usr/local/libexec/stearlight/frame-gamescope /usr/local/bin/stearlight-frame-gamescope
+COPY vm/os/overlay/usr/local/libexec/stearlight/gamescope-preview /usr/local/bin/stearlight-gamescope-preview
+COPY vm/os/arm64-vm.start /etc/local.d/arm64-vm.start
+COPY vm/os/vm-overlay/etc/inittab /etc/inittab
+RUN mv /opt/steamvr/bin/linuxarm64/vrcompositor /opt/steamvr/bin/linuxarm64/vrcompositor.bin \
+    && mv /opt/steamvr/bin/linuxarm64/vrcompositor.stearlight-launcher /opt/steamvr/bin/linuxarm64/vrcompositor \
+    && sed -i 's/^VRSTARTUP_PLATFORM=linux64$/VRSTARTUP_PLATFORM=linuxarm64/' /opt/steamvr/bin/vrenv.sh \
+    && sed -i 's|export LD_LIBRARY_PATH="${STEAMROOT}/${STEAM_RT_ARM64}"|export LD_LIBRARY_PATH="${STEAMROOT}/${STEAM_RT_ARM64}/libs:${STEAMROOT}/${STEAM_RT_ARM64}"|' /opt/steam/RUNSTEAM.sh \
+    && sed -i '/^exec /i export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/opt/steam/steamrtarm64/libs:/opt/steam/steamrtarm64:/usr/lib/aarch64-linux-gnu"' /opt/steamvr/bin/linuxarm64/vrcompositor-launcher.sh \
+    && sed -i '/^exec /i export VRCOMPOSITOR_LD_LIBRARY_PATH="${VRCOMPOSITOR_LD_LIBRARY_PATH:+$VRCOMPOSITOR_LD_LIBRARY_PATH:}${LD_LIBRARY_PATH}"' /opt/steamvr/bin/linuxarm64/vrcompositor-launcher.sh \
+    && chmod 0755 /usr/local/bin/stearlight-frame-gamescope /usr/local/bin/stearlight-gamescope-preview /usr/local/bin/stearlight-boot-animation /usr/local/bin/stearlight-steamvr-native /usr/local/bin/stearlight-steamframe-session /etc/local.d/arm64-vm.start /usr/bin/gamescope-session-plus /usr/share/gamescope-session-plus/gamescope-session-plus \
+    && chown -R stearlight:stearlight /home/stearlight /run/user/1000 \
+    && chown -R stearlight:stearlight /opt/steam \
+    && test -x /opt/steamvr/bin/linuxarm64/vrcompositor \
+    && test -x /opt/steamvr/bin/linuxarm64/vrcompositor.bin \
+    && test -s /opt/steamvr/drivers/stearlight-fake/resources/frame_hmd_additional.vrsettings \
+    && test -f /opt/steamvr/resources/webinterface/dashboard/systemui.html \
+    && test -x /opt/steam/RUNSTEAM.sh \
+    && test -x /opt/steam/steamrtarm64/steam \
+    && test -x /usr/bin/gamescope-session-plus \
+    && test -x /opt/frame-gamescope/bin/gamescope \
+    && test -x /opt/frame-gamescope/lib/ld-linux-aarch64.so.1 \
+    && test -s /opt/stearlight-vulkan/libvulkan_virtio.so \
+    && test -s /usr/share/gamescope-session-plus/sessions.d/steam \
+    && test -s /usr/share/gamescope-session-plus/sessions.d/steamframe \
+    && test -f /usr/share/steamos/steamos-cursor.png \
+    && test -f /usr/share/steamos/steam_icon.png \
+    && test -f /opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so \
+    && test -f /opt/steam/linuxarm64/steamclient.so \
+    && test -s /opt/steam/steamui/movies/steamframe_startup_450x450.webm \
+    && test -s /opt/steam/steamui/images/steam_spinner.png \
+    && test -s /opt/steam/steamui/images/deck_boot_transition.png \
+    && test -x /usr/bin/mpv \
+    && test -e /usr/lib/aarch64-linux-gnu/libvulkan.so.1 \
+    && test -f /usr/lib/aarch64-linux-gnu/libvulkan_lvp.so \
+    && test -f /usr/share/vulkan/icd.d/lvp_icd.aarch64.json \
+    && grep -Fq 'export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/opt/steam/steamrtarm64/libs:/opt/steam/steamrtarm64:/usr/lib/aarch64-linux-gnu"' /opt/steamvr/bin/linuxarm64/vrcompositor-launcher.sh \
+    && grep -Fq 'export VRCOMPOSITOR_LD_LIBRARY_PATH="${VRCOMPOSITOR_LD_LIBRARY_PATH:+$VRCOMPOSITOR_LD_LIBRARY_PATH:}${LD_LIBRARY_PATH}"' /opt/steamvr/bin/linuxarm64/vrcompositor-launcher.sh \
+    && test -f /etc/local.d/arm64-vm.start
+
+FROM scratch
+COPY --from=rootfs / /

@@ -1,0 +1,14 @@
+#!/bin/sh
+# Diagnostic client: Valve's loading asset rendered through Gamescope.
+mpv --no-config --profile=sw-fast --vo=x11 --hwdec=no --audio=no \
+  --fullscreen --video-unscaled=yes --osc=no --osd-level=0 \
+  --demuxer=lavf --demuxer-lavf-format=apng --loop-file=inf \
+  /opt/steam/steamui/images/steam_spinner.png &
+client=$!
+trap 'kill "$client" 2>/dev/null || true' EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+sleep 15
+kill -0 "$client" 2>/dev/null || exit 1
+echo 'STEARLIGHT ARM64 GAMESCOPE PREVIEW READY' >/dev/ttyAMA0
+wait "$client"

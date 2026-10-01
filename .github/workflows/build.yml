@@ -10,151 +10,24 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: vm-checks-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  linux:
-    name: Linux x86_64
+  vm-source-checks:
+    name: VM source checks
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libsdl2-ttf-dev libavformat-dev libavcodec-dev libavutil-dev libx11-dev libxcomposite-dev libxtst-dev
-
-      - name: Configure
-        run: cmake -S . -B build -G Ninja -DSVRT_BUILD_DRIVER=OFF -DSVRT_BUILD_RECEIVER=OFF -DSVRT_BUILD_OS_SHELL=ON -DSVRT_BUILD_PI_LIBRARY=OFF -DSVRT_BUILD_UTILITY=OFF -DSVRT_STEARLIGHT_OS=ON -DSVRT_BUILD_VENDORED_SDL=OFF -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build and test
+      - name: Run VM setup checks
         run: |
-          cmake --build build
-          ctest --test-dir build --output-on-failure
-
-      - name: Package
-        run: |
-          mkdir -p package
-          cp build/os/stearlight-shell README.md LICENSE package/
-          tar -czf svrt-linux-x86_64.tar.gz -C package .
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-linux-x86_64
-          path: svrt-linux-x86_64.tar.gz
-          if-no-files-found: error
-
-  windows-driver:
-    name: SteamVR driver win64
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure
-        run: cmake -S . -B build -A x64 -DSVRT_BUILD_DRIVER=ON -DSVRT_BUILD_PI_LIBRARY=OFF -DSVRT_BUILD_RECEIVER=OFF
-
-      - name: Build
-        run: cmake --build build --config Release --parallel
-
-      - name: Package
-        shell: pwsh
-        run: Compress-Archive -Path build/svrt,steamvr-driver/README.md -DestinationPath svrt-steamvr-driver-win64.zip -Force
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-steamvr-win64
-          path: svrt-steamvr-driver-win64.zip
-          if-no-files-found: error
-
-  stearlight-os-rpi4:
-    name: Stearlight OS Raspberry Pi 4
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Validate OS scripts
-        run: bash os/tests/layout-test.sh
-
-      - name: Build dated flash image
-        env:
-          STEAM_USERNAME: ${{ secrets.STEARLIGHT_STEAM_USERNAME }}
-          STEAM_PASSWORD: ${{ secrets.STEARLIGHT_STEAM_PASSWORD }}
-          STEARLIGHT_FEX_BRANCH: beta
-          STEARLIGHT_PROTON_BRANCH: public
-        run: |
-          set -euo pipefail
-          export STEARLIGHT_BUILD_DATE="$(date -u +%Y%m%d)"
-          export STEARLIGHT_OUTPUT_DIR="$PWD/out/stearlight-os"
-          bash os/build.sh
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-stearlight-os-rpi4
-          path: |
-            out/stearlight-os/image/stearlight-os-*rp4.img.gz
-            out/stearlight-os/image/stearlight-os-*rp4.img.gz.sha256
-          if-no-files-found: error
-          compression-level: 0
-
-  continuous-release:
-    name: Continuous build release
-    needs: [linux, windows-driver, stearlight-os-rpi4]
-    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Download release assets
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-*
-          path: release-assets
-          merge-multiple: true
-
-      - name: Update continuous release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/continuous" >/dev/null 2>&1; then
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/continuous" \
-              --method PATCH \
-              --raw-field sha="${GITHUB_SHA}" \
-              --field force=true >/dev/null
-          else
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
-              --method POST \
-              --raw-field ref="refs/tags/continuous" \
-              --raw-field sha="${GITHUB_SHA}" >/dev/null
-          fi
-
-          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          notes="GitHub Actions build log: ${run_url}"
-
-          if gh release view continuous >/dev/null 2>&1; then
-            gh release edit continuous \
-              --title "Continuous build" \
-              --notes "${notes}" \
-              --latest
-            gh release view continuous --json assets --jq '.assets[].name' | while read -r asset; do
-              test -z "${asset}" || gh release delete-asset continuous "${asset}" --yes
-            done
-          else
-            gh release create continuous \
-              --title "Continuous build" \
-              --notes "${notes}" \
-              --latest
-          fi
-
-          gh release upload continuous release-assets/* --clobber
+          sh vm/os/tests/layout-test.sh
+          sh vm/os/tests/steam-firstboot-test.sh
+          sh vm/os/tests/steam-runtime-patch-test.sh
+          sh vm/os/tests/steamvr-native-test.sh
+          sh vm/os/tests/xr-bridge-env-test.sh
+          sh vm/os/tests/xr-lifecycle-test.sh

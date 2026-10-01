@@ -1,0 +1,268 @@
+#!/bin/sh
+# OpenRC's local service starts this after dbus and seatd.
+(
+  # Keep the appliance console brief; detailed diagnostics go to ttyAMA0.
+  boot_status() {
+    printf '%s\n' "$1" >/dev/tty1 2>/dev/null || true
+  }
+  boot_status 'Stearlight OS'
+  boot_status 'ARM64 Steam Frame test VM'
+  boot_status 'Display target: 2880x1600 at 60 Hz'
+  boot_status 'Starting Frame session...'
+  sleep 3
+  mount -o remount,rw / || true
+  # Optional local tester console, separate from the serial boot log.
+  if grep -qw stearlight.debug=1 /proc/cmdline; then
+    modprobe virtio_console 2>/dev/null || true
+    if [ -c /dev/hvc0 ]; then
+      setsid sh -c 'exec /bin/sh -i </dev/hvc0 >/dev/hvc0 2>&1' &
+    fi
+  fi
+  export HOME=/home/stearlight
+  export USER=stearlight
+  export DISPLAY=:0
+  export XDG_RUNTIME_DIR=/run/user/1000
+  export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/virtio_icd.aarch64.json
+  export GAMESCOPE_BIN=/usr/local/bin/stearlight-frame-gamescope
+  export STEARLIGHT_GAMESCOPE_STARTUP_SECONDS=120
+  export STEARLIGHT_FAKE_TRACKING=1
+  export STEARLIGHT_FAKE_AUTO_SELECT=1
+  # Frame starts vrstartup after Gamescope publishes its endpoints and before
+  # Steam. Waiting for Steam here would deadlock the deferred OpenVR backend.
+  export STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM=0
+  # Opt in to the patched Windows renderer's Vulkan image/timeline bridge.
+  # Keep the glibc ICD scoped to the native Frame launchers.
+  if grep -qw stearlight.windows-gpu=1 /proc/cmdline; then
+    export STEARLIGHT_TIMELINE_BRIDGE=1
+    export STEARLIGHT_VULKAN_WSI_SHIM=/opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so
+    export STEARLIGHT_VULKAN_LIBRARY_PATH=/opt/frame-gamescope/lib:/opt/stearlight-vulkan
+    export STEARLIGHT_STEAMVR_VULKAN_ICD=/opt/stearlight-vulkan/virtio_icd.json
+    export STEARLIGHT_STEAMVR_DISPLAY=:0
+    export STEARLIGHT_GAMESCOPE_VM_UPLOAD=1
+    export MESA_VK_WSI_DEBUG=sw,noshm
+    export XWAYLAND_NO_GLAMOR=1 LIBGL_ALWAYS_SOFTWARE=1
+    export VN_DEBUG=no_drm_syncobj
+    export VN_PERF=no_async_mem_alloc,no_async_buffer_create
+    echo 'STEARLIGHT ARM64 WINDOWS GPU BRIDGE'
+  fi
+  if grep -qw stearlight.capture=1 /proc/cmdline; then
+    export STEARLIGHT_CAPTURE_SCREENSHOT=1
+    export STEARLIGHT_STEAM_WAIT_SECONDS=${STEARLIGHT_STEAM_WAIT_SECONDS:-900}
+    export STEARLIGHT_DASHBOARD_WAIT_SECONDS=${STEARLIGHT_DASHBOARD_WAIT_SECONDS:-300}
+  fi
+  mkdir -p "$XDG_RUNTIME_DIR" "$HOME/.cache/SteamVR/htmlcache"
+  chown stearlight:stearlight "$XDG_RUNTIME_DIR" "$HOME"
+  chown -R stearlight:stearlight "$HOME/.cache"
+  if command -v ip >/dev/null 2>&1; then
+    ip link set lo up 2>/dev/null || true
+    ip addr add 127.0.0.1/8 dev lo 2>/dev/null || true
+    ip -6 addr add ::1/128 dev lo 2>/dev/null || true
+  fi
+  if [ -w /etc/hosts ] && ! grep -Eq '^[[:space:]]*127\.0\.0\.1[[:space:]]+([^[:space:]]+[[:space:]]+)*steamloopback\.host([[:space:]]|$)' /etc/hosts; then
+    printf '%s\n' '127.0.0.1 steamloopback.host' >>/etc/hosts
+  fi
+  if [ ! -c /dev/null ]; then
+    rm -f /dev/null
+    mknod -m 0666 /dev/null c 1 3
+  fi
+  chmod 0666 /dev/null
+  chmod a+rw /dev/ttyAMA0 2>/dev/null || true
+  for device in /dev/random /dev/urandom; do
+    if [ ! -c "$device" ]; then
+      rm -f "$device"
+      case "$device" in
+        /dev/random) mknod -m 0666 "$device" c 1 8 ;;
+        /dev/urandom) mknod -m 0666 "$device" c 1 9 ;;
+      esac
+    fi
+    chmod 0666 "$device"
+  done
+  chmod a+rw /dev/dri/* 2>/dev/null || true
+  rc-service udev start 2>&1 || true
+  modprobe evdev 2>/dev/null || true
+  udevadm trigger --action=add --subsystem-match=input 2>&1 || true
+  udevadm settle 2>&1 || true
+  chmod a+rw /dev/input/event* 2>/dev/null || true
+  echo 'STEARLIGHT ARM64 INPUT DEVICES'
+  ls -l /dev/input 2>&1 || true
+  if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ] && command -v modetest >/dev/null 2>&1; then
+    echo 'STEARLIGHT ARM64 DRM PLANES'
+    modetest -p -d /dev/dri/card0 2>&1 | sed -n '1,100p'
+  fi
+  steam_archive=${STEARLIGHT_FRAME_STEAM_ARCHIVE:-/dev/vdb}
+  if [ -b "$steam_archive" ] && [ ! -x /opt/steam/RUNSTEAM.sh ]; then
+    echo 'STEARLIGHT ARM64 STEAM ARCHIVE EXTRACTION START'
+    mkdir -p /opt/steam
+    tar -x -o -f "$steam_archive" -C /opt/steam
+    chown -R stearlight:stearlight /opt/steam
+    test -x /opt/steam/RUNSTEAM.sh
+    test -x /opt/steam/steamrtarm64/steam
+    test -f /opt/steam/linuxarm64/steamclient.so
+    echo 'STEARLIGHT ARM64 STEAM ARCHIVE EXTRACTION READY'
+  fi
+  if [ -b /dev/vdc ] && {
+    ! command -v grim >/dev/null 2>&1 ||
+    [ ! -e /usr/lib/aarch64-linux-gnu/libgtk-x11-2.0.so.0 ] ||
+    [ ! -e /usr/lib/aarch64-linux-gnu/libva.so.2 ] ||
+    [ ! -e /usr/lib/aarch64-linux-gnu/libatk-1.0.so.0 ] ||
+    [ ! -e /usr/lib/aarch64-linux-gnu/libatk-bridge-2.0.so.0 ] ||
+    [ ! -e /usr/lib/aarch64-linux-gnu/libatspi.so.0 ] ||
+    [ ! -e /usr/lib/aarch64-linux-gnu/libcups.so.2 ] ||
+    [ ! -e /usr/lib/aarch64-linux-gnu/libibus-1.0.so.5 ] ||
+    [ ! -e /usr/lib/aarch64-linux-gnu/libvulkan_lvp.so ] ||
+    [ ! -x /usr/bin/taskset ] ||
+    [ ! -s /usr/bin/taskset ];
+  }; then
+    echo 'STEARLIGHT ARM64 RUNTIME EXTRAS EXTRACTION START'
+    tar -x -f /dev/vdc -C /
+    chmod 0755 /usr/bin/grim
+    chmod 0755 /usr/bin/taskset
+    command -v grim >/dev/null
+    test -e /usr/lib/aarch64-linux-gnu/libgtk-x11-2.0.so.0
+    test -e /usr/lib/aarch64-linux-gnu/libva.so.2
+    test -e /usr/lib/aarch64-linux-gnu/libatk-1.0.so.0
+    test -e /usr/lib/aarch64-linux-gnu/libatk-bridge-2.0.so.0
+    test -e /usr/lib/aarch64-linux-gnu/libatspi.so.0
+    test -e /usr/lib/aarch64-linux-gnu/libcups.so.2
+    test -e /usr/lib/aarch64-linux-gnu/libibus-1.0.so.5
+    test -e /usr/lib/aarch64-linux-gnu/libvulkan_lvp.so
+    test -x /usr/bin/taskset
+    test -s /usr/bin/taskset
+    echo 'STEARLIGHT ARM64 RUNTIME EXTRAS EXTRACTION READY'
+  fi
+  if command -v udhcpc >/dev/null 2>&1 && [ -e /sys/class/net/eth0 ]; then
+    ip link set eth0 up 2>/dev/null || true
+    udhcpc -i eth0 -q -n -t 6 >/dev/null 2>&1 || true
+  fi
+  echo 'STEARLIGHT ARM64 NETWORK STATE'
+  ip addr show 2>&1 || true
+  cat /etc/hosts
+  mkdir -p /tmp/.X11-unix
+  chown root:root /tmp/.X11-unix
+  chmod 1777 /tmp/.X11-unix
+  rm -f /tmp/.X11-unix/X* /tmp/.X*-lock
+  if [ "${STEARLIGHT_XWAYLAND_NO_GLAMOR:-1}" = 1 ]; then
+    export XWAYLAND_NO_GLAMOR=1
+  else
+    unset XWAYLAND_NO_GLAMOR
+  fi
+  echo "STEARLIGHT ARM64 XWAYLAND_NO_GLAMOR=${XWAYLAND_NO_GLAMOR:-disabled}"
+  if command -v Xorg >/dev/null 2>&1; then
+    cat >/tmp/stearlight-xorg.conf <<'EOF'
+Section "Device"
+  Identifier "Virtio GPU"
+  Driver "modesetting"
+  Option "DRI" "3"
+EndSection
+Section "Monitor"
+  Identifier "Frame VM Display"
+  Modeline "2880x1600" 300.23 2880 2928 2960 3040 1600 1603 1609 1646 +HSync -VSync
+  Option "PreferredMode" "2880x1600"
+EndSection
+Section "Screen"
+  Identifier "Screen0"
+  Device "Virtio GPU"
+  Monitor "Frame VM Display"
+  DefaultDepth 24
+  SubSection "Display"
+    Modes "2880x1600"
+  EndSubSection
+EndSection
+EOF
+    echo 'STEARLIGHT ARM64 XORG START'
+    # Keep the Xorg presentation working in the Windows test bundle while
+    # retaining the DRI3 endpoint needed by Gamescope's Vulkan surface.
+    HOME=/root LIBGL_ALWAYS_SOFTWARE=1 Xorg :0 -noreset -nolisten tcp -ac \
+      -config /tmp/stearlight-xorg.conf -logfile /tmp/stearlight-xorg.log \
+      >/tmp/stearlight-xorg-output.log 2>&1 &
+    xorg_pid=$!
+    xorg_ready=0
+    xorg_attempt=0
+    while [ "$xorg_attempt" -lt 30 ]; do
+      if command -v xset >/dev/null 2>&1 &&
+         DISPLAY=:0 timeout 1s xset q >/dev/null 2>&1; then
+        xorg_ready=1
+        break
+      fi
+      if ! kill -0 "$xorg_pid" 2>/dev/null; then break; fi
+      sleep 1
+      xorg_attempt=$((xorg_attempt + 1))
+    done
+    if [ "$xorg_ready" = 1 ]; then
+      echo 'STEARLIGHT ARM64 XORG READY DISPLAY=:0'
+      xorg_output=$(DISPLAY=:0 xrandr --query | awk '/ connected/ {print $1; exit}')
+      if [ -z "$xorg_output" ] ||
+         ! DISPLAY=:0 xrandr --output "$xorg_output" --mode 2880x1600; then
+        echo 'STEARLIGHT ARM64 XORG DISPLAY MODE FAILED'
+        exit 1
+      fi
+      DISPLAY=:0 xrandr --query
+    else
+      echo 'STEARLIGHT ARM64 XORG FAILED'
+      boot_status 'Display failed; see serial-test.log.'
+      tail -n 40 /tmp/stearlight-xorg.log /tmp/stearlight-xorg-output.log 2>/dev/null || true
+      exit 1
+    fi
+  fi
+  mkdir -p "$XDG_RUNTIME_DIR"
+  chown stearlight:stearlight "$XDG_RUNTIME_DIR"
+  chmod 0700 "$XDG_RUNTIME_DIR"
+  animation_pid=
+  stop_animation() {
+    touch "$XDG_RUNTIME_DIR/stearlight-boot-animation.stop"
+    if [ -n "$animation_pid" ]; then
+      kill "$animation_pid" 2>/dev/null || true
+      wait "$animation_pid" 2>/dev/null || true
+    fi
+  }
+  trap stop_animation EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  rm -f "$XDG_RUNTIME_DIR/stearlight-boot-animation.state" \
+    "$XDG_RUNTIME_DIR/stearlight-boot-animation.stop"
+  su -p stearlight -s /bin/sh -c 'exec /usr/local/bin/stearlight-boot-animation' &
+  animation_pid=$!
+  animation_attempt=0
+  while [ "$animation_attempt" -lt 120 ]; do
+    animation_state=$(cat "$XDG_RUNTIME_DIR/stearlight-boot-animation.state" 2>/dev/null || true)
+    case "$animation_state" in loop|failed) break ;; esac
+    kill -0 "$animation_pid" 2>/dev/null || break
+    sleep 0.25
+    animation_attempt=$((animation_attempt + 1))
+  done
+  if [ "${animation_state:-}" != loop ]; then
+    echo 'STEARLIGHT ARM64 ANIMATION STARTUP FAILED'
+    stop_animation
+    animation_pid=
+  elif grep -qw stearlight.animations=1 /proc/cmdline; then
+    # Focused display check; it does not claim Gamescope or VR readiness.
+    sleep 3
+    echo 'STEARLIGHT ARM64 ANIMATION PREVIEW READY'
+    wait "$animation_pid"
+    exit $?
+  fi
+  if grep -qw stearlight.gamescope-preview=1 /proc/cmdline; then
+    stop_animation
+    animation_pid=
+    export STEARLIGHT_GAMESCOPE_VM_UPLOAD=1
+    export MESA_VK_WSI_DEBUG=sw,noshm XWAYLAND_NO_GLAMOR=1 LIBGL_ALWAYS_SOFTWARE=1
+    export VN_DEBUG=no_drm_syncobj VN_PERF=no_async_mem_alloc,no_async_buffer_create
+    echo 'STEARLIGHT ARM64 GAMESCOPE START backend=sdl preview=1'
+    su -p stearlight -s /bin/sh -c '
+      exec /usr/local/bin/stearlight-frame-gamescope --backend sdl \
+        -W 1920 -H 1080 -w 1280 -h 720 -r 60 -- \
+        /usr/local/bin/stearlight-gamescope-preview
+    '
+    preview_status=$?
+    echo "STEARLIGHT ARM64 GAMESCOPE EXIT=$preview_status"
+    exit "$preview_status"
+  fi
+  echo 'STEARLIGHT ARM64 GAMESCOPE START backend=openvr'
+  su -p stearlight -s /bin/sh -c '
+    export NESTED_REFRESH=60
+    /usr/bin/gamescope-session-plus steamframe
+  '
+  gamescope_status=$?
+  sync
+  echo "STEARLIGHT ARM64 GAMESCOPE EXIT=$gamescope_status"
+) >/dev/ttyAMA0 2>&1 &

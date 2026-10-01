@@ -1,12 +1,11 @@
 # SteamVR dashboard runtime contract
 
-This records behavior recovered from the authorized x86_64 Linux SteamVR
-depot at `F:\StearlightBuildArchive\steamvr-linux`. The depot binaries are
-stripped and their referenced `vrdashboard.dbg` file is not present. The
-analysis used Ghidra on `vrdashboard`, `vrstartup`, `vrserver`, and
-`vrcompositor`; it did not recover Valve's original C++ source. Keep the
-runtime binaries and web bundle as the implementation of record instead of
-treating this note as a source replacement.
+This records behavior recovered from Valve's Linux SteamVR runtime. The
+maintained VM uses the ARM64 runtime extracted from Steam Frame recovery; the
+older analysis below used authorized x86_64 SteamVR binaries. The depot
+binaries are stripped and do not include Valve's original C++ source. Keep the
+extracted runtime and web bundle as the implementation of record; this note
+describes runtime behavior rather than replacing its source.
 
 ## Dashboard startup
 
@@ -87,46 +86,9 @@ or preserves the reference UI, so the VM configuration does not enable it.
 Valve's Linux issue tracker describes Facet as not officially supported for
 non-Steam-Link use: <https://github.com/ValveSoftware/SteamVR-for-Linux/issues/909>.
 
-## Current VM bring-up blocker
+## VM visual validation
 
-The existing QEMU screenshot and serial log were checked before another image
-build. The fake HMD and Frame controllers register, and Valve starts the
-compositor/dashboard processes, but the compositor then reports
-`VUID-VkExportSemaphoreCreateInfo-handleTypes-01124`: the selected llvmpipe
-device does not support exportable opaque-FD semaphores. SteamVR subsequently
-aborts in `vulkanrenderer.cpp` with `VkResult UNKNOWN_ERROR`, so there is no stable
-native dashboard frame to compare with the reference yet. The earlier
-`Failed to create direct mode surface` warning is expected for the tracking-
-only HMD; the opaque-semaphore fatal is the blocker.
-
-On 2026-09-24, the existing VDI was also tried with this host's QEMU
-`virtio-gpu-gl-pci,venus=on` path using a disposable overlay. QEMU exited
-before the guest booted because its `virglrenderer` was built without render
-server support and could not initialize Venus. The base VDI was not modified.
-Docker Desktop was also probed with the host RTX 3050 exposed to an Ubuntu
-container; `vulkaninfo` still enumerated only llvmpipe, so that container path
-does not currently expose the host GPU to SteamVR's Vulkan renderer either.
-The Ubuntu QEMU package accepts the Venus device, but cannot initialize its
-EGL renderer in Docker because no DRM render node is available, including with
-software/surfaceless EGL. Neither Docker route currently provides a usable
-Vulkan device to the guest.
-Until the VM has a Vulkan device that supports the semaphore export SteamVR
-requests, rebuilding it cannot produce the screenshot needed for visual
-acceptance.
-
-The launcher now waits for both the Steam client and `steamwebhelper` before
-starting `vrstartup` (bounded by `STEARLIGHT_NATIVE_STEAM_WAIT_SECONDS`, 150
-seconds by default). This avoids the separate early-start failure recorded
-in `vrserver.txt` as `Steam is probably not running`.
-
-## Local analysis
-
-`tools/re/ExportSteamDashboard.java` is a Ghidra headless script that exports
-decompiled functions which call OpenVR imports or reference dashboard,
-laser, or curvature strings. It accepts the output
-path as its first script argument. Analysis dumps and the temporary Ghidra/JDK
-installation are kept outside the repository under
-`F:\StearlightBuildTemp\ghidra`. The selected
-function exports are `vrdashboard-decomp.txt`, `vrstartup-decomp.txt`,
-`vrserver-decomp.txt`, and `vrcompositor-decomp.txt`; the installed tool and
-download archives are disposable and not part of the runtime image.
+The native implementation is Valve's SteamVR runtime; source/layout checks alone
+cannot prove the dashboard dock or controller laser is visible. The ARM64 test
+harness boots with Virtio-GPU/Venus, waits for SteamVR's compositor and
+dashboard, then saves a PPM framebuffer for visual inspection.

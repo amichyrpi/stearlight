@@ -1,0 +1,376 @@
+#!/bin/sh
+set -eu
+
+# Launch Valve's SteamVR runtime without interposing a second dashboard
+# implementation.  vrstartup owns vrserver, vrcompositor and vrdashboard;
+# the latter creates the native VRDashboardBar overlay and laser cursor.
+#
+machine=$(uname -m)
+case "$machine" in
+  x86_64|amd64) platform=linux64 ;;
+  aarch64|arm64) platform=linuxarm64 ;;
+  *)
+    printf 'STEARLIGHT NATIVE STEAMVR: unsupported architecture %s\n' "$machine" >&2
+    exit 126
+    ;;
+esac
+
+root=${STEARLIGHT_STEAMVR_ROOT:-}
+if [ -z "$root" ]; then
+  for candidate in \
+      /opt/steamvr \
+      "${HOME:-/home/stearlight}/.local/share/Steam/steamapps/common/SteamVR"; do
+    if [ -x "$candidate/bin/$platform/vrstartup" ] ||
+       [ -x "$candidate/bin/$platform/vrserver" ]; then
+      root=$candidate
+      break
+    fi
+  done
+fi
+
+if [ -z "$root" ] || [ ! -d "$root" ]; then
+  printf 'STEARLIGHT NATIVE STEAMVR: runtime not installed (expected /opt/steamvr)\n' >&2
+  exit 127
+fi
+
+bindir="$root/bin/$platform"
+envdir="$root/bin/vrenv.sh"
+for runtime_binary in "$envdir" "$bindir/vrstartup" "$bindir/vrserver" \
+    "$bindir/vrcompositor" "$bindir/vrdashboard" "$bindir/vrpathreg"; do
+  if [ ! -x "$runtime_binary" ]; then
+    printf 'STEARLIGHT NATIVE STEAMVR: missing executable %s\n' \
+      "$runtime_binary" >&2
+    exit 127
+  fi
+done
+
+export STEAMVR_VRENV="$envdir"
+export STEAMVR_TOOLSDIR="$root"
+export STEAMVR_ROOT="$root"
+export VR_OVERRIDE="$root"
+export STEAMVR_PLATFORM="$platform"
+export STEAM_BASE_FOLDER="${STEAM_BASE_FOLDER:-${HOME:-/home/stearlight}/.local/share/Steam}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
+export DISPLAY="${DISPLAY:-:0}"
+steam_home=${HOME:-/home/stearlight}
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$steam_home/.config}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$steam_home/.cache}"
+export VR_PATHREG_OVERRIDE="${VR_PATHREG_OVERRIDE:-$XDG_CONFIG_HOME/openvr/openvrpaths.vrpath}"
+# SteamVR resolves the settings filename relative to VR_CONFIG_PATH.  Do not
+# put an absolute path in VR_SETTINGS_FILE: Valve would concatenate it with
+# the config directory and silently load a nonexistent file, restoring the
+# default direct-mode=true behavior.
+export VR_CONFIG_PATH="${VR_CONFIG_PATH:-$steam_home/.steam/steam/config}"
+unset VR_SETTINGS_FILE
+
+# vrenv.sh is Valve's loader boundary. Prefer the Steam Runtime's glibc
+# libraries, then fall back to the guest's compatibility directories.
+steam_root=${STEAM_ROOT:-$STEAM_BASE_FOLDER}
+steam_runtime=${STEAM_RUNTIME_DIR:-$steam_root/steamrt64}
+case "$platform" in
+  linuxarm64)
+    library_arch=aarch64-linux-gnu
+    if [ -z "${STEAM_ROOT:-}" ] && [ -z "${STEAM_RUNTIME_DIR:-}" ]; then
+      for candidate in "$steam_home/.steam/steam" /opt/steam; do
+        if [ -x "$candidate/steamrtarm64/steam" ]; then
+          steam_root=$candidate
+          steam_runtime="$candidate/steamrtarm64"
+          break
+        fi
+      done
+    fi
+    ;;
+  linux64) library_arch=x86_64-linux-gnu ;;
+esac
+runtime_library_path=
+# Do not inject the guest's Debian glibc system directories here. Alpine
+# helpers such as vrcompositor-launcher.sh use musl Bash; if these directories
+# lead LD_LIBRARY_PATH, Bash loads glibc readline/tinfo and fails relocation.
+# The glibc loader still searches its system directories by default.
+for library_directory in \
+    "$steam_root/linux64" \
+    "$steam_root/linuxarm64" \
+    "$steam_runtime" \
+    "$steam_runtime/libs" \
+    "$steam_runtime/files/lib/$library_arch" \
+    "$steam_runtime/files/usr/lib/$library_arch"; do
+  if [ -d "$library_directory" ]; then
+    if [ -n "$runtime_library_path" ]; then
+      runtime_library_path="$runtime_library_path:$library_directory"
+    else
+      runtime_library_path=$library_directory
+    fi
+  fi
+done
+export LD_LIBRARY_PATH="$bindir:$bindir/qt/lib${runtime_library_path:+:$runtime_library_path}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export VRCOMPOSITOR_LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
+export PATH="$bindir:$PATH"
+component=${1:-startup}
+if [ "$#" -gt 0 ]; then shift; fi
+
+mkdir -p "$STEAM_BASE_FOLDER/config" "$STEAM_BASE_FOLDER/logs" \
+  "$steam_home/.config/openvr" "$steam_home/.dbus" \
+  "$steam_home/.steam/steam/config" "$steam_home/.steam/steam/logs" \
+  "$XDG_RUNTIME_DIR" 2>/dev/null || true
+chmod 0700 "$steam_home/.dbus" "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+vrpathreg() {
+  "$bindir/vrpathreg" "$@"
+}
+
+register_driver() {
+  driver_path=$1
+  driver_name=$2
+  if [ ! -d "$driver_path" ]; then
+    printf 'STEARLIGHT NATIVE STEAMVR: required driver directory missing: %s\n' \
+      "$driver_path" >&2
+    return 1
+  fi
+  if registered_path=$(vrpathreg finddriver "$driver_name" 2>/dev/null); then
+    if [ "$registered_path" = "$driver_path" ]; then
+      return 0
+    fi
+    printf 'STEARLIGHT NATIVE STEAMVR: driver %s resolves to %s, expected %s\n' \
+      "$driver_name" "$registered_path" "$driver_path" >&2
+    return 1
+  else
+    find_status=$?
+    if [ "$find_status" -ne 1 ]; then
+      printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg found ambiguous driver %s\n' \
+        "$driver_name" >&2
+      return 1
+    fi
+  fi
+  if ! vrpathreg adddriver "$driver_path" >/dev/null 2>&1; then
+    printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg could not add driver: %s\n' \
+      "$driver_path" >&2
+    return 1
+  fi
+  if registered_path=$(vrpathreg finddriver "$driver_name" 2>/dev/null) &&
+     [ "$registered_path" = "$driver_path" ]; then
+    return 0
+  fi
+  printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg did not resolve driver %s to %s\n' \
+    "$driver_name" "$driver_path" >&2
+  return 1
+}
+
+# Reconcile the path registry on every start. A valid file may still point at
+# another runtime or omit a required driver; preserving it based only on file
+# existence leaves vrstartup free to bind the wrong runtime.
+if vrpathreg setruntime "$root" >/tmp/stearlight-vrpathreg.log 2>&1; then
+  :
+else
+  status=$?
+  printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg setruntime failed (status %s):\n' \
+    "$status" >&2
+  cat /tmp/stearlight-vrpathreg.log >&2 || true
+  exit 1
+fi
+if ! vrpathreg setconfig "$steam_home/.steam/steam/config" >/dev/null 2>&1; then
+  printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg could not set config path\n' >&2
+  exit 1
+fi
+if ! vrpathreg setlog "$steam_home/.steam/steam/logs" >/dev/null 2>&1; then
+  printf 'STEARLIGHT NATIVE STEAMVR: vrpathreg could not set log path\n' >&2
+  exit 1
+fi
+if [ -d "$root/drivers/vrlink" ]; then
+  register_driver "$root/drivers/vrlink" vrlink || exit 1
+fi
+register_driver "$root/drivers/frame_controller" frame_controller || exit 1
+fake_tracking=${STEARLIGHT_FAKE_TRACKING:-0}
+if [ "$fake_tracking" = 1 ]; then
+  # The disposable VM carries stearlight-fake, a public OpenVR server driver
+  # that adds stable HMD/controller poses and input components.
+  # Register it through Valve's own path tool. The fake HMD uses OpenVR's
+  # virtual display component because QEMU has no physical HMD panel.
+  # Register the Valve resource-only Frame controller as well.  stearlight-fake
+  # supplies the tracked devices; SteamVR resolves its input profile, legacy
+  # bindings, icons and render model from Valve's frame_controller resources.
+  register_driver "$root/drivers/stearlight-fake" stearlight-fake || exit 1
+  # The same driver supplies the synthetic HMD and controller inputs; Valve's
+  # compositor and dashboard still own rendering and input behavior.
+  # Seed the minimal VM settings only when the file or mirror geometry is
+  # missing; leave Steam as owner of the rest of the file.
+  fake_settings="$steam_home/.steam/steam/config/steamvr.vrsettings"
+  # SteamVR refuses to create its mirror when geometry is absent (the
+  # compositor reports "Found bad mirror window settings"). Seed only a
+  # missing field so Steam remains the owner after first boot.
+  if [ ! -s "$fake_settings" ] ||
+     ! grep -q '"mirrorViewGeometry"' "$fake_settings" 2>/dev/null; then
+    umask 077
+    printf '%s\n' \
+      '{' \
+      '  "steamvr": {' \
+      '    "requireHmd": false,' \
+      '    "disableAsync": false,' \
+      '    "activateMultipleDrivers": true,' \
+      '    "allowDisplayLockedMode": true,' \
+      '    "allowFallbackMirrorWindowLinux": true,' \
+      '    "enableLinuxVulkanAsync": true,' \
+      '    "defaultPerAppRefreshRate": 60.0,' \
+      '    "mirrorViewGeometry": "0 0 2880 1600",' \
+      '    "mirrorViewGeometryMaximized": false,' \
+      '    "showLegacyMirrorView": true,' \
+      '    "showMirrorView": true,' \
+      '    "mirrorView": 2' \
+      '  },' \
+      '  "direct_mode": {' \
+      '    "enable": false' \
+      '  }' \
+      '}' >"$fake_settings" 2>/dev/null || true
+  fi
+  # Frame's hardware profile defaults to 72 Hz. Keep the virtual desktop's
+  # default app rate at the same 60 Hz advertised by its HMD and QEMU scanout.
+  if grep -q '"defaultPerAppRefreshRate"' "$fake_settings" 2>/dev/null; then
+    sed -i 's/"defaultPerAppRefreshRate"[[:space:]]*:[[:space:]]*[0-9][0-9.]*/"defaultPerAppRefreshRate": 60.0/' \
+      "$fake_settings" 2>/dev/null || true
+  else
+    sed -i 's/"steamvr"[[:space:]]*:[[:space:]]*{/"steamvr": { "defaultPerAppRefreshRate": 60.0,/' \
+      "$fake_settings" 2>/dev/null || true
+  fi
+  # SteamVR 2.17.10 requires its Linux async path and compute queue. Keep those
+  # settings enabled. The legacy VM shim's semaphore conversion has not
+  # supplied a working native synchronization contract.
+  if grep -q '"disableAsync"' "$fake_settings" 2>/dev/null; then
+    sed -i 's/"disableAsync"[[:space:]]*:[[:space:]]*true/"disableAsync": false/' \
+      "$fake_settings" 2>/dev/null || true
+  else
+    sed -i 's/"steamvr"[[:space:]]*:[[:space:]]*{/"steamvr": { "disableAsync": false,/' \
+      "$fake_settings" 2>/dev/null || true
+  fi
+  if grep -q '"enableLinuxVulkanAsync"' "$fake_settings" 2>/dev/null; then
+    sed -i 's/"enableLinuxVulkanAsync"[[:space:]]*:[[:space:]]*false/"enableLinuxVulkanAsync": true/' \
+      "$fake_settings" 2>/dev/null || true
+  else
+    sed -i 's/"steamvr"[[:space:]]*:[[:space:]]*{/"steamvr": { "enableLinuxVulkanAsync": true,/' \
+      "$fake_settings" 2>/dev/null || true
+  fi
+  if [ -s "$fake_settings" ]; then
+    # A previous capture crash can persistently block the VM's only HMD.
+    # Re-enable this test driver for a new capture attempt.
+    if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
+      sed -i '/"driver_stearlight-fake"[[:space:]]*:/,/^[[:space:]]*}/ s/"blocked_by_safe_mode"[[:space:]]*:[[:space:]]*true/"blocked_by_safe_mode": false/' \
+        "$fake_settings" 2>/dev/null || true
+    fi
+    sed -i '/"direct_mode"[[:space:]]*:/,/^[[:space:]]*}/ s/"enable"[[:space:]]*:[[:space:]]*true/"enable": false/' \
+      "$fake_settings" 2>/dev/null || true
+    chmod 0600 "$fake_settings" 2>/dev/null || true
+  fi
+  {
+    printf 'STEARLIGHT NATIVE STEAMVR CONFIG PATH=%s SETTINGS=%s\n' \
+      "$VR_CONFIG_PATH" "$fake_settings"
+    grep -E '"(disableAsync|enableLinuxVulkanAsync)"' "$fake_settings" \
+      2>/dev/null || true
+  } >&2
+fi
+if [ "$component" = prepare ]; then
+  printf '%s\n' 'STEARLIGHT NATIVE STEAMVR: configuration prepared'
+  exit 0
+fi
+steam_client_present() {
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [ -r "$cmdline" ] || continue
+    process_command=$(tr '\000' ' ' <"$cmdline" 2>/dev/null || true)
+    case "$process_command" in
+      *steam.sh*|*steamrt*|*/steam\ *|*/steam)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+steam_webhelper_present() {
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [ -r "$cmdline" ] || continue
+    process_id=${cmdline#/proc/}
+    process_id=${process_id%/cmdline}
+    process_command=$(cat "$cmdline" 2>/dev/null | tr '\000' ' ' 2>/dev/null || true)
+    case "$process_command" in
+      *steamwebhelper*)
+        process_state=$(awk '{print $3}' "/proc/$process_id/stat" 2>/dev/null || true)
+        case "$process_state" in ''|Z|X) continue ;; esac
+        process_executable=$(readlink "/proc/$process_id/exe" 2>/dev/null || true)
+        case "$process_executable" in
+          *steamwebhelper*) return 0 ;;
+        esac
+        ;;
+    esac
+  done
+  return 1
+}
+
+# Desktop sessions can wait for an already-running Steam client. The Frame
+# session opts out: its native service ordering starts SteamVR before Steam.
+if [ "${STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM:-1}" != 0 ]; then
+  attempt=0
+  wait_seconds=${STEARLIGHT_NATIVE_STEAM_WAIT_SECONDS:-150}
+  case "$wait_seconds" in
+    ''|*[!0-9]*)
+      printf 'STEARLIGHT NATIVE STEAMVR: invalid Steam wait timeout: %s\n' \
+        "$wait_seconds" >&2
+      exit 2
+      ;;
+  esac
+  wait_attempts=$((wait_seconds * 4))
+  while [ "$attempt" -lt "$wait_attempts" ] &&
+        { ! steam_client_present || ! steam_webhelper_present; }; do
+    attempt=$((attempt + 1))
+    sleep 0.25
+  done
+  if ! steam_client_present || ! steam_webhelper_present; then
+    printf 'STEARLIGHT NATIVE STEAMVR: Steam client/WebHelper did not become ready within %s seconds; not starting vrstartup\n' \
+      "$wait_seconds" >&2
+    exit 1
+  fi
+fi
+
+valve_binary=$component
+case "$component" in
+  startup) valve_binary=vrstartup ;;
+  server) valve_binary=vrserver ;;
+esac
+launch_valve_component() {
+  # vrenv.sh is a Bash script. Starting its Alpine musl Bash with this
+  # glibc-only library path makes Bash load Debian's libreadline and fail
+  # before it can exec the Valve binary. These variables already provide the
+  # environment vrenv.sh prepares, so launch the glibc ELF directly.
+  if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] ||
+     ! command -v dbus-launch >/dev/null 2>&1; then
+    exec "$bindir/$valve_binary" "$@"
+  fi
+  # dbus-launch is a musl program in this Alpine guest. Keep the glibc search
+  # path away from it, then restore it in a shell immediately before Valve's
+  # glibc runtime boundary.
+  valve_library_path=$LD_LIBRARY_PATH
+  unset LD_LIBRARY_PATH
+  exec dbus-launch --exit-with-session /bin/sh -c '
+    valve_library_path=$1
+    valve_binary=$2
+    shift 2
+    export LD_LIBRARY_PATH=$valve_library_path
+    exec "$valve_binary" "$@"
+  ' sh "$valve_library_path" "$bindir/$valve_binary" "$@"
+}
+case "$component" in
+  startup)
+    # vrstartup is the Valve coordinator. It starts vrserver and then lets
+    # vrserver bring up vrcompositor/vrdashboard when the selected HMD driver
+    # is available. Launch it with Valve's runtime environment without
+    # invoking the interactive pkexec
+    # setup prompt from vrsetup.sh.
+    launch_valve_component "$@"
+    ;;
+  server)
+    launch_valve_component "$@"
+    ;;
+  vrdashboard|vrcompositor|vrmonitor)
+    launch_valve_component "$@"
+    ;;
+  *)
+    printf 'usage: %s [startup|server|vrdashboard|vrcompositor|vrmonitor] [args...]\n' "$0" >&2
+    exit 2
+    ;;
+esac

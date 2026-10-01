@@ -16,7 +16,7 @@ import java.util.Set;
 public class ExportSteamDashboard extends GhidraScript {
     @Override
     public void run() throws Exception {
-        String output = getScriptArgs().length > 0 ? getScriptArgs()[0] : "F:/StearlightBuildTemp/ghidra/vrdashboard-decomp.txt";
+        String output = getScriptArgs().length > 0 ? getScriptArgs()[0] : "vrdashboard-decomp.txt";
         DecompInterface decomp = new DecompInterface();
         decomp.openProgram(currentProgram);
         Set<Function> selected = new LinkedHashSet<>();

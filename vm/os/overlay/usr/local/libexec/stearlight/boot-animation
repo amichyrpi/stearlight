@@ -1,0 +1,83 @@
+#!/bin/sh
+# VM display preview of Valve's unmodified Steam UI startup assets. Steam
+# retains its own movie/loading screen once the native VR session is running.
+set -eu
+runtime=${XDG_RUNTIME_DIR:-/run/user/1000}
+state="$runtime/stearlight-boot-animation.state"
+stop="$runtime/stearlight-boot-animation.stop"
+assets=/opt/steam/steamui
+player=
+cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ] && [ ! -f "$stop" ]; then
+    printf 'failed\n' >"$state"
+    printf 'STEARLIGHT ARM64 ANIMATION PLAYBACK FAILED status=%s\n' "$status" >&2
+  fi
+  if [ -n "$player" ]; then
+    kill "$player" 2>/dev/null || true
+    wait "$player" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+mkdir -p "$runtime"
+rm -f "$stop"
+printf 'starting\n' >"$state"
+for asset in movies/steamframe_startup_450x450.webm images/steam_spinner.png; do
+  if [ ! -s "$assets/$asset" ]; then
+    printf 'failed\n' >"$state"
+    printf 'STEARLIGHT ARM64 ANIMATION ASSET MISSING=%s\n' "$asset" >&2
+    exit 1
+  fi
+done
+if ! command -v mpv >/dev/null 2>&1; then
+  printf 'failed\n' >"$state"
+  printf '%s\n' 'STEARLIGHT ARM64 ANIMATION PLAYER MISSING' >&2
+  exit 1
+fi
+play() {
+  # X11 software output bypasses Vulkan/OpenVR. Preserve native asset size.
+  mpv --no-config --profile=sw-fast --vo=x11 --hwdec=no --audio=no --fullscreen \
+    --video-unscaled=yes --background=color --background-color=0/0/0 \
+    --osc=no --osd-level=0 --input-default-bindings=no --input-terminal=no \
+    --cursor-autohide=always --no-border --title=Stearlight \
+    --term-status-msg= --msg-color=no \
+    "$@" >>/tmp/stearlight-boot-animation.log 2>&1 &
+  player=$!
+}
+: >/tmp/stearlight-boot-animation.log
+printf 'STEARLIGHT ARM64 BOOT ANIMATION START\n'
+play "$assets/movies/steamframe_startup_450x450.webm"
+if wait "$player"; then player=; else
+  player=
+  printf 'failed\n' >"$state"
+  tail -n 20 /tmp/stearlight-boot-animation.log >&2
+  exit 1
+fi
+[ ! -f "$stop" ] || exit 0
+printf 'STEARLIGHT ARM64 BOOT ANIMATION COMPLETE\n'
+# APNG demuxing preserves every frame and the original frame delays.
+play --demuxer=lavf --demuxer-lavf-format=apng --loop-file=inf \
+  "$assets/images/steam_spinner.png"
+sleep 1
+player_alive() {
+  kill -0 "$player" 2>/dev/null || return 1
+  process_state=$(awk '{print $3}' "/proc/$player/stat" 2>/dev/null || true)
+  case "$process_state" in ''|Z|X) return 1 ;; esac
+}
+if ! player_alive; then
+  printf 'failed\n' >"$state"
+  tail -n 20 /tmp/stearlight-boot-animation.log >&2
+  exit 1
+fi
+printf 'loop\n' >"$state"
+printf 'STEARLIGHT ARM64 LOADING ANIMATION START\n'
+while [ ! -f "$stop" ] && player_alive; do sleep 0.25; done
+if [ ! -f "$stop" ]; then
+  printf 'failed\n' >"$state"
+  tail -n 20 /tmp/stearlight-boot-animation.log >&2
+  exit 1
+fi
+printf 'stopped\n' >"$state"
+printf 'STEARLIGHT ARM64 LOADING ANIMATION STOP\n'

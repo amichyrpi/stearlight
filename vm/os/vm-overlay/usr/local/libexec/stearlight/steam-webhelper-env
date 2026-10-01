@@ -1,0 +1,29 @@
+# Bash reads BASH_ENV for every non-interactive script.  The x86 Steam
+# bootstrap needs an i386 Mesa DRI directory for its own GLX window, but it
+# later launches the 64-bit CEF/WebHelper through steamwebhelper.sh.  Clearing
+# the ABI-specific DRI override at that script boundary keeps the two process
+# trees from loading each other's swrast module without modifying Valve's
+# checksum-protected wrapper files.
+case "${BASH_SOURCE[1]-$0}" in
+  *steamwebhelper.sh)
+    # This is the last host-side shell before pressure-vessel constructs its
+    # bwrap container. Steam can omit the session display variables while
+    # recreating WebHelper, so restore the values published by
+    # gamescope-session-plus here. The Gamescope value is an absolute host
+    # socket path on the VM, which pressure-vessel knows how to bind.
+    if [ -n "${STEARLIGHT_STEAM_XWAYLAND_DISPLAY:-}" ]; then
+      export DISPLAY="$STEARLIGHT_STEAM_XWAYLAND_DISPLAY"
+    fi
+    if [ -n "${STEARLIGHT_STEAM_GAMESCOPE_WAYLAND_DISPLAY:-}" ]; then
+      export GAMESCOPE_WAYLAND_DISPLAY="$STEARLIGHT_STEAM_GAMESCOPE_WAYLAND_DISPLAY"
+    fi
+    unset LIBGL_DRIVERS_PATH
+    unset VK_ICD_FILENAMES VK_DRIVER_FILES
+    unset STEARLIGHT_STEAM_PLATFORM_LIBRARY_PATH
+    ;;
+  *steamwebhelper_sniper_wrap.sh)
+    unset LIBGL_DRIVERS_PATH
+    unset VK_ICD_FILENAMES VK_DRIVER_FILES
+    unset STEARLIGHT_STEAM_PLATFORM_LIBRARY_PATH
+    ;;
+esac
