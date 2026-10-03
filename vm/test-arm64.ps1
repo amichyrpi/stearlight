@@ -20,6 +20,12 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($AnimationPreview -and $GamescopePreview) { throw 'Choose one preview mode.' }
 $displayPreview = $AnimationPreview -or $GamescopePreview
+if ($WindowsGpuBridge -and -not $displayPreview -and
+    -not $PSBoundParameters.ContainsKey('KeepRunning')) {
+    # ARM emulation can finish the native dashboard after the boot capture.
+    # Leave the full session available for inspection unless explicitly closed.
+    $KeepRunning = $true
+}
 $output = (Resolve-Path -LiteralPath $OutputDirectory).Path
 $qemuDir = (Resolve-Path -LiteralPath $QemuDirectory).Path
 foreach ($path in @($output, $qemuDir)) {
@@ -131,7 +137,8 @@ try {
     }
     $process = Start-Process -FilePath $qemu -ArgumentList $args -PassThru `
         -WorkingDirectory $output -WindowStyle Normal -RedirectStandardError $stderr
-    Write-Host "QEMU started; waiting for the Frame display. Log: $serial"
+    Write-Host "Windows QEMU started: $qemu"
+    Write-Host "Waiting for the Frame display. Log: $serial"
 } finally {
     $env:TEMP = $oldTemp
     $env:TMP = $oldTmp
@@ -265,6 +272,7 @@ public static class StearlightArm64QemuWindow {
     if ($displayPreview) { $deadline = (Get-Date).AddSeconds(240) }
     $startedAt = $null
     $nativeFailureAt = $null
+    $captureReadyAt = $null
     $screenshotReady = $false
     $vrHtmlInvalidReported = $false
     $gamescopeWindowFitted = $false
@@ -292,6 +300,18 @@ public static class StearlightArm64QemuWindow {
             if ($log -match 'STEARLIGHT ARM64 (XORG (FAILED|DISPLAY MODE FAILED)|GAMESCOPE STARTUP FAILED)') {
                 throw "The graphical display failed to start. See $serial"
             }
+            if ($log -match 'STEARLIGHT ARM64 AUDIO (SERVER|ENDPOINT) FAILED') {
+                throw "The VM audio service failed before Frame startup. See $serial"
+            }
+            if ($log -match 'STEARLIGHT ARM64 GNU LIBRARY CACHE FAILED') {
+                throw "The GNU runtime library cache could not be refreshed. See $serial"
+            }
+            if ($log -match 'STEARLIGHT ARM64 VRHTML VM UPLOAD FAILED') {
+                throw "The VRHTML upload adaptation does not match this recovery runtime. See $serial"
+            }
+            if ($log -match 'STEARLIGHT ARM64 STEAM IPC PREPARATION FAILED') {
+                throw "The Steam IPC timeout adaptation does not match this recovery client. See $serial"
+            }
             if ($log -match 'STEARLIGHT ARM64 STEAMVR COMPOSITOR FAILED') {
                 throw "Valve's compositor failed before it could present the dashboard. See $serial"
             }
@@ -314,7 +334,7 @@ public static class StearlightArm64QemuWindow {
                 if ($diagnosticsComplete -or $diagnosticsTimedOut) {
                     throw "Steam Frame session failed before the native dashboard became ready. See $serial"
                 }
-            } elseif ($log -match 'STEARLIGHT ARM64 (STEAM WEBHELPER TIMEOUT|STEAM EXITED BEFORE WEBHELPER|DASHBOARD TIMEOUT|SCREENSHOT FAILED)') {
+            } elseif ($log -match 'STEARLIGHT ARM64 (STEAM WEBHELPER TIMEOUT|STEAM EXITED BEFORE WEBHELPER|STEAM EXITED AFTER READY|STEAMVR SESSION ENDED BEFORE CAPTURE|DASHBOARD TIMEOUT|SCREENSHOT FAILED)') {
                 throw "Steam Frame session failed before the native dashboard became ready. See $serial"
             }
             if ($log -match '(?i)X server .* INVALID|vrwebhelper will fail to start') {
@@ -326,13 +346,20 @@ public static class StearlightArm64QemuWindow {
                     $vrHtmlInvalidReported = $true
                 }
             }
-            if ($log -match 'STEARLIGHT ARM64 SCREENSHOT HOST CAPTURE READY') {
-                $screenshotReady = $true
-                break
-            }
             if ($log -match 'STEARLIGHT ARM64 GAMESCOPE EXIT=' -and
                 $log -notmatch 'STEARLIGHT ARM64 STEAMVR EXITED BEFORE DASHBOARD') {
                 throw "Gamescope exited before a screenshot. See $serial"
+            }
+            if (-not $nativeFailureAt -and
+                $log -match 'STEARLIGHT ARM64 SCREENSHOT HOST CAPTURE READY') {
+                if (-not $captureReadyAt) {
+                    $captureReadyAt = Get-Date
+                    Write-Verbose 'Native processes are ready; checking session stability for 60 seconds before capture.'
+                }
+                if ((Get-Date).Subtract($captureReadyAt).TotalSeconds -ge 60) {
+                    $screenshotReady = $true
+                    break
+                }
             }
             if ($log -match 'STEARLIGHT ARM64 GAMESCOPE START') {
                 if (-not $startedAt) { $startedAt = Get-Date }
@@ -491,10 +518,15 @@ public static class StearlightQemuScreenshotWindowCapture {
         $captureHeight = $bitmap.Height
         $visibleSamples = 0
         $colorSamples = 0
+        $sampleColors = New-Object 'System.Collections.Generic.HashSet[int]'
         $sampleStep = if ($displayPreview) { 4 } else { 24 }
         for ($y = 0; $y -lt $bitmap.Height; $y += $sampleStep) {
             for ($x = 0; $x -lt $bitmap.Width; $x += $sampleStep) {
                 $pixel = $bitmap.GetPixel($x, $y)
+                # A solid blue compositor background also passes the brightness
+                # and color checks. Require variation in the captured surface.
+                $colorKey = ($pixel.R -shr 4) * 256 + ($pixel.G -shr 4) * 16 + ($pixel.B -shr 4)
+                [void]$sampleColors.Add($colorKey)
                 if (($pixel.R + $pixel.G + $pixel.B) -gt 18) { $visibleSamples++ }
                 $maxChannel = [Math]::Max($pixel.R, [Math]::Max($pixel.G, $pixel.B))
                 $minChannel = [Math]::Min($pixel.R, [Math]::Min($pixel.G, $pixel.B))
@@ -504,16 +536,23 @@ public static class StearlightQemuScreenshotWindowCapture {
     } finally {
         $bitmap.Dispose()
     }
-    if ($visibleSamples -lt 5 -or (-not $displayPreview -and $colorSamples -lt 5)) {
-        throw "QEMU window capture is blank or still on the boot console ($visibleSamples visible, $colorSamples color samples). See $serial"
+    if ($visibleSamples -lt 5 -or $sampleColors.Count -lt 8 -or
+        (-not $displayPreview -and $colorSamples -lt 5)) {
+        throw "QEMU window capture is blank, uniform or still on the boot console ($visibleSamples visible, $colorSamples color samples, $($sampleColors.Count) sampled colors). See $serial"
     }
-    Write-Verbose "Capture check: $visibleSamples visible samples, $colorSamples color samples (${captureWidth}x${captureHeight}); guest mode ${expectedWidth}x${expectedHeight}."
+    Write-Verbose "Capture check: $visibleSamples visible samples, $colorSamples color samples, $($sampleColors.Count) sampled colors (${captureWidth}x${captureHeight}); guest mode ${expectedWidth}x${expectedHeight}."
     Write-Host "Screenshot: $screenshot"
     if ($AnimationPreview) {
         Write-Host 'Animation preview only; Gamescope, SteamVR and dashboard readiness were not tested.'
     }
     if ($GamescopePreview) {
         Write-Host 'Gamescope SDL preview only; native SteamVR dock, laser and stereo output were not tested.'
+    }
+    if (-not $displayPreview) {
+        Write-Host 'Runtime and capture checks completed; inspect the native dock, laser and panel in QEMU.'
+        if ($KeepRunning) {
+            Write-Host "QEMU remains running (PID $($process.Id))."
+        }
     }
 } finally {
     if (-not $KeepRunning -and -not $process.HasExited) {

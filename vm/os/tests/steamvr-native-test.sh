@@ -56,6 +56,8 @@ cat >"$settings" <<'EOF'
   "steamvr": {
     "disableAsync": true,
     "enableLinuxVulkanAsync": false,
+    "useFacetRenderer": true,
+    "renderSystemLayerInDistortPass": true,
     "mirrorViewGeometry": "0 0 2880 1600"
   },
   "direct_mode": {
@@ -85,6 +87,8 @@ grep -qx "$root/drivers/stearlight-fake" "$registry/stearlight-fake"
 grep -q '"disableAsync": false' "$settings"
 grep -q '"enableLinuxVulkanAsync": true' \
   "$settings"
+grep -q '"useFacetRenderer": false' "$settings"
+grep -q '"renderSystemLayerInDistortPass": false' "$settings"
 grep -q '"mirrorViewGeometry": "0 0 2880 1600"' \
   "$settings"
 grep -q '"enable": false' "$settings"

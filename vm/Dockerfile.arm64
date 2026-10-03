@@ -2,7 +2,7 @@
 FROM --platform=$TARGETPLATFORM debian:bookworm AS glibc
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 libatk-bridge2.0-0 libcups2 libdbus-1-3 libdrm2 libegl1 \
-    libgbm1 libgl1 libgtk2.0-0 libibus-1.0-5 libnss3 libva2 \
+    libgbm1 libgl1 libgtk2.0-0 libibus-1.0-5 libnm0 libnss3 libva2 \
     libopenal1 libpulse0 libsdl2-2.0-0 libssh2-1 libssl3 libsystemd0 \
     libvulkan1 mesa-vulkan-drivers \
     libx11-6 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 \
@@ -61,10 +61,13 @@ RUN mkdir -p /out && g++ -std=c++17 -fPIC -shared \
     /src/vrcompositor_wsi_launcher.c -o /out/vrcompositor-wsi-launcher
 
 FROM --platform=$TARGETPLATFORM alpine:edge AS rootfs
+# Valve identifies WebUI socket peers with lsof's field output (-F upnR).
+# BusyBox's lsof applet cannot supply that protocol and causes HTTP 403.
 RUN apk add --no-cache alpine-base bash coreutils dbus dbus-x11 e2fsprogs \
     eudev eudev-openrc udev-init-scripts-openrc \
-    font-dejavu grim linux-virt mesa-dri-gallium mesa-egl mesa-vulkan-virtio \
-    mesa-vulkan-swrast mpv seatd util-linux-misc vulkan-loader xorg-server \
+    font-dejavu grim linux-virt lsof mesa-dri-gallium mesa-egl mesa-vulkan-virtio \
+    mesa-vulkan-swrast mpv networkmanager networkmanager-cli networkmanager-openrc \
+    pulseaudio pulseaudio-utils seatd util-linux-misc vulkan-loader xorg-server \
     xf86-input-libinput xrandr xset xwayland \
     && printf '/dev/vda / ext4 defaults 0 1\n' >> /etc/fstab \
     && rc-update add localmount boot
@@ -74,6 +77,7 @@ RUN rc-update add udev sysinit \
     && rc-update add udev-settle sysinit \
     && rc-update add udev-postmount default \
     && rc-update add dbus default \
+    && rc-update add networkmanager default \
     && rc-update add seatd default \
     && rc-update add local default \
     && adduser -D -u 1000 -s /bin/sh stearlight \
@@ -88,6 +92,8 @@ COPY --from=glibc-runtime /usr/lib/aarch64-linux-gnu/ /usr/lib/aarch64-linux-gnu
 COPY --from=glibc-runtime /usr/lib/aarch64-linux-gnu/ /lib/aarch64-linux-gnu/
 COPY --from=glibc-runtime /usr/lib/ld-linux-aarch64.so.1 /usr/lib/ld-linux-aarch64.so.1
 COPY --from=glibc-runtime /etc/ld.so.conf.d/aarch64-linux-gnu.conf /etc/ld.so.conf.d/aarch64-linux-gnu.conf
+COPY --from=glibc-runtime /usr/sbin/ldconfig /usr/local/libexec/stearlight/gnu-ldconfig
+RUN printf 'include /etc/ld.so.conf.d/*.conf\n' > /etc/ld.so.conf
 COPY --from=glibc /usr/share/vulkan/icd.d/lvp_icd.aarch64.json /usr/share/vulkan/icd.d/lvp_icd.aarch64.json
 RUN ln -s /usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 /lib/ld-linux-aarch64.so.1
 COPY --from=frame-runtime / /opt/steamvr/
@@ -100,6 +106,8 @@ COPY --from=steam-client / /opt/steam/
 RUN mkdir -p /home/stearlight/.steam \
     && ln -s /opt/steam /home/stearlight/.steam/steam
 COPY vm/os/overlay/usr/share/gamescope-session-plus/ /usr/share/gamescope-session-plus/
+COPY vm/os/overlay/etc/gamescope/scripts/ /etc/gamescope/scripts/
+COPY vm/os/overlay/etc/NetworkManager/ /etc/NetworkManager/
 COPY vm/os/overlay/usr/bin/gamescope-session-plus /usr/bin/gamescope-session-plus
 COPY --from=fake-tracking /out/libstearlight-vulkan-wsi-shim.so /opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so
 COPY --from=fake-tracking /out/vrcompositor-wsi-launcher /opt/steamvr/bin/linuxarm64/vrcompositor.stearlight-launcher
@@ -110,20 +118,26 @@ COPY vm/os/overlay/usr/local/libexec/stearlight/steamvr-native /usr/local/bin/st
 COPY vm/os/overlay/usr/local/libexec/stearlight/steamframe-session /usr/local/bin/stearlight-steamframe-session
 COPY vm/os/overlay/usr/local/libexec/stearlight/boot-animation /usr/local/bin/stearlight-boot-animation
 COPY vm/os/overlay/usr/local/libexec/stearlight/frame-gamescope /usr/local/bin/stearlight-frame-gamescope
+COPY vm/os/overlay/usr/local/libexec/stearlight/frame-vrwebhelper /usr/local/bin/stearlight-frame-vrwebhelper
+COPY vm/os/overlay/usr/local/libexec/stearlight/frame-steam-ipc /usr/local/bin/stearlight-frame-steam-ipc
 COPY vm/os/overlay/usr/local/libexec/stearlight/gamescope-preview /usr/local/bin/stearlight-gamescope-preview
 COPY vm/os/arm64-vm.start /etc/local.d/arm64-vm.start
 COPY vm/os/vm-overlay/etc/inittab /etc/inittab
 RUN mv /opt/steamvr/bin/linuxarm64/vrcompositor /opt/steamvr/bin/linuxarm64/vrcompositor.bin \
     && mv /opt/steamvr/bin/linuxarm64/vrcompositor.stearlight-launcher /opt/steamvr/bin/linuxarm64/vrcompositor \
     && sed -i 's/^VRSTARTUP_PLATFORM=linux64$/VRSTARTUP_PLATFORM=linuxarm64/' /opt/steamvr/bin/vrenv.sh \
+    && sed -i 's|exec ./vrwebhelper "\$@"|exec /usr/local/bin/stearlight-frame-vrwebhelper "\$@"|' /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh \
     && sed -i 's|export LD_LIBRARY_PATH="${STEAMROOT}/${STEAM_RT_ARM64}"|export LD_LIBRARY_PATH="${STEAMROOT}/${STEAM_RT_ARM64}/libs:${STEAMROOT}/${STEAM_RT_ARM64}"|' /opt/steam/RUNSTEAM.sh \
     && sed -i '/^exec /i export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/opt/steam/steamrtarm64/libs:/opt/steam/steamrtarm64:/usr/lib/aarch64-linux-gnu"' /opt/steamvr/bin/linuxarm64/vrcompositor-launcher.sh \
     && sed -i '/^exec /i export VRCOMPOSITOR_LD_LIBRARY_PATH="${VRCOMPOSITOR_LD_LIBRARY_PATH:+$VRCOMPOSITOR_LD_LIBRARY_PATH:}${LD_LIBRARY_PATH}"' /opt/steamvr/bin/linuxarm64/vrcompositor-launcher.sh \
-    && chmod 0755 /usr/local/bin/stearlight-frame-gamescope /usr/local/bin/stearlight-gamescope-preview /usr/local/bin/stearlight-boot-animation /usr/local/bin/stearlight-steamvr-native /usr/local/bin/stearlight-steamframe-session /etc/local.d/arm64-vm.start /usr/bin/gamescope-session-plus /usr/share/gamescope-session-plus/gamescope-session-plus \
+    && chmod 0755 /usr/local/bin/stearlight-frame-vrwebhelper /usr/local/bin/stearlight-frame-steam-ipc /usr/local/bin/stearlight-frame-gamescope /usr/local/bin/stearlight-gamescope-preview /usr/local/bin/stearlight-boot-animation /usr/local/bin/stearlight-steamvr-native /usr/local/bin/stearlight-steamframe-session /etc/local.d/arm64-vm.start /usr/bin/gamescope-session-plus /usr/share/gamescope-session-plus/gamescope-session-plus \
     && chown -R stearlight:stearlight /home/stearlight /run/user/1000 \
     && chown -R stearlight:stearlight /opt/steam \
+    && chmod 0600 /etc/NetworkManager/system-connections/stearlight-vm.nmconnection \
     && test -x /opt/steamvr/bin/linuxarm64/vrcompositor \
     && test -x /opt/steamvr/bin/linuxarm64/vrcompositor.bin \
+    && test -x /usr/local/bin/stearlight-frame-vrwebhelper \
+    && grep -Fq 'exec /usr/local/bin/stearlight-frame-vrwebhelper "$@"' /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh \
     && test -s /opt/steamvr/drivers/stearlight-fake/resources/frame_hmd_additional.vrsettings \
     && test -f /opt/steamvr/resources/webinterface/dashboard/systemui.html \
     && test -x /opt/steam/RUNSTEAM.sh \

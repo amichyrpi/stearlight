@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+directory=${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}/bin/vrwebhelper/linuxarm64
+binary="$directory/vrwebhelper"
+if [ "${1:-}" = prepare ]; then
+  [ "${STEARLIGHT_VRHTML_VM_UPLOAD:-0}" = 1 ] || exit 0
+  # This recovery build selects GPU-local, CPU-visible memory for linear
+  # uploads. Windows Venus instead exposes coherent CPU-visible memory.
+  original=0145a3aca041443305448d8301d223bcadae93a74804befef2a2842e17cae16d
+  patched=8fab8a976e12535bb3e129db6b8a3cc1d4498d6e4c677e062a4637e8b3794144
+  current=$(sha256sum "$binary" | cut -d ' ' -f 1)
+  [ "$current" != "$patched" ] || exit 0
+  if [ "$current" != "$original" ]; then
+    echo 'VRHTML VM upload adaptation does not match this recovery build.' >&2
+    exit 1
+  fi
+  temporary="$binary.stearlight-upload"
+  trap 'rm -f "$temporary"' EXIT
+  cp "$binary" "$temporary"
+  printf %s QgQfEl8YAHE= | base64 -d |
+    dd of="$temporary" bs=1 seek=287444 conv=notrunc 2>/dev/null
+  if [ "$(sha256sum "$temporary" | cut -d ' ' -f 1)" != "$patched" ]; then
+    echo 'VRHTML VM upload adaptation failed validation.' >&2
+    exit 1
+  fi
+  chmod 0755 "$temporary"
+  mv "$temporary" "$binary"
+  echo 'STEARLIGHT ARM64 VRHTML VM UPLOAD READY'
+  exit 0
+fi
+
+cd "$directory"
+if [ "${STEARLIGHT_VRHTML_VM_UPLOAD:-0}" = 1 ]; then
+  # VRHTML uses the guest's GNU loader. Do not inject Frame Gamescope's
+  # older libc here. Keep the Vulkan shim out of its musl launcher scripts.
+  export LD_LIBRARY_PATH="/opt/stearlight-vulkan${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  shim=${STEARLIGHT_VULKAN_WSI_SHIM:-/opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so}
+  export LD_PRELOAD="$shim${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
+exec "$binary" "$@"

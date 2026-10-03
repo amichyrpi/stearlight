@@ -114,8 +114,11 @@ fi
 if [[ "${STEARLIGHT_FRAME_VR_SESSION:-0}" == 1 ]]; then
     # Native Frame parameters; curvature is owned by SteamVR's overlay state.
     # Deferred initialization publishes XWayland before SteamVR starts.
+    # A prestarted runtime can provide its texture modifiers immediately.
+    if [[ "${STEARLIGHT_NATIVE_STEAMVR_PRESTARTED:-0}" != 1 ]]; then
+        gamescope_args+=(--allow-deferred-backend)
+    fi
     gamescope_args+=(
-        --allow-deferred-backend
         --cursor-scale-height 720 --cursor-hotspot 5,3
         --framerate-limit 0 --max-scale 2
         --vr-overlay-enable-click-stabilization

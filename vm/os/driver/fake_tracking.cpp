@@ -8,11 +8,16 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <fcntl.h>
+#include <linux/input.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 namespace {
 
@@ -21,6 +26,82 @@ namespace {
 constexpr uint32_t kEyeWidth = 1440;
 constexpr uint32_t kEyeHeight = 1600;
 constexpr float kIpdMeters = 0.063f;
+
+// Read QEMU's test devices without grabbing them. SteamVR still owns laser
+// rendering, hit testing, click stabilization, and every dashboard action.
+class VmInput {
+ public:
+  void Open() {
+    Close();
+    for (unsigned i = 0; i < devices_.size(); ++i) {
+      char path[64], name[128]{};
+      std::snprintf(path, sizeof(path), "/dev/input/event%u", i);
+      int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+      if (fd < 0) continue;
+      if (ioctl(fd, EVIOCGNAME(sizeof(name)), name) < 0 ||
+          !std::strstr(name, "QEMU")) {
+        close(fd);
+        continue;
+      }
+      devices_[i].fd = fd;
+      ioctl(fd, EVIOCGABS(ABS_X), &devices_[i].x);
+      ioctl(fd, EVIOCGABS(ABS_Y), &devices_[i].y);
+    }
+  }
+
+  void Close() {
+    for (auto &device : devices_) {
+      if (device.fd >= 0) close(device.fd);
+      device.fd = -1;
+    }
+    keys_.fill(false);
+    pointer_valid = false;
+  }
+
+  void Read() {
+    for (auto &device : devices_) {
+      if (device.fd < 0) continue;
+      input_event events[32];
+      ssize_t bytes;
+      while ((bytes = read(device.fd, events, sizeof(events))) > 0) {
+        for (size_t i = 0; i < size_t(bytes) / sizeof(input_event); ++i) {
+          const auto &event = events[i];
+          if (event.type == EV_SYN && event.code == SYN_DROPPED) {
+            keys_.fill(false);
+          } else if (event.type == EV_KEY && event.code < keys_.size()) {
+            keys_[event.code] = event.value != 0;
+          } else if (event.type == EV_ABS) {
+            const auto &range = event.code == ABS_X ? device.x : device.y;
+            if ((event.code == ABS_X || event.code == ABS_Y) &&
+                range.maximum > range.minimum) {
+              double value = double(event.value - range.minimum) /
+                             (range.maximum - range.minimum);
+              value = std::fmax(0.0, std::fmin(value, 1.0));
+              if (event.code == ABS_X) pointer_x = value;
+              else pointer_y = value;
+              pointer_valid = true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  bool Down(unsigned code) const { return code < keys_.size() && keys_[code]; }
+  std::atomic<bool> pointer_valid{false};
+  std::atomic<double> pointer_x{0.25}, pointer_y{0.5};
+
+ private:
+  struct Device {
+    int fd = -1;
+    input_absinfo x{}, y{};
+  };
+  std::array<Device, 32> devices_{};
+  std::array<bool, KEY_CNT> keys_{};
+};
+
+VmInput vm_input;
+
 class FakeHmd final : public vr::ITrackedDeviceServerDriver,
                       public vr::IVRDisplayComponent {
  public:
@@ -44,7 +125,7 @@ class FakeHmd final : public vr::ITrackedDeviceServerDriver,
         properties, vr::Prop_ResourceRoot_String, "stearlight-fake");
     vr::VRProperties()->SetStringProperty(
         properties, vr::Prop_AdditionalDeviceSettingsPath_String,
-        "resources/frame_hmd_additional.vrsettings");
+        "{stearlight-fake}/frame_hmd_additional.vrsettings");
     vr::VRProperties()->SetStringProperty(
         properties, vr::Prop_RegisteredDeviceType_String,
         "stearlight-fake/STEARLIGHT-FAKE-HMD");
@@ -361,15 +442,19 @@ class FakeController final : public vr::ITrackedDeviceServerDriver {
     input->CreateHapticComponent(properties, "/output/haptic",
                                  &inputs_[kHaptic]);
     // The VM has no physical controller with which to dismiss Steam Frame's
-    // first-run page.  Keep this opt-in so normal fake-controller operation
-    // remains passive; vm-console enables it only for the QEMU appliance.
+    // first-run page. Keep automated selections opt-in: repeated clicks can
+    // dismiss the dashboard or open login popups while Steam is initializing.
     const char *auto_select = std::getenv("STEARLIGHT_FAKE_AUTO_SELECT");
     auto_select_ = auto_select && std::atoi(auto_select) != 0;
+    const char *open_dashboard = std::getenv("STEARLIGHT_FAKE_OPEN_DASHBOARD");
+    open_dashboard_ = auto_select_ ||
+                      (open_dashboard && std::atoi(open_dashboard) != 0);
     if (vr::VRDriverLog()) {
       char message[128];
       std::snprintf(message, sizeof(message),
-                    "stearlight fake controller %s auto_select=%d", serial_.c_str(),
-                    auto_select_ ? 1 : 0);
+                    "stearlight fake controller %s auto_select=%d open_dashboard=%d",
+                    serial_.c_str(), auto_select_ ? 1 : 0,
+                    open_dashboard_ ? 1 : 0);
       vr::VRDriverLog()->Log(message);
       std::snprintf(message, sizeof(message),
                     "stearlight fake controller %s system_handle=%llu a_handle=%llu",
@@ -411,6 +496,22 @@ class FakeController final : public vr::ITrackedDeviceServerDriver {
                                : 0.24;
     pose.vecPosition[1] = 1.22;
     pose.vecPosition[2] = -0.55;
+    if (role_ == vr::TrackedControllerRole_RightHand && vm_input.pointer_valid) {
+      // Either stereo eye can be used to aim. Convert its desktop position
+      // to the HMD's 90-degree view and aim the virtual hand along that ray.
+      double eye_x = vm_input.pointer_x * 2.0;
+      if (eye_x >= 1.0) eye_x -= 1.0;
+      double dx = (eye_x * 2.0 - 1.0) * 2.0 - pose.vecPosition[0];
+      double dy = 1.6 + (1.0 - vm_input.pointer_y * 2.0) * 2.0 -
+                  pose.vecPosition[1];
+      double dz = -2.0 - pose.vecPosition[2];
+      double length = std::sqrt(dx * dx + dy * dy + dz * dz);
+      dx /= length;
+      dy /= length;
+      dz /= length;
+      double norm = std::sqrt(dy * dy + dx * dx + (1.0 - dz) * (1.0 - dz));
+      pose.qRotation = {(1.0 - dz) / norm, dy / norm, -dx / norm, 0.0};
+    }
     pose.shouldApplyHeadModel = false;
     pose.willDriftInYaw = false;
     return pose;
@@ -426,10 +527,10 @@ class FakeController final : public vr::ITrackedDeviceServerDriver {
     // system-button edge, so vrdashboard owns the actual Steam Frame dock and
     // laser. Only the right controller pulses so the two mirrored system
     // bindings cannot toggle the dashboard twice.
-    const bool vm_right_pulse = auto_select_ &&
-                                 role_ == vr::TrackedControllerRole_RightHand;
-    const bool dashboard_toggle = vm_right_pulse && frame_count_ >= 180 &&
-                                  frame_count_ < 240;
+    const bool right_controller = role_ == vr::TrackedControllerRole_RightHand;
+    const bool dashboard_toggle = right_controller &&
+        (vm_input.Down(KEY_F1) || (open_dashboard_ &&
+         frame_count_ >= 180 && frame_count_ < 240));
     const vr::EVRInputError system_error = input->UpdateBooleanComponent(
         inputs_[kSystem], dashboard_toggle, 0.0);
     input->UpdateBooleanComponent(inputs_[kMenu], false, 0.0);
@@ -439,14 +540,18 @@ class FakeController final : public vr::ITrackedDeviceServerDriver {
     // advances on a controller select. Startup can take more than a minute
     // in the VM while Steam's WebHelper is created, so pulse after the
     // surface is likely to exist and repeat at a bounded cadence. This is
-    // enabled only by the VM supervisor; production fake-controller sessions
-    // remain passive.
+    // enabled explicitly for onboarding diagnostics; ordinary VM sessions
+    // open the dashboard once without generating selections.
     const bool auto_select =
-        vm_right_pulse && frame_count_ >= 600 &&
+        auto_select_ && right_controller && frame_count_ >= 600 &&
         ((frame_count_ - 600) % 600) < 60;
-    const float trigger_value = auto_select ? 1.0f : 0.0f;
+    const bool trigger = auto_select ||
+                         (right_controller && vm_input.Down(BTN_LEFT));
+    const bool grip = right_controller && vm_input.Down(KEY_LEFTSHIFT);
+    const float trigger_value = trigger ? 1.0f : 0.0f;
     const vr::EVRInputError a_error =
-        input->UpdateBooleanComponent(inputs_[kA], auto_select, 0.0);
+        input->UpdateBooleanComponent(inputs_[kA], auto_select ||
+            (right_controller && vm_input.Down(KEY_ENTER)), 0.0);
     if (dashboard_toggle && frame_count_ == 180 && vr::VRDriverLog()) {
       char message[160];
       std::snprintf(message, sizeof(message),
@@ -454,18 +559,19 @@ class FakeController final : public vr::ITrackedDeviceServerDriver {
                     static_cast<int>(system_error), static_cast<int>(a_error));
       vr::VRDriverLog()->Log(message);
     }
-    input->UpdateBooleanComponent(inputs_[kB], false, 0.0);
+    input->UpdateBooleanComponent(inputs_[kB], right_controller &&
+        (vm_input.Down(BTN_RIGHT) || vm_input.Down(KEY_ESC)), 0.0);
     input->UpdateBooleanComponent(inputs_[kX], false, 0.0);
     input->UpdateBooleanComponent(inputs_[kY], false, 0.0);
-    input->UpdateBooleanComponent(inputs_[kDpadUp], false, 0.0);
-    input->UpdateBooleanComponent(inputs_[kDpadRight], false, 0.0);
-    input->UpdateBooleanComponent(inputs_[kDpadDown], false, 0.0);
-    input->UpdateBooleanComponent(inputs_[kDpadLeft], false, 0.0);
+    input->UpdateBooleanComponent(inputs_[kDpadUp], right_controller && vm_input.Down(KEY_UP), 0.0);
+    input->UpdateBooleanComponent(inputs_[kDpadRight], right_controller && vm_input.Down(KEY_RIGHT), 0.0);
+    input->UpdateBooleanComponent(inputs_[kDpadDown], right_controller && vm_input.Down(KEY_DOWN), 0.0);
+    input->UpdateBooleanComponent(inputs_[kDpadLeft], right_controller && vm_input.Down(KEY_LEFT), 0.0);
     input->UpdateBooleanComponent(inputs_[kBumper], false, 0.0);
     input->UpdateScalarComponent(inputs_[kTriggerValue], trigger_value, 0.0);
-    input->UpdateBooleanComponent(inputs_[kTriggerClick], auto_select, 0.0);
-    input->UpdateScalarComponent(inputs_[kGripValue], 0.0f, 0.0);
-    input->UpdateBooleanComponent(inputs_[kGripClick], false, 0.0);
+    input->UpdateBooleanComponent(inputs_[kTriggerClick], trigger, 0.0);
+    input->UpdateScalarComponent(inputs_[kGripValue], grip ? 1.0f : 0.0f, 0.0);
+    input->UpdateBooleanComponent(inputs_[kGripClick], grip, 0.0);
     input->UpdateScalarComponent(inputs_[kThumbstickX], 0.0f, 0.0);
     input->UpdateScalarComponent(inputs_[kThumbstickY], 0.0f, 0.0);
     input->UpdateBooleanComponent(inputs_[kThumbstickClick], false, 0.0);
@@ -483,6 +589,7 @@ class FakeController final : public vr::ITrackedDeviceServerDriver {
   bool active_ = false;
   std::array<vr::VRInputComponentHandle_t, kInputCount> inputs_{};
   bool auto_select_ = false;
+  bool open_dashboard_ = false;
   uint32_t frame_count_ = 0;
 };
 
@@ -490,6 +597,7 @@ class FakeProvider final : public vr::IServerTrackedDeviceProvider {
  public:
   vr::EVRInitError Init(vr::IVRDriverContext *context) override {
     VR_INIT_SERVER_DRIVER_CONTEXT(context);
+    vm_input.Open();
     hmd_ = std::make_unique<FakeHmd>();
     left_ = std::make_unique<FakeController>(
         vr::TrackedControllerRole_LeftHand);
@@ -513,6 +621,7 @@ class FakeProvider final : public vr::IServerTrackedDeviceProvider {
       hmd_.reset();
       left_.reset();
       right_.reset();
+      vm_input.Close();
       VR_CLEANUP_SERVER_DRIVER_CONTEXT();
       return vr::VRInitError_Driver_Unknown;
     }
@@ -526,6 +635,7 @@ class FakeProvider final : public vr::IServerTrackedDeviceProvider {
     hmd_.reset();
     left_.reset();
     right_.reset();
+    vm_input.Close();
     VR_CLEANUP_SERVER_DRIVER_CONTEXT();
   }
 
@@ -534,6 +644,7 @@ class FakeProvider final : public vr::IServerTrackedDeviceProvider {
   }
 
   void RunFrame() override {
+    vm_input.Read();
     if (hmd_) hmd_->RunFrame();
     if (left_) left_->RunFrame();
     if (right_) right_->RunFrame();

@@ -209,6 +209,8 @@ if [ "$fake_tracking" = 1 ]; then
       '    "allowDisplayLockedMode": true,' \
       '    "allowFallbackMirrorWindowLinux": true,' \
       '    "enableLinuxVulkanAsync": true,' \
+      '    "useFacetRenderer": false,' \
+      '    "renderSystemLayerInDistortPass": false,' \
       '    "defaultPerAppRefreshRate": 60.0,' \
       '    "mirrorViewGeometry": "0 0 2880 1600",' \
       '    "mirrorViewGeometryMaximized": false,' \
@@ -230,6 +232,18 @@ if [ "$fake_tracking" = 1 ]; then
     sed -i 's/"steamvr"[[:space:]]*:[[:space:]]*{/"steamvr": { "defaultPerAppRefreshRate": 60.0,/' \
       "$fake_settings" 2>/dev/null || true
   fi
+  # Frame's facet/system-layer path fails in the desktop VM.
+  # Use Valve's desktop renderer and separate system-layer pass for the VM;
+  # the unchanged Frame resource profile still supplies dashboard/UI settings.
+  for vm_render_setting in useFacetRenderer renderSystemLayerInDistortPass; do
+    if grep -q "\"$vm_render_setting\"" "$fake_settings" 2>/dev/null; then
+      sed -i "s/\"$vm_render_setting\"[[:space:]]*:[[:space:]]*true/\"$vm_render_setting\": false/" \
+        "$fake_settings" 2>/dev/null || true
+    else
+      sed -i "s/\"steamvr\"[[:space:]]*:[[:space:]]*{/\"steamvr\": { \"$vm_render_setting\": false,/" \
+        "$fake_settings" 2>/dev/null || true
+    fi
+  done
   # SteamVR 2.17.10 requires its Linux async path and compute queue. Keep those
   # settings enabled. The legacy VM shim's semaphore conversion has not
   # supplied a working native synchronization contract.

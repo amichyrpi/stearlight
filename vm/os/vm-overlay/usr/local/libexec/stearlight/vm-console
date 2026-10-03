@@ -55,7 +55,8 @@ export STEARLIGHT_FAKE_TRACKING=${STEARLIGHT_FAKE_TRACKING:-1}
 # display or force DRM direct mode on the QEMU output.
 # Advance the Valve Steam Frame first-run surface once in QEMU. This only
 # affects the VM's deterministic fake controller.
-export STEARLIGHT_FAKE_AUTO_SELECT=${STEARLIGHT_FAKE_AUTO_SELECT:-1}
+export STEARLIGHT_FAKE_AUTO_SELECT=${STEARLIGHT_FAKE_AUTO_SELECT:-0}
+export STEARLIGHT_FAKE_OPEN_DASHBOARD=${STEARLIGHT_FAKE_OPEN_DASHBOARD:-1}
 # Valve's vrcompositor-launcher normally re-enters Steam Runtime. The VM's
 # Alpine host has no complete scout runtime for shell utilities, so use Valve's
 # documented safety bypass after vm-console has established the SteamVR loader

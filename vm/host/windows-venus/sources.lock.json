@@ -1,29 +1,41 @@
 {
-    "commit":  "e80354b8f5a0dedc62374b905a181874682659cc",
-    "repository":  "https://github.com/cmspam/winq-emu-virglrenderer.git",
-    "schema":  1,
-    "importedPatchesSource":  "Try Omarchy WINQ-EMU r20c runtime-build source package",
-    "patches":  [
-                    {
-                        "sha256":  "0419c3e3e8ada85e7777a8beb0d8e9f9bb918c904bb33546039161ef74e05d73",
-                        "file":  "patches/0001-resolve-windows-handle-tokens-before-crt.patch"
-                    },
-                    {
-                        "sha256":  "403f60a2a00cf65b860e5bec8b98483e00056949d945bb4174a46b6416f5cc53",
-                        "file":  "patches/0002-import-windows-host-memory-for-internal-resources.patch"
-                    },
-                    {
-                        "sha256":  "b670661e2811a01ff53496a2beb492150bfe739258bd76c7d5e2d9b0e5669be7",
-                        "file":  "patches/0003-preserve-device-local-resources-until-memory-binding.patch"
-                    },
-                    {
-                        "sha256":  "d75ed811f1939bde53f2d06dd79f1b24083c2aa878998b94eb703ba437377b31",
-                        "file":  "patches/0004-preserve-replies-and-filter-mapped-memory.patch"
-                    },
-                    {
-                        "sha256":  "36847fe0209c0540ce1eaae02501f5c712ed0958fe20f5a72621b4b7ac11c71d",
-                        "file":  "patches/0005-share-vulkan-images-with-allocation-metadata.patch"
-                    }
-                ],
-    "license":  "MIT"
+    "commit": "e80354b8f5a0dedc62374b905a181874682659cc",
+    "repository": "https://github.com/cmspam/winq-emu-virglrenderer.git",
+    "schema": 1,
+    "importedPatchesSource": "Try Omarchy WINQ-EMU r20c runtime-build source package",
+    "patches": [
+        {
+            "sha256": "0419c3e3e8ada85e7777a8beb0d8e9f9bb918c904bb33546039161ef74e05d73",
+            "file": "patches/0001-resolve-windows-handle-tokens-before-crt.patch"
+        },
+        {
+            "sha256": "403f60a2a00cf65b860e5bec8b98483e00056949d945bb4174a46b6416f5cc53",
+            "file": "patches/0002-import-windows-host-memory-for-internal-resources.patch"
+        },
+        {
+            "sha256": "b670661e2811a01ff53496a2beb492150bfe739258bd76c7d5e2d9b0e5669be7",
+            "file": "patches/0003-preserve-device-local-resources-until-memory-binding.patch"
+        },
+        {
+            "sha256": "d75ed811f1939bde53f2d06dd79f1b24083c2aa878998b94eb703ba437377b31",
+            "file": "patches/0004-preserve-replies-and-filter-mapped-memory.patch"
+        },
+        {
+            "sha256": "36847fe0209c0540ce1eaae02501f5c712ed0958fe20f5a72621b4b7ac11c71d",
+            "file": "patches/0005-share-vulkan-images-with-allocation-metadata.patch"
+        },
+        {
+            "file": "patches/0006-recheck-pending-commands-in-idle-windows-rings.patch",
+            "sha256": "aeaaf90e92a10108829b4448af2cdc9828de0486da1df58a8c7a599b59368e20"
+        },
+        {
+            "file": "patches/0007-share-host-visible-buffers-through-windows-sections.patch",
+            "sha256": "c83f6a2a49c573717306090325b5ef5929785e5eab1e045d5213cc7b7e13efed"
+        },
+        {
+            "file": "patches/0008-preserve-tiling-for-opaque-vulkan-images.patch",
+            "sha256": "a46c663be1c8c01a443b6f67e7d88e7d6b91546a91d253bc3daf5057cd19bd74"
+        }
+    ],
+    "license": "MIT"
 }

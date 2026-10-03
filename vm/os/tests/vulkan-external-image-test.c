@@ -30,6 +30,8 @@ typedef struct { VkDeviceSize size; VkSubresourceLayout plane; uint32_t memory_t
 typedef struct { VkImage image; VkDeviceMemory memory; } Image;
 static VkExternalMemoryHandleTypeFlagBits handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 
+static int optimal_tiling;
+
 static Context initialize(void) {
   void *loader = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
   REQUIRE(loader);
@@ -76,7 +78,8 @@ static Image image(Context *ctx, int fd, Payload *payload) {
     .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_B8G8R8A8_UNORM, .extent = {WIDTH, HEIGHT, 1},
     .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
     .tiling = handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
-      ? VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT : VK_IMAGE_TILING_LINEAR, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+      ? VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
+      : (optimal_tiling ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR), .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
     .sharingMode = VK_SHARING_MODE_EXCLUSIVE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
   Image result;
@@ -107,7 +110,8 @@ static Image image(Context *ctx, int fd, Payload *payload) {
     payload->memory_type = allocation.memoryTypeIndex;
     VkImageSubresource sub = {.aspectMask = handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT
       ? VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT : VK_IMAGE_ASPECT_COLOR_BIT};
-    PROC(ctx, GetImageSubresourceLayout)(ctx->device, result.image, &sub, &payload->plane);
+    if (!optimal_tiling)
+      PROC(ctx, GetImageSubresourceLayout)(ctx->device, result.image, &sub, &payload->plane);
   }
   return result;
 }
@@ -190,10 +194,12 @@ static void close_context(Context *ctx, Image img) {
 
 int main(int argc, char **argv) {
   setbuf(stdout, NULL);
-  if (argc > 1) {
-    REQUIRE(argc == 2 && !strcmp(argv[1], "--opaque"));
-    handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "--opaque")) handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    else if (!strcmp(argv[i], "--optimal")) optimal_tiling = 1;
+    else REQUIRE(0 && "usage: external-image-test [--opaque [--optimal]]");
   }
+  REQUIRE(!optimal_tiling || handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
   int sockets[2];
   REQUIRE(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, sockets) == 0);
   pid_t peer = fork();
@@ -251,7 +257,7 @@ int main(int argc, char **argv) {
   REQUIRE(waitpid(peer, &status, 0) == peer && WIFEXITED(status) && !WEXITSTATUS(status));
   PROC(&ctx, DestroyCommandPool)(ctx.device, pool, NULL);
   close_context(&ctx, exported);
-  printf("PASS: exported %s LINEAR image retains all 4096 pixels across guest processes\n",
-    handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "DMA_BUF" : "OPAQUE_FD");
+  printf("PASS: exported %s %s image retains all 4096 pixels across guest processes\n",
+    handle_type == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "DMA_BUF" : "OPAQUE_FD", optimal_tiling ? "OPTIMAL" : "LINEAR");
   return 0;
 }

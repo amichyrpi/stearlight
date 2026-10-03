@@ -1510,9 +1510,8 @@ void vkGetPhysicalDeviceQueueFamilyProperties(void *physical_device,
   uint32_t written = actual_capacity;
   real_get_queue_family_properties(physical_device, &written, properties);
   VkQueueFamilyPropertiesCompat *output = properties;
-  if (written > queue_alias_backing_family)
-    output[queue_alias_backing_family].queueFlags &=
-        ~VK_QUEUE_COMPUTE_BIT_COMPAT;
+  /* Gamescope needs graphics and compute on its graphics queue. Keep the
+   * backing family's real capabilities when adding the compute-only alias. */
   if (capacity > actual_count) {
     output[actual_count] = queue_alias_backing_properties;
     output[actual_count].queueFlags =
@@ -1552,9 +1551,7 @@ void vkGetPhysicalDeviceQueueFamilyProperties2(void *physical_device,
   uint32_t written = actual_capacity;
   real_get_queue_family_properties2(physical_device, &written, properties);
   VkQueueFamilyProperties2Compat *output = properties;
-  if (written > queue_alias_backing_family)
-    output[queue_alias_backing_family].queueFamilyProperties.queueFlags &=
-        ~VK_QUEUE_COMPUTE_BIT_COMPAT;
+  /* Preserve the real combined family, as in the original query above. */
   if (capacity > actual_count) {
     output[actual_count].queueFamilyProperties =
         queue_alias_backing_properties;

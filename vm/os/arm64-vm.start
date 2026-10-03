@@ -15,7 +15,7 @@
   if grep -qw stearlight.debug=1 /proc/cmdline; then
     modprobe virtio_console 2>/dev/null || true
     if [ -c /dev/hvc0 ]; then
-      setsid sh -c 'exec /bin/sh -i </dev/hvc0 >/dev/hvc0 2>&1' &
+      setsid sh -c 'while :; do /bin/sh -i </dev/hvc0 >/dev/hvc0 2>&1; sleep 1; done' &
     fi
   fi
   export HOME=/home/stearlight
@@ -26,9 +26,9 @@
   export GAMESCOPE_BIN=/usr/local/bin/stearlight-frame-gamescope
   export STEARLIGHT_GAMESCOPE_STARTUP_SECONDS=120
   export STEARLIGHT_FAKE_TRACKING=1
-  export STEARLIGHT_FAKE_AUTO_SELECT=1
-  # Frame starts vrstartup after Gamescope publishes its endpoints and before
-  # Steam. Waiting for Steam here would deadlock the deferred OpenVR backend.
+  export STEARLIGHT_FAKE_AUTO_SELECT=${STEARLIGHT_FAKE_AUTO_SELECT:-0}
+  export STEARLIGHT_FAKE_OPEN_DASHBOARD=${STEARLIGHT_FAKE_OPEN_DASHBOARD:-1}
+  # SteamVR must not wait for Steam in the deferred OpenVR session.
   export STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM=0
   # Opt in to the patched Windows renderer's Vulkan image/timeline bridge.
   # Keep the glibc ICD scoped to the native Frame launchers.
@@ -39,11 +39,19 @@
     export STEARLIGHT_STEAMVR_VULKAN_ICD=/opt/stearlight-vulkan/virtio_icd.json
     export STEARLIGHT_STEAMVR_DISPLAY=:0
     export STEARLIGHT_GAMESCOPE_VM_UPLOAD=1
+    export STEARLIGHT_VRHTML_VM_UPLOAD=1
     export MESA_VK_WSI_DEBUG=sw,noshm
     export XWAYLAND_NO_GLAMOR=1 LIBGL_ALWAYS_SOFTWARE=1
     export VN_DEBUG=no_drm_syncobj
     export VN_PERF=no_async_mem_alloc,no_async_buffer_create
+    # Keep this recovery build's guarded VM adaptations through bootstrap.
+    # CEF's renderer watchdog can expire while ARM TCG initializes the VR UI.
+    export STEAM_EXTRA_ARGS="${STEAM_EXTRA_ARGS:+$STEAM_EXTRA_ARGS }-noverifyfiles -inhibitbootstrap -cef-disable-hang-timeouts"
     echo 'STEARLIGHT ARM64 WINDOWS GPU BRIDGE'
+    if ! /usr/local/bin/stearlight-frame-vrwebhelper prepare; then
+      echo 'STEARLIGHT ARM64 VRHTML VM UPLOAD FAILED'
+      exit 1
+    fi
   fi
   if grep -qw stearlight.capture=1 /proc/cmdline; then
     export STEARLIGHT_CAPTURE_SCREENSHOT=1
@@ -100,6 +108,12 @@
     test -f /opt/steam/linuxarm64/steamclient.so
     echo 'STEARLIGHT ARM64 STEAM ARCHIVE EXTRACTION READY'
   fi
+  if grep -qw stearlight.windows-gpu=1 /proc/cmdline; then
+    if ! /usr/local/bin/stearlight-frame-steam-ipc; then
+      echo 'STEARLIGHT ARM64 STEAM IPC PREPARATION FAILED'
+      exit 1
+    fi
+  fi
   if [ -b /dev/vdc ] && {
     ! command -v grim >/dev/null 2>&1 ||
     [ ! -e /usr/lib/aarch64-linux-gnu/libgtk-x11-2.0.so.0 ] ||
@@ -130,7 +144,20 @@
     test -s /usr/bin/taskset
     echo 'STEARLIGHT ARM64 RUNTIME EXTRAS EXTRACTION READY'
   fi
-  if command -v udhcpc >/dev/null 2>&1 && [ -e /sys/class/net/eth0 ]; then
+  # GNU's loader uses its own cache; musl helpers keep their normal paths.
+  # Refresh after the tester has unpacked any additional runtime libraries.
+  if [ -x /usr/local/libexec/stearlight/gnu-ldconfig ]; then
+    if ! /usr/local/libexec/stearlight/gnu-ldconfig -X; then
+      echo 'STEARLIGHT ARM64 GNU LIBRARY CACHE FAILED'
+      exit 1
+    fi
+  fi
+  # Steam's native System.Network controller uses libnm and its D-Bus service.
+  # NetworkManager owns the NAT lease as well as reporting it to Steam.
+  if command -v NetworkManager >/dev/null 2>&1; then
+    rc-service networkmanager start 2>&1 || true
+    nmcli --wait 30 connection up 'VM Ethernet' 2>&1 || true
+  elif command -v udhcpc >/dev/null 2>&1 && [ -e /sys/class/net/eth0 ]; then
     ip link set eth0 up 2>/dev/null || true
     udhcpc -i eth0 -q -n -t 6 >/dev/null 2>&1 || true
   fi
@@ -190,6 +217,8 @@ EOF
     done
     if [ "$xorg_ready" = 1 ]; then
       echo 'STEARLIGHT ARM64 XORG READY DISPLAY=:0'
+      DISPLAY=:0 xset s off
+      DISPLAY=:0 xset -dpms
       xorg_output=$(DISPLAY=:0 xrandr --query | awk '/ connected/ {print $1; exit}')
       if [ -z "$xorg_output" ] ||
          ! DISPLAY=:0 xrandr --output "$xorg_output" --mode 2880x1600; then
@@ -209,7 +238,9 @@ EOF
   chmod 0700 "$XDG_RUNTIME_DIR"
   animation_pid=
   stop_animation() {
-    touch "$XDG_RUNTIME_DIR/stearlight-boot-animation.stop"
+    # Steam later updates the same marker when its UI takes over.
+    su -p stearlight -s /bin/sh -c \
+      'touch "$XDG_RUNTIME_DIR/stearlight-boot-animation.stop"'
     if [ -n "$animation_pid" ]; then
       kill "$animation_pid" 2>/dev/null || true
       wait "$animation_pid" 2>/dev/null || true
@@ -256,6 +287,48 @@ EOF
     preview_status=$?
     echo "STEARLIGHT ARM64 GAMESCOPE EXIT=$preview_status"
     exit "$preview_status"
+  fi
+  # Valve's audio client needs a live server even without emulated sound
+  # hardware. A real PulseAudio null sink supplies the VM's audio endpoint.
+  export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/pulse/native"
+  if ! su -p stearlight -s /bin/sh -c '
+    pulseaudio --daemonize=yes --exit-idle-time=-1 --disable-shm=yes -n \
+      --load="module-native-protocol-unix" \
+      --load="module-null-sink sink_name=stearlight"
+  '; then
+    echo 'STEARLIGHT ARM64 AUDIO SERVER FAILED'
+    exit 1
+  fi
+  if ! su -p stearlight -s /bin/sh -c 'pactl info' >/tmp/stearlight-audio.log 2>&1; then
+    echo 'STEARLIGHT ARM64 AUDIO ENDPOINT FAILED'
+    exit 1
+  fi
+  echo 'STEARLIGHT ARM64 AUDIO READY'
+  if grep -qw stearlight.windows-gpu=1 /proc/cmdline; then
+    # A Gamescope VR client querying settings during virtual HMD activation
+    # crashed vrserver. Finish that activation before starting the client.
+    echo 'STEARLIGHT ARM64 STEAMVR PRESTART'
+    su -p stearlight -s /bin/sh -c '
+      VK_ICD_FILENAMES="$STEARLIGHT_STEAMVR_VULKAN_ICD" DISPLAY=:0 \
+        exec /usr/local/bin/stearlight-steamvr-native startup
+    ' >/tmp/stearlight-vr-prestart.log 2>&1 &
+    runtime_ready=0
+    runtime_attempt=0
+    while [ "$runtime_attempt" -lt 240 ]; do
+      if pgrep -x vrserver >/dev/null && pgrep -x vrcompositor >/dev/null; then
+        runtime_ready=1
+        break
+      fi
+      sleep 0.25
+      runtime_attempt=$((runtime_attempt + 1))
+    done
+    if [ "$runtime_ready" != 1 ]; then
+      echo 'STEARLIGHT ARM64 STEAMVR EXITED BEFORE STEAM'
+      tail -30 /tmp/stearlight-vr-prestart.log
+      exit 1
+    fi
+    echo 'STEARLIGHT ARM64 STEAMVR PRESTART READY'
+    export STEARLIGHT_NATIVE_STEAMVR_PRESTARTED=1
   fi
   echo 'STEARLIGHT ARM64 GAMESCOPE START backend=openvr'
   su -p stearlight -s /bin/sh -c '
