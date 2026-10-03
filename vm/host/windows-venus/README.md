@@ -3,7 +3,13 @@
 These source patches preserve the Windows GPU bridge work independently of
 the downloaded DLL. They are diagnostic. Valve's native stereo dashboard,
 dock and laser now render in the guest and the accepted GTK host window in a
-standalone test. The complete Steam/Gamescope session remains unfinished.
+complete Steam/Gamescope session, including Steam's curved sign-in panel.
+Personal QR sign-in succeeded. October 3 captures also verified the native
+profile, Home game artwork, and left menu opened from the bottom dock.
+An eight-second signed-in Home sample measured 9.12 compositor FPS.
+Host scanout can become stale and has needed a guest output refresh; an
+earlier native shared-mutex assertion remains unresolved. See
+[`../../README.md`](../../README.md#verification-status) for current evidence.
 The GTK window code is unchanged.
 
 Base: `cmspam/winq-emu-virglrenderer` commit

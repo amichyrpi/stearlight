@@ -23,8 +23,11 @@ namespace {
 
 // QEMU has no physical headset. SteamVR owns one stereo desktop backbuffer;
 // this driver supplies geometry and poses, with no independent eye renderers.
-constexpr uint32_t kEyeWidth = 1440;
-constexpr uint32_t kEyeHeight = 1600;
+uint32_t EyeWidth() {
+  const char *low = std::getenv("STEARLIGHT_VM_LOW_RESOLUTION");
+  return low && !std::strcmp(low, "1") ? 720 : 1440;
+}
+uint32_t EyeHeight() { return EyeWidth() * 10 / 9; }
 constexpr float kIpdMeters = 0.063f;
 
 // Read QEMU's test devices without grabbing them. SteamVR still owns laser
@@ -169,9 +172,12 @@ class FakeHmd final : public vr::ITrackedDeviceServerDriver,
     left.m[0][3] = -kIpdMeters / 2.0f;
     right.m[0][3] = kIpdMeters / 2.0f;
     vr::VRServerDriverHost()->SetDisplayEyeToHead(object_id, left, right);
-    vr::VRDriverLog()->Log(
-        "stearlight-fake: stereo output 2880x1600, eyes 1440x1600, IPD 0.063m; "
-        "presentation timing owned by compositor");
+    char geometry[160];
+    std::snprintf(geometry, sizeof(geometry),
+                  "stearlight-fake: stereo output %ux%u, eyes %ux%u, IPD 0.063m; "
+                  "presentation timing owned by compositor",
+                  2 * EyeWidth(), EyeHeight(), EyeWidth(), EyeHeight());
+    vr::VRDriverLog()->Log(geometry);
     return vr::VRInitError_None;
   }
 
@@ -198,8 +204,8 @@ class FakeHmd final : public vr::ITrackedDeviceServerDriver,
                        uint32_t *height) override {
     if (x) *x = 0;
     if (y) *y = 0;
-    if (width) *width = 2 * kEyeWidth;
-    if (height) *height = kEyeHeight;
+    if (width) *width = 2 * EyeWidth();
+    if (height) *height = EyeHeight();
   }
 
   bool IsDisplayOnDesktop() override { return true; }
@@ -208,16 +214,16 @@ class FakeHmd final : public vr::ITrackedDeviceServerDriver,
 
   void GetRecommendedRenderTargetSize(uint32_t *width,
                                       uint32_t *height) override {
-    if (width) *width = kEyeWidth;
-    if (height) *height = kEyeHeight;
+    if (width) *width = EyeWidth();
+    if (height) *height = EyeHeight();
   }
 
   void GetEyeOutputViewport(vr::EVREye eye, uint32_t *x, uint32_t *y,
                             uint32_t *width, uint32_t *height) override {
-    if (x) *x = eye == vr::Eye_Left ? 0 : kEyeWidth;
+    if (x) *x = eye == vr::Eye_Left ? 0 : EyeWidth();
     if (y) *y = 0;
-    if (width) *width = kEyeWidth;
-    if (height) *height = kEyeHeight;
+    if (width) *width = EyeWidth();
+    if (height) *height = EyeHeight();
   }
 
   void GetProjectionRaw(vr::EVREye, float *left, float *right, float *top,

@@ -12,8 +12,12 @@
 #include <unistd.h>
 
 /* Match the fake HMD's shared stereo mirror, not the app overlay size. */
-#define DISPLAY_WIDTH 2880u
-#define DISPLAY_HEIGHT 1600u
+static int vm_low_resolution(void) {
+  const char *value = getenv("STEARLIGHT_VM_LOW_RESOLUTION");
+  return value && strcmp(value, "1") == 0;
+}
+#define DISPLAY_WIDTH (vm_low_resolution() ? 1440u : 2880u)
+#define DISPLAY_HEIGHT (vm_low_resolution() ? 800u : 1600u)
 
 typedef void *(*PFN_vkGetInstanceProcAddr)(void *instance, const char *name);
 typedef void *(*PFN_vkGetDeviceProcAddr)(void *device, const char *name);
@@ -615,16 +619,14 @@ static void shim_log(const char *message) {
   int fd = open("/opt/steam/logs/stearlight-vulkan-wsi.log",
                 O_WRONLY | O_CREAT | O_APPEND, 0644);
   if (fd >= 0) {
-    (void)write(fd, message, strlen(message));
-    (void)write(fd, "\n", 1);
+    int written = dprintf(fd, "%s\n", message);
+    (void)written;
     close(fd);
   }
   fd = open("/dev/ttyAMA0", O_WRONLY | O_NOCTTY | O_APPEND);
   if (fd >= 0) {
-    static const char prefix[] = "STEARLIGHT WSI SHIM: ";
-    (void)write(fd, prefix, sizeof(prefix) - 1);
-    (void)write(fd, message, strlen(message));
-    (void)write(fd, "\n", 1);
+    int written = dprintf(fd, "STEARLIGHT WSI SHIM: %s\n", message);
+    (void)written;
     close(fd);
   }
 }

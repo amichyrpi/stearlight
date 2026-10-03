@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)] [string]$OutputDirectory,
     [Parameter(Mandatory = $true)] [string]$QemuDirectory,
     [ValidateRange(2048, 8192)] [int]$MemoryMegabytes = 4096,
+    [ValidateRange(1, 12)] [int]$CpuCount = 6,
     [switch]$SecondaryMonitor,
     [ValidateRange(0, 65535)] [int]$DebugConsolePort = 0,
     [string]$DiskPath,
@@ -14,7 +15,8 @@ param(
     [switch]$CaptureOnVRHTMLInvalid,
     [switch]$AnimationPreview,
     [switch]$GamescopePreview,
-    [switch]$WindowsGpuBridge
+    [switch]$WindowsGpuBridge,
+    [switch]$LowResolution = $true
 )
 
 $ErrorActionPreference = 'Stop'
@@ -59,6 +61,7 @@ $stderr = Join-Path $output 'qemu-stderr.log'
 $screenshot = Join-Path $output 'stearlight-arm64.png'
 $expectedWidth = 2880
 $expectedHeight = 1600
+if ($LowResolution) { $expectedWidth = 1440; $expectedHeight = 800 }
 $firmware = Join-Path $qemuDir 'share'
 if (-not (Test-Path -LiteralPath $firmware)) {
     $firmware = Join-Path (Split-Path $qemuDir -Parent) 'qemu\share'
@@ -90,10 +93,13 @@ if ($GamescopePreview) {
 if ($WindowsGpuBridge) {
     $kernelCommandLine += ' stearlight.windows-gpu=1'
 }
+if ($LowResolution) { $kernelCommandLine += ' stearlight.low-resolution=1' }
 if ($DebugConsolePort) { $kernelCommandLine += ' stearlight.debug=1' }
 $args = @(
     '-L', $firmware.Replace('\', '/'),
-    '-machine', 'virt', '-cpu', 'max', '-smp', '4', '-m', [string]$MemoryMegabytes,
+    '-machine', 'virt', '-accel', 'tcg,thread=multi',
+    # The VM needs NEON; emulated SVE/SME adds vector and context-switch work.
+    '-cpu', 'max,sve=off,sme=off', '-smp', [string]$CpuCount, '-m', [string]$MemoryMegabytes,
     '-display', $qemuDisplay,
     '-device', "virtio-gpu-gl-pci,blob=true,hostmem=1G,venus=true,xres=$expectedWidth,yres=$expectedHeight",
     '-device', 'qemu-xhci',

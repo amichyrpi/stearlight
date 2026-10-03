@@ -223,6 +223,13 @@ if [ "$fake_tracking" = 1 ]; then
       '  }' \
       '}' >"$fake_settings" 2>/dev/null || true
   fi
+  if [ "${STEARLIGHT_VM_LOW_RESOLUTION:-0}" = 1 ]; then
+    mirror_geometry='0 0 1440 800'
+  else
+    mirror_geometry='0 0 2880 1600'
+  fi
+  sed -i "s/\"mirrorViewGeometry\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"mirrorViewGeometry\": \"$mirror_geometry\"/" \
+    "$fake_settings" 2>/dev/null || true
   # Frame's hardware profile defaults to 72 Hz. Keep the virtual desktop's
   # default app rate at the same 60 Hz advertised by its HMD and QEMU scanout.
   if grep -q '"defaultPerAppRefreshRate"' "$fake_settings" 2>/dev/null; then

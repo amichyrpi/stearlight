@@ -7,7 +7,12 @@
   }
   boot_status 'Stearlight OS'
   boot_status 'ARM64 Steam Frame test VM'
-  boot_status 'Display target: 2880x1600 at 60 Hz'
+  display_mode=2880x1600
+  if grep -qw stearlight.low-resolution=1 /proc/cmdline; then
+    export STEARLIGHT_VM_LOW_RESOLUTION=1
+    display_mode=1440x800
+  fi
+  boot_status "Display target: $display_mode at 60 Hz"
   boot_status 'Starting Frame session...'
   sleep 3
   mount -o remount,rw / || true
@@ -113,6 +118,12 @@
       echo 'STEARLIGHT ARM64 STEAM IPC PREPARATION FAILED'
       exit 1
     fi
+    # The recovery pins CEF to physical Frame CPUs 2-6. This VM has CPUs 0-3;
+    # let the browser inherit the VM's full CPU set during initialization.
+    browser_launcher=/opt/steam/steamrtarm64/steamwebhelper.sh
+    if [ -f "$browser_launcher" ]; then
+      sed -i 's/^exec taskset 0x7c /exec /' "$browser_launcher"
+    fi
   fi
   if [ -b /dev/vdc ] && {
     ! command -v grim >/dev/null 2>&1 ||
@@ -196,6 +207,10 @@ Section "Screen"
   EndSubSection
 EndSection
 EOF
+    if [ "$display_mode" = 1440x800 ]; then
+      sed -i 's/Modeline "2880x1600".*/Modeline "1440x800" 78.50 1440 1488 1520 1584 800 803 809 826 +HSync -VSync/; s/2880x1600/1440x800/g' \
+        /tmp/stearlight-xorg.conf
+    fi
     echo 'STEARLIGHT ARM64 XORG START'
     # Keep the Xorg presentation working in the Windows test bundle while
     # retaining the DRI3 endpoint needed by Gamescope's Vulkan surface.
@@ -221,7 +236,7 @@ EOF
       DISPLAY=:0 xset -dpms
       xorg_output=$(DISPLAY=:0 xrandr --query | awk '/ connected/ {print $1; exit}')
       if [ -z "$xorg_output" ] ||
-         ! DISPLAY=:0 xrandr --output "$xorg_output" --mode 2880x1600; then
+         ! DISPLAY=:0 xrandr --output "$xorg_output" --mode "$display_mode"; then
         echo 'STEARLIGHT ARM64 XORG DISPLAY MODE FAILED'
         exit 1
       fi

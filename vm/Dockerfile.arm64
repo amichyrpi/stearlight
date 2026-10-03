@@ -52,12 +52,12 @@ COPY vm/os/driver/fake_tracking.cpp /src/fake_tracking.cpp
 COPY vm/os/driver/vulkan_wsi_shim.c /src/vulkan_wsi_shim.c
 COPY vm/os/driver/vulkan_timeline_bridge.inc /src/vulkan_timeline_bridge.inc
 COPY vm/os/driver/vrcompositor_wsi_launcher.c /src/vrcompositor_wsi_launcher.c
-RUN mkdir -p /out && g++ -std=c++17 -fPIC -shared \
+RUN mkdir -p /out && g++ -std=c++17 -O2 -fPIC -shared \
     -I/src/openvr /src/fake_tracking.cpp -static-libstdc++ -static-libgcc \
     -o /out/driver_stearlight-fake.so \
-    && gcc -std=c11 -Wall -Wextra -Werror -fPIC -shared \
+    && gcc -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared \
     /src/vulkan_wsi_shim.c -ldl -pthread -o /out/libstearlight-vulkan-wsi-shim.so \
-    && gcc -std=c11 -Wall -Wextra -Werror \
+    && gcc -std=c11 -O2 -Wall -Wextra -Werror \
     /src/vrcompositor_wsi_launcher.c -o /out/vrcompositor-wsi-launcher
 
 FROM --platform=$TARGETPLATFORM alpine:edge AS rootfs
