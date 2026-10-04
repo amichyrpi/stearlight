@@ -11,6 +11,22 @@ int main(int argc, char **argv) {
   if (!shim || !*shim)
     shim = "/opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so";
 
+  const char *shared_setting = getenv("STEARLIGHT_XCB_SHM_PRESENT");
+  const char *shared =
+      "/opt/steamvr/lib/linuxarm64/libstearlight-xcb-shm-present.so";
+  if (shared_setting && !strcmp(shared_setting, "1") &&
+      access(shared, R_OK) == 0) {
+    const char *inherited = getenv("LD_PRELOAD");
+    size_t length = strlen(shared) + (inherited ? strlen(inherited) : 0) + 2;
+    char *combined = malloc(length);
+    if (!combined) return 126;
+    snprintf(combined, length, "%s%s%s", shared,
+             inherited && *inherited ? ":" : "", inherited ? inherited : "");
+    int result = setenv("LD_PRELOAD", combined, 1);
+    free(combined);
+    if (result != 0) return 126;
+  }
+
   const char *current = getenv("LD_PRELOAD");
   if (!current || !*current) {
     if (setenv("LD_PRELOAD", shim, 1) != 0) {

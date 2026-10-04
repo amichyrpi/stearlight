@@ -54,11 +54,11 @@ The QR route renders in the native dashboard and does not need Bluetooth.
 
 The LTS kernel includes Bluetooth and USB/IP support. To temporarily assign
 the approved Intel radio, install `usbipd-win` on Windows, find its bus ID
-with `usbipd list`, and run `usbipd bind --busid 2-10` as administrator.
-Add `-BluetoothBusId '2-10'` to the VM command (use the actual listed ID).
+with `usbipd list`, and run `usbipd bind --busid 3-10` as administrator.
+Add `-BluetoothBusId '3-10'` to the VM command (use the actual listed ID).
 The guest attaches that radio and starts BlueZ before launching Steam.
 Windows loses access to that radio while it is attached. After closing the
-VM, run `usbipd unbind --busid 2-10` as administrator to remove sharing.
+VM, run `usbipd unbind --busid 3-10` as administrator to remove sharing.
 The tester uses `vmlinuz-lts`/`initramfs-lts` when both are available;
 older output directories still boot their `virt` kernel.
 The tester seeds UTC at boot because this LTS kernel lacks QEMU's PL031
@@ -97,6 +97,18 @@ VR surfaces. The guarded Chrome IPC timeout adaptation and disabled CEF hang
 watchdog allow initialization under ARM emulation. GNU `libnm0` exposes the
 real NetworkManager connection to Steam's native network controller.
 
+Optional `-BrowserGpu` enables the native Steam browser's Vulkan compositing
+and rasterization through the Windows GPU bridge. It requires
+`-WindowsGpuBridge` and the maintained Frame recovery's ANGLE library. A
+small interposer corrects ANGLE's X11 visual metadata for compatible ARGB
+windows; Valve's EGL library stays intact. Launching again without
+`-BrowserGpu` restores the original browser launcher. This is an experimental
+option: native Home has not demonstrated a speedup over the default path.
+
+Startup displays Valve's original movie and animated loading spinner centered
+in each eye of the stereo output. The display stays blank before playback;
+startup diagnostics remain in `serial-test.log`.
+
 ## Verification status
 
 October 3 native captures verified Valve's curved panels, bottom dock,
@@ -123,9 +135,8 @@ October 4 added Bluetooth USB/IP, the LTS boot clock correction, and cheaper
 process lookups. The startup path refreshes the Windows virtual output once
 after the native compositor becomes ready. This recovered a blank host
 window while the guest framebuffer continued rendering. The mobile login
-panel measured 7.12 FPS; 30 FPS has not been reached. Standalone EGL rendered
-correct pixels on the RTX 3050, but the native browser GPU trials failed
-during initialization and were rolled back. The maintained F: disk was
+panel measured 7.12 FPS; 30 FPS has not been reached. Early native browser GPU
+trials failed with an ANGLE X11 visual/config mismatch. The maintained F: disk was
 updated in place and booted; a fresh Docker image rebuild was not run.
 After Bluetooth sign-in, Home measured 5.50 FPS in an eight-second sample.
 A two-worker software-renderer trial was inconclusive: the restarted browser
@@ -141,6 +152,43 @@ original affinity was restored. A short Windows priority trial measured
 8.37 FPS, within the range of earlier observations; normal priority remains
 the default. These trials do not establish 30 FPS or a reliable speedup.
 
+The Windows bridge now enables an XCB MIT-SHM presentation interposer. Venus
+cannot import host memory for Mesa's normal shared-memory image path here;
+the interposer transfers completed CPU pixels through X11 shared memory.
+The real GPU fence and X-server completion acknowledgement remain in place.
+Unsupported image formats or unavailable MIT-SHM use the original XCB path.
+At 1440x800, a six-second Vulkan clear/present/readback check measured
+7.05 FPS with the interposer disabled and 15.77-16.61 FPS with it enabled;
+both paths returned the expected pixel. Fully rendered native Home then
+measured 13.48 FPS over eight seconds. This is progress toward 30 FPS;
+the faster isolated X11 upload result does not establish native frame rate.
+
+Reducing the Windows renderer's idle fallback from 5 ms to 1 ms and enabling
+adaptive timeline polling produced a 23.37 FPS native Home sample, with all
+55 images loaded at 1280x720 inside the 1440x800 stereo output. A later Home
+sample measured 15.37 FPS, so 23.37 is an observed sample, not a sustained
+minimum. Actual GPU completion still controls shared timeline values.
+
+Idle audio now suspends the null sink's clock after five seconds and resumes
+when a stream opens. The timeline bridge publishes its final real GPU
+counter before releasing a shared payload; the two-process completion check
+passed after an idle interval and immediate semaphore teardown.
+An event-wake timeline trial measured 16.74 FPS on native Home, and a reduced
+X-server acknowledgement trial measured 17.00 FPS. Neither established a
+gain over the existing adaptive path, so both trials were rolled back.
+The acknowledgement trial reached 30.31 FPS in an isolated Vulkan check;
+that result does not establish 30 FPS in SteamVR.
+
+The ANGLE visual adaptation subsequently enabled actual native-browser GPU
+compositing, rasterization, and WebGL on the RTX 3050. Fully rendered Home,
+both docks, and the laser measured 15.00 FPS. A clean GPU-browser boot with
+shared-memory presentation and an experimental tracking update cache measured
+12.74 FPS in two eight-second samples. The tracking trial is not in the source
+default. These measurements do not establish 30 FPS or a GPU-browser speedup.
+The adapter's real ARGB-window check verified the rendered pixel, EGL error
+propagation, and unchanged lookups for Mesa's EGL. The browser helper also
+passed recovery-hash rejection and byte-for-byte launcher restoration checks.
+
 The current evidence is in
 `F:\Stearlight-Windows-IPC-2026-10-03\fresh-native-ui`:
 `signed-in-home-verified.png` (native Windows Home),
@@ -150,6 +198,9 @@ October 4 Bluetooth evidence: `bluetooth-home-after-reboot.png` (saved login
 and rendered Home), `bluetooth-home-guest.png` (matching guest framebuffer),
 and `bluetooth-steam-button-center.png` (native left menu opened with the
 virtual controller after reboot).
+Shared-memory evidence: `shm-home-progress-latest.png` (fully rendered
+native Home and dock with the new CPU transfer path).
+`native-home-23fps.png` captures the faster Home sample.
 
 ARM64 runs through CPU emulation on this AMD host. Performance must be
 measured in the native compositor and window; a successful Vulkan transport

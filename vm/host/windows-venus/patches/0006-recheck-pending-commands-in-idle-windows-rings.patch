@@ -12,7 +12,7 @@
 +            if (ring->buffer.cur != vkr_ring_load_tail(ring))
 +               break;
 +            ret = thrd_success;
-+            if (!SleepConditionVariableCS(&ring->cond, &ring->mutex, 5) &&
++            if (!SleepConditionVariableCS(&ring->cond, &ring->mutex, 1) &&
 +                GetLastError() != ERROR_TIMEOUT)
 +               ret = thrd_error;
 +#else

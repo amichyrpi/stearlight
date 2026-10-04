@@ -134,8 +134,15 @@ full-session capture. See `vm/README.md` for the current VM launch settings.
 
 Patch 0006 adds a bounded Windows ring wait. A live trace found an idle renderer
 ring sleeping with queued commands; explicitly notifying it resumed Gamescope
-initialization. The patch rechecks the real queue every 5 ms while idle and
+initialization. The patch rechecks the real queue every 1 ms while idle and
 retains actual command execution and completion reporting.
+
+October 4 reduced the fallback from 5 ms to 1 ms and enabled guest X11
+shared-memory CPU presentation. With adaptive idle timeline polling,
+fully rendered native Home measured 23.37 FPS at 1440x800; all 55 Home
+images loaded. A later Home sample measured 15.37 FPS; 23.37 is not a verified
+minimum. The native dock and laser are now visible. This supersedes the
+earlier startup failures above, but does not establish the 30 FPS target.
 
 The OS tester's `-GamescopePreview` reproduces this focused rendering path with
 Valve's loading animation. It retains the accepted GTK sizing and uses the

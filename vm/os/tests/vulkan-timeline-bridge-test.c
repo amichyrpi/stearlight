@@ -176,6 +176,9 @@ int main(void) {
   REQUIRE(sendmsg(sockets[0], &packet, 0) == 1);
   close(fd);
   message(sockets[0], 'i');
+  /* Let both imported/exported payloads enter idle polling before work
+   * arrives. Recovery must still wait for actual producer GPU completion. */
+  sleep(1);
   submit(&ctx, gate, 2, exported, 5);
   REQUIRE(write(sockets[0], "q", 1) == 1);
   message(sockets[0], 'b');

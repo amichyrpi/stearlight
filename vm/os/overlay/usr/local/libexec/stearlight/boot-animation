@@ -36,10 +36,29 @@ if ! command -v mpv >/dev/null 2>&1; then
   printf '%s\n' 'STEARLIGHT ARM64 ANIMATION PLAYER MISSING' >&2
   exit 1
 fi
+dimensions=$(xrandr --current | awk '/^Screen [0-9]+:/ {
+  for (i=1; i<=NF; i++) if ($i == "current") {
+    gsub(/,/, "", $(i+3)); print $(i+1), $(i+3); exit
+  }
+}')
+width=${dimensions%% *}
+height=${dimensions#* }
+case "$width:$height" in
+  *[!0-9:]*|:*|*:) echo 'STEARLIGHT ARM64 ANIMATION DISPLAY SIZE INVALID' >&2; exit 1 ;;
+esac
+if [ "$width" -le 0 ] || [ "$height" -le 0 ] || [ "$((width % 2))" -ne 0 ]; then
+  echo 'STEARLIGHT ARM64 ANIMATION STEREO SIZE INVALID' >&2
+  exit 1
+fi
+eye_width=$((width / 2))
+# Center the same original animation in each eye. Padding before stacking
+# keeps the eye centers aligned with SteamVR's side-by-side backbuffer.
+stereo="[vid1]format=bgra,split=2[left][right];[left]pad=$eye_width:$height:(ow-iw)/2:(oh-ih)/2:black[eye_left];[right]pad=$eye_width:$height:(ow-iw)/2:(oh-ih)/2:black[eye_right];[eye_left][eye_right]hstack=inputs=2[vo]"
 play() {
   # X11 software output bypasses Vulkan/OpenVR. Preserve native asset size.
   mpv --no-config --profile=sw-fast --vo=x11 --hwdec=no --audio=no --fullscreen \
     --video-unscaled=yes --background=color --background-color=0/0/0 \
+    --lavfi-complex="$stereo" \
     --osc=no --osd-level=0 --input-default-bindings=no --input-terminal=no \
     --cursor-autohide=always --no-border --title=Stearlight \
     --term-status-msg= --msg-color=no \
@@ -48,6 +67,7 @@ play() {
 }
 : >/tmp/stearlight-boot-animation.log
 printf 'STEARLIGHT ARM64 BOOT ANIMATION START\n'
+printf 'STEARLIGHT ARM64 ANIMATION STEREO %sx%s EYE %sx%s\n' "$width" "$height" "$eye_width" "$height"
 play "$assets/movies/steamframe_startup_450x450.webm"
 if wait "$player"; then player=; else
   player=

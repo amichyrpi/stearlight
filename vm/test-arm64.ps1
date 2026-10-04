@@ -16,6 +16,7 @@ param(
     [switch]$AnimationPreview,
     [switch]$GamescopePreview,
     [switch]$WindowsGpuBridge,
+    [switch]$BrowserGpu,
     [ValidatePattern('^\d+-\d+(\.\d+)*$')] [string]$BluetoothBusId,
     [switch]$LowResolution = $true
 )
@@ -23,6 +24,9 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($AnimationPreview -and $GamescopePreview) { throw 'Choose one preview mode.' }
 $displayPreview = $AnimationPreview -or $GamescopePreview
+if ($BrowserGpu -and (-not $WindowsGpuBridge -or $displayPreview)) {
+    throw 'BrowserGpu requires the native WindowsGpuBridge session.'
+}
 if ($WindowsGpuBridge -and -not $displayPreview -and
     -not $PSBoundParameters.ContainsKey('KeepRunning')) {
     # ARM emulation can finish the native dashboard after the boot capture.
@@ -104,6 +108,7 @@ if ($GamescopePreview) {
 if ($WindowsGpuBridge) {
     $kernelCommandLine += ' stearlight.windows-gpu=1'
 }
+if ($BrowserGpu) { $kernelCommandLine += ' stearlight.browser-gpu=1' }
 if ($LowResolution) { $kernelCommandLine += ' stearlight.low-resolution=1' }
 if ($BluetoothBusId) { $kernelCommandLine += " stearlight.bluetooth-busid=$BluetoothBusId" }
 if ($DebugConsolePort) { $kernelCommandLine += ' stearlight.debug=1' }

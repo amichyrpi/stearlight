@@ -56,7 +56,10 @@ static TimelineEntry *timeline_find(void *device, uint64_t semaphore) {
 
 static void *timeline_worker(void *opaque) {
   TimelineEntry *entry = opaque;
-  const struct timespec interval = {0, 2000000};
+  const char *idle_setting = getenv("STEARLIGHT_TIMELINE_IDLE_BACKOFF");
+  const int idle_backoff = idle_setting && !strcmp(idle_setting, "1");
+  uint64_t previous_completed = UINT64_MAX, previous_shared = UINT64_MAX;
+  unsigned unchanged = 0;
   while (!__atomic_load_n(&entry->stop, __ATOMIC_ACQUIRE)) {
     uint64_t completed = 0;
     if (entry->counter(entry->device, entry->semaphore, &completed) != 0) {
@@ -75,6 +78,18 @@ static void *timeline_worker(void *opaque) {
         break;
       }
     }
+    if (completed == previous_completed && shared == previous_shared) {
+      if (unchanged < 128) ++unchanged;
+    } else {
+      unchanged = 0;
+    }
+    previous_completed = completed;
+    previous_shared = shared;
+    /* Static dashboard surfaces need no 500 Hz GPU-counter traffic. Keep
+     * active timelines at 2 ms; an idle surface still checks within 8 ms
+     * and immediately resumes the faster interval when its value changes. */
+    const struct timespec interval = {
+        0, idle_backoff && unchanged == 128 ? 8000000 : 2000000};
     nanosleep(&interval, NULL);
   }
   return NULL;
@@ -86,7 +101,18 @@ static void timeline_release(TimelineEntry *entry) {
     pthread_join(entry->worker, NULL);
     entry->started = 0;
   }
-  if (entry->shared) munmap(entry->shared, sizeof(*entry->shared));
+  if (entry->shared) {
+    /* A peer may retain the external payload after this semaphore dies.
+     * Publish its last actual GPU completion before dropping our mapping. */
+    uint64_t completed = 0;
+    if (!entry->counter(entry->device, entry->semaphore, &completed)) {
+      uint64_t shared = __atomic_load_n(&entry->shared->value, __ATOMIC_ACQUIRE);
+      while (completed > shared &&
+             !__atomic_compare_exchange_n(&entry->shared->value, &shared,
+                completed, 0, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {}
+    }
+    munmap(entry->shared, sizeof(*entry->shared));
+  }
   if (entry->fd >= 0) close(entry->fd);
   entry->shared = NULL;
   entry->fd = -1;
