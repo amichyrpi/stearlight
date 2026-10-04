@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "recovery": {
+    "url": "https://steamdeck-images.steamos.cloud/recovery/steamframe-oobe-repair-20260922.5153644-0.3.0.img.bz2",
+    "sha256": "3a4a077f1b1f40688ab3279affcb56776bd97c54db1573e7c65fc52a97106676"
+  },
+  "qemu": {
+    "repository": "https://github.com/cmspam/winq-emu-qemu.git",
+    "commit": "2ce303cfbbc8b0e4a7a3c66e27a094a980426d73"
+  }
+}

@@ -1,0 +1,20 @@
+diff --git a/ui/gtk.c b/ui/gtk.c
+index 9ebe7e8..6f22fbb 100644
+--- a/ui/gtk.c
++++ b/ui/gtk.c
+@@ -2234,8 +2234,13 @@ static GtkWidget *gd_create_menu_machine(GtkDisplayState *s)
+ static void gl_area_realize(GtkGLArea *area, VirtualConsole *vc)
+ {
+     gtk_gl_area_make_current(area);
+-    qemu_egl_display = eglGetCurrentDisplay();
+-    vc->gfx.has_dmabuf = qemu_egl_has_dmabuf();
++    /* Win32 GTK can use WGL without an EGL entry point, like SDL. */
++    if (epoxy_has_egl()) {
++        qemu_egl_display = eglGetCurrentDisplay();
++        vc->gfx.has_dmabuf = qemu_egl_has_dmabuf();
++    } else {
++        vc->gfx.has_dmabuf = false;
++    }
+     if (!vc->gfx.has_dmabuf) {
+         error_report("GtkGLArea console lacks DMABUF support.");
+     }

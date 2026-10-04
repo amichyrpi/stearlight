@@ -422,9 +422,13 @@ while [ "$attempt" -lt "$dashboard_wait_attempts" ]; do
         exit 1
       fi
     fi
+    if ! /lib/ld-linux-aarch64.so.1 /usr/local/libexec/stearlight/dashboard-ready 1200; then
+      printf '%s\n' 'STEARLIGHT ARM64 STEAM SURFACES FAILED' >&2
+      exit 1
+    fi
     printf '%s\n' 'STEARLIGHT ARM64 DASHBOARD READY'
     tail -n 40 "$steamvr_trace_log"
-    if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
+    (
       # Rebind QEMU's scanout after the native compositor has created its
       # window. The Windows bridge can otherwise retain the loading image.
       if [ "${STEARLIGHT_TIMELINE_BRIDGE:-0}" = 1 ] &&
@@ -442,8 +446,10 @@ while [ "$attempt" -lt "$dashboard_wait_attempts" ]; do
       fi
       # Gamescope does not expose the screencopy protocol used by grim.
       # The host tester captures the visible QEMU window at its real size.
-      printf '%s\n' 'STEARLIGHT ARM64 SCREENSHOT HOST CAPTURE READY'
-    fi
+      if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
+        printf '%s\n' 'STEARLIGHT ARM64 SCREENSHOT HOST CAPTURE READY'
+      fi
+    )
     if [ -z "$steamvr_status" ]; then
       if wait "$steamvr_pid"; then
         steamvr_status=0

@@ -85,7 +85,7 @@ $shared = $output.Replace('\', '/')
 $diskQemu = $disk.Replace('\', '/')
 $steamTarQemu = $steamClientTar.Replace('\', '/')
 $screenshotToolsQemu = if ($screenshotTools) { $screenshotTools.Replace('\', '/') } else { $null }
-# Match test-vm.ps1 at e35df19: GTK owns zoom-to-fit, aspect-preserving
+# GTK owns zoom-to-fit, aspect-preserving
 # scaling and the minimum window size (one quarter of the guest surface).
 # Do not fall back to SDL: its sizing and minimum-size behavior differ.
 $displayBackends = & $qemu -display help 2>&1
@@ -341,7 +341,7 @@ public static class StearlightArm64QemuWindow {
             if ($log -match 'STEARLIGHT ARM64 STEAMVR EXITED BEFORE STEAM') {
                 throw "Steam Frame's VR runtime failed before Steam startup. See $serial"
             }
-            # Match test-vm.ps1: fit at launch and again as soon as the
+            # Fit at launch and again as soon as the
             # Gamescope mode is ready, before waiting for Steam or SteamVR.
             if (-not $gamescopeWindowFitted -and
                 $log -match 'STEARLIGHT GAMESCOPE READY 1920x1080 @ 60Hz') {

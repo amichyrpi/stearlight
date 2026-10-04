@@ -1,6 +1,7 @@
-# The image is assembled by Linux tooling; keep every OS recipe/configuration
-# byte-for-byte Linux compatible when the repository is checked out on Windows.
-/vm/os/** text eol=lf
+# Keep VM recipes compatible with Linux tooling on Windows checkouts.
+vm/** text eol=lf
+.github/workflows/** text eol=lf
+vm/*.cmd text eol=crlf
 *.mkv binary
 *.mp4 binary
 *.png binary

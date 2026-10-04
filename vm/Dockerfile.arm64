@@ -54,6 +54,7 @@ COPY vm/os/driver/vulkan_timeline_bridge.inc /src/vulkan_timeline_bridge.inc
 COPY vm/os/driver/vrcompositor_wsi_launcher.c /src/vrcompositor_wsi_launcher.c
 COPY vm/os/driver/xcb_shm_present.c /src/xcb_shm_present.c
 COPY vm/os/driver/angle_visual_interposer.c /src/angle_visual_interposer.c
+COPY vm/os/driver/dashboard_ready.c /src/dashboard_ready.c
 RUN mkdir -p /out && g++ -std=c++17 -O2 -fPIC -shared \
     -I/src/openvr /src/fake_tracking.cpp -static-libstdc++ -static-libgcc \
     -o /out/driver_stearlight-fake.so \
@@ -65,6 +66,8 @@ RUN mkdir -p /out && g++ -std=c++17 -O2 -fPIC -shared \
     /src/xcb_shm_present.c -ldl -pthread -o /out/libstearlight-xcb-shm-present.so \
     && gcc -std=c11 -O2 -Wall -Wextra -Werror -fPIC -shared \
     /src/angle_visual_interposer.c -ldl -pthread -Wl,-Bsymbolic -o /out/libstearlight-angle-visual.so
+RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -isystem /src/openvr \
+    /src/dashboard_ready.c -ldl -o /out/dashboard-ready
 
 FROM --platform=$TARGETPLATFORM alpine:edge AS bluetooth-firmware
 RUN apk add --no-cache linux-firmware-intel \
@@ -117,6 +120,8 @@ COPY --from=frame-runtime /resources/stearlight-session/gamescope/share/gamescop
 COPY --from=venus /out/ /opt/stearlight-vulkan/
 COPY --from=bluetooth-firmware /out/ /lib/firmware/
 COPY --from=steam-client / /opt/steam/
+COPY vm/os/scripts/sanitize-steam-profile.sh /tmp/sanitize-steam-profile.sh
+RUN bash /tmp/sanitize-steam-profile.sh /opt/steam && rm /tmp/sanitize-steam-profile.sh
 RUN mkdir -p /home/stearlight/.steam \
     && ln -s /opt/steam /home/stearlight/.steam/steam
 COPY vm/os/overlay/usr/share/gamescope-session-plus/ /usr/share/gamescope-session-plus/
@@ -128,6 +133,7 @@ COPY --from=fake-tracking /out/vrcompositor-wsi-launcher /opt/steamvr/bin/linuxa
 COPY --from=fake-tracking /out/libstearlight-xcb-shm-present.so /opt/steamvr/lib/linuxarm64/libstearlight-xcb-shm-present.so
 COPY --from=fake-tracking /out/libstearlight-angle-visual.so /opt/steamvr/lib/linuxarm64/libstearlight-angle-visual.so
 COPY --from=fake-tracking /out/driver_stearlight-fake.so /opt/steamvr/drivers/stearlight-fake/bin/linuxarm64/driver_stearlight-fake.so
+COPY --from=fake-tracking /out/dashboard-ready /usr/local/libexec/stearlight/dashboard-ready
 COPY --from=frame-runtime /drivers/frame_hmd/resources/frame_hmd_additional.vrsettings /opt/steamvr/drivers/stearlight-fake/resources/frame_hmd_additional.vrsettings
 COPY vm/os/driver/stearlight-fake/driver.vrdrivermanifest /opt/steamvr/drivers/stearlight-fake/driver.vrdrivermanifest
 COPY vm/os/overlay/usr/local/libexec/stearlight/steamvr-native /usr/local/bin/stearlight-steamvr-native
@@ -140,7 +146,7 @@ COPY vm/os/overlay/usr/local/libexec/stearlight/frame-browser /usr/local/bin/ste
 COPY vm/os/overlay/usr/local/libexec/stearlight/frame-bluetooth /usr/local/bin/stearlight-frame-bluetooth
 COPY vm/os/overlay/usr/local/libexec/stearlight/gamescope-preview /usr/local/bin/stearlight-gamescope-preview
 COPY vm/os/arm64-vm.start /etc/local.d/arm64-vm.start
-COPY vm/os/vm-overlay/etc/inittab /etc/inittab
+COPY vm/os/arm64-inittab /etc/inittab
 RUN mv /opt/steamvr/bin/linuxarm64/vrcompositor /opt/steamvr/bin/linuxarm64/vrcompositor.bin \
     && chmod 0755 /usr/local/bin/stearlight-frame-browser \
     && chmod 0755 /usr/local/bin/stearlight-frame-bluetooth \

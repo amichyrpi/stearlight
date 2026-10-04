@@ -1,18 +1,27 @@
-# VM tests
+# VM validation
 
-Run the quick source and runtime-preparation checks from the repository root:
+The GitHub workflow checks sources/preparation, builds a fresh ARM64 disk,
+checks ext4/qcow2 integrity and builds the Windows host. `launcher-test.ps1`
+checks paths with spaces, a relative writable overlay moved with its base,
+and launcher arguments.
 
 ```sh
 sh vm/os/tests/layout-test.sh
-sh vm/os/tests/steam-firstboot-test.sh
-sh vm/os/tests/steam-runtime-patch-test.sh
 sh vm/os/tests/steamvr-native-test.sh
+sh vm/os/tests/frame-browser-test.sh
 sh vm/os/tests/xr-bridge-env-test.sh
 sh vm/os/tests/xr-lifecycle-test.sh
 ```
 
-The full visual/runtime test is vm/test-vm.ps1. It builds the image if needed,
-boots QEMU with Virtio-GPU/Venus, waits for the SteamVR compositor, dashboard,
-and synthetic dashboard input, then saves a PPM framebuffer for inspection.
-It requires Docker/Buildx, WSL2, QEMU, and an authorized x86_64 SteamVR source
-tree.
+```powershell
+.\vm\tests\launcher-test.ps1 -QemuDirectory .\vm\dist\qemu
+```
+
+Visual validation needs a Windows host with a Vulkan driver. Boot a **fresh**
+package to login, capture both eyes and move the laser. Check the separate
+vertical dock beside the panel and the bottom dock. The bottom Steam button
+opens a different main menu. Confirm Gamescope, vrserver, vrcompositor,
+vrdashboard and Steam webhelper remain running. Process names alone do not
+establish that the UI rendered.
+
+The legacy x86 VM and its checks have been removed.

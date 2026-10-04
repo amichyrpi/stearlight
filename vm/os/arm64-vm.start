@@ -43,7 +43,8 @@
   export STEARLIGHT_GAMESCOPE_STARTUP_SECONDS=120
   export STEARLIGHT_FAKE_TRACKING=1
   export STEARLIGHT_FAKE_AUTO_SELECT=${STEARLIGHT_FAKE_AUTO_SELECT:-0}
-  export STEARLIGHT_FAKE_OPEN_DASHBOARD=${STEARLIGHT_FAKE_OPEN_DASHBOARD:-1}
+  # The session selects the dashboard after its real Steam surfaces exist.
+  export STEARLIGHT_FAKE_OPEN_DASHBOARD=${STEARLIGHT_FAKE_OPEN_DASHBOARD:-0}
   # SteamVR must not wait for Steam in the deferred OpenVR session.
   export STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM=0
   # Opt in to the patched Windows renderer's Vulkan image/timeline bridge.

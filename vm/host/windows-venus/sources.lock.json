@@ -26,7 +26,7 @@
         },
         {
             "file": "patches/0006-recheck-pending-commands-in-idle-windows-rings.patch",
-            "sha256": "aeaaf90e92a10108829b4448af2cdc9828de0486da1df58a8c7a599b59368e20"
+            "sha256": "c3a5537c55763194becdf514243c67459ac4d7f55853234fd8b9f76842262916"
         },
         {
             "file": "patches/0007-share-host-visible-buffers-through-windows-sections.patch",
