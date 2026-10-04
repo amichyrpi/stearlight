@@ -16,6 +16,7 @@ param(
     [switch]$AnimationPreview,
     [switch]$GamescopePreview,
     [switch]$WindowsGpuBridge,
+    [ValidatePattern('^\d+-\d+(\.\d+)*$')] [string]$BluetoothBusId,
     [switch]$LowResolution = $true
 )
 
@@ -36,6 +37,14 @@ foreach ($path in @($output, $qemuDir)) {
 $qemu = Join-Path $qemuDir 'qemu-system-aarch64.exe'
 $kernel = Join-Path $output 'vmlinuz-virt'
 $initramfs = Join-Path $output 'initramfs-virt'
+$hasLtsKernel = Test-Path -LiteralPath (Join-Path $output 'vmlinuz-lts')
+$hasLtsInitramfs = Test-Path -LiteralPath (Join-Path $output 'initramfs-lts')
+if ($hasLtsKernel -ne $hasLtsInitramfs) { throw 'Incomplete LTS boot files: both vmlinuz-lts and initramfs-lts are required.' }
+if ($hasLtsKernel) {
+    $kernel = Join-Path $output 'vmlinuz-lts'
+    $initramfs = Join-Path $output 'initramfs-lts'
+}
+if ($BluetoothBusId -and -not $hasLtsKernel) { throw 'Bluetooth USB/IP requires the LTS VM build.' }
 $disk = if ($DiskPath) { (Resolve-Path -LiteralPath $DiskPath).Path } else { Join-Path $output 'stearlight-arm64.ext4' }
 $steamClientTar = if ($SteamClientArchiveTar) {
     (Resolve-Path -LiteralPath $SteamClientArchiveTar).Path
@@ -82,6 +91,8 @@ if ($LASTEXITCODE -ne 0 -or $displayBackends -notcontains 'gtk') {
 $qemuDisplay = 'gtk,gl=on,zoom-to-fit=on,show-menubar=off,window-close=on,refresh-rate=60000'
 Write-Verbose "QEMU display backend: gtk (original x86 window); guest mode ${expectedWidth}x${expectedHeight}"
 $kernelCommandLine = 'console=ttyAMA0,115200 root=/dev/vda rootfstype=ext4 rw quiet loglevel=0 logo.nologo vt.global_cursor_default=0 rd.udev.log_priority=0 stearlight.capture=1'
+# Alpine's LTS ARM64 kernel lacks the virtual machine's PL031 RTC driver.
+$kernelCommandLine += " stearlight.boot-epoch=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
 if ($AnimationPreview) {
     $kernelCommandLine += ' stearlight.animations=1'
     $screenshot = Join-Path $output 'stearlight-animation-preview.png'
@@ -94,6 +105,7 @@ if ($WindowsGpuBridge) {
     $kernelCommandLine += ' stearlight.windows-gpu=1'
 }
 if ($LowResolution) { $kernelCommandLine += ' stearlight.low-resolution=1' }
+if ($BluetoothBusId) { $kernelCommandLine += " stearlight.bluetooth-busid=$BluetoothBusId" }
 if ($DebugConsolePort) { $kernelCommandLine += ' stearlight.debug=1' }
 $args = @(
     '-L', $firmware.Replace('\', '/'),

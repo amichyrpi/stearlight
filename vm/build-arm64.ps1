@@ -140,9 +140,9 @@ if ($LASTEXITCODE -ne 0) { throw 'ARM64 VM image build failed.' }
 $container = (& docker create --platform linux/arm64 --entrypoint /bin/sh stearlight-arm64-frame-vm).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $container) { throw 'Could not create the image export container.' }
 try {
-    & docker cp "${container}:/boot/vmlinuz-virt" (Join-Path $output 'vmlinuz-virt')
+    & docker cp "${container}:/boot/vmlinuz-lts" (Join-Path $output 'vmlinuz-lts')
     if ($LASTEXITCODE -ne 0) { throw 'Could not export the ARM64 kernel.' }
-    & docker cp "${container}:/boot/initramfs-virt" (Join-Path $output 'initramfs-virt')
+    & docker cp "${container}:/boot/initramfs-lts" (Join-Path $output 'initramfs-lts')
     if ($LASTEXITCODE -ne 0) { throw 'Could not export the ARM64 initramfs.' }
     & docker export $container -o (Join-Path $output 'rootfs.tar')
     if ($LASTEXITCODE -ne 0) { throw 'Could not export the ARM64 root filesystem.' }

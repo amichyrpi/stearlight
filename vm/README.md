@@ -46,10 +46,35 @@ SteamVR renders the laser, tests its intersection, and dispatches clicks.
 The driver opens the dashboard once; repeated automated selections are off.
 
 NetworkManager manages `VM Ethernet` with DHCP. QEMU provides wired internet
-through its user-mode network; the VM has no Wi-Fi or Bluetooth adapter.
+through its user-mode network; the VM has no Wi-Fi adapter. Valve's globe
+icon is its native wired-network indicator, including when internet works.
 Steam's recovered Frame mobile-discovery login uses Bluetooth advertising.
 Use **More Options… → Mobile App - Scan QR code**, or password sign-in.
 The QR route renders in the native dashboard and does not need Bluetooth.
+
+The LTS kernel includes Bluetooth and USB/IP support. To temporarily assign
+the approved Intel radio, install `usbipd-win` on Windows, find its bus ID
+with `usbipd list`, and run `usbipd bind --busid 2-10` as administrator.
+Add `-BluetoothBusId '2-10'` to the VM command (use the actual listed ID).
+The guest attaches that radio and starts BlueZ before launching Steam.
+Windows loses access to that radio while it is attached. After closing the
+VM, run `usbipd unbind --busid 2-10` as administrator to remove sharing.
+The tester uses `vmlinuz-lts`/`initramfs-lts` when both are available;
+older output directories still boot their `virt` kernel.
+The tester seeds UTC at boot because this LTS kernel lacks QEMU's PL031
+clock driver. The clean boot verified Ethernet and the real Intel controller
+powered on, including control by the normal Steam user. Steam's native mobile
+login registered one real Bluetooth LE advertising instance. HCI monitoring
+confirmed successful advertising commands, and the service data matched the
+native login session and verification image. Android testing reported
+"Unable to load headset data" before showing a device list. In Valve's
+published Android app, a single scanned device is selected automatically;
+that error follows a failed `Authentication.GetAuthSessionInfo` lookup.
+The user then confirmed that waiting resolved the error and nearby-headset
+Bluetooth sign-in succeeded. Native Home, the profile, bottom dock, left
+navigation rail, and laser rendered; all 54 Home images reported loaded. The
+boot clock seed now includes elapsed kernel time instead of losing the
+initial service-start delay.
 
 ## Build from the recovery image
 
@@ -94,11 +119,37 @@ continued rendering. Compare host and guest captures before attributing a
 stale image to failed input. Mouse aiming still has parallax relative to
 the visible controls; physical Frame controller behavior is not verified.
 
+October 4 added Bluetooth USB/IP, the LTS boot clock correction, and cheaper
+process lookups. The startup path refreshes the Windows virtual output once
+after the native compositor becomes ready. This recovered a blank host
+window while the guest framebuffer continued rendering. The mobile login
+panel measured 7.12 FPS; 30 FPS has not been reached. Standalone EGL rendered
+correct pixels on the RTX 3050, but the native browser GPU trials failed
+during initialization and were rolled back. The maintained F: disk was
+updated in place and booted; a fresh Docker image rebuild was not run.
+After Bluetooth sign-in, Home measured 5.50 FPS in an eight-second sample.
+A two-worker software-renderer trial was inconclusive: the restarted browser
+did not initialize Home during observation. The original launcher was
+restored; the trial is not enabled by default.
+The clean reboot restored the saved account without another sign-in. Home,
+the native Steam-button menu, both docks, and laser rendered in both eyes;
+host and guest framebuffer captures matched. Home initialization took about
+20 minutes on this emulated CPU, so a loading panel alone does not establish
+a failed launch. Fully initialized Home measured 7.50 FPS. Restricting the
+software-renderer workers to two guest CPUs also measured 7.50 FPS; their
+original affinity was restored. A short Windows priority trial measured
+8.37 FPS, within the range of earlier observations; normal priority remains
+the default. These trials do not establish 30 FPS or a reliable speedup.
+
 The current evidence is in
 `F:\Stearlight-Windows-IPC-2026-10-03\fresh-native-ui`:
 `signed-in-home-verified.png` (native Windows Home),
 `signed-in-home-and-docks.png` (native Windows Home with both docks), and
 `fast-qr-keyboard.png` (native QR popup).
+October 4 Bluetooth evidence: `bluetooth-home-after-reboot.png` (saved login
+and rendered Home), `bluetooth-home-guest.png` (matching guest framebuffer),
+and `bluetooth-steam-button-center.png` (native left menu opened with the
+virtual controller after reboot).
 
 ARM64 runs through CPU emulation on this AMD host. Performance must be
 measured in the native compositor and window; a successful Vulkan transport

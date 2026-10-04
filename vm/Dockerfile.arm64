@@ -2,7 +2,7 @@
 FROM --platform=$TARGETPLATFORM debian:bookworm AS glibc
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 libatk-bridge2.0-0 libcups2 libdbus-1-3 libdrm2 libegl1 \
-    libgbm1 libgl1 libgtk2.0-0 libibus-1.0-5 libnm0 libnss3 libva2 \
+    libgbm1 libgl1 libgles2 libgtk2.0-0 libibus-1.0-5 libnm0 libnss3 libva2 \
     libopenal1 libpulse0 libsdl2-2.0-0 libssh2-1 libssl3 libsystemd0 \
     libvulkan1 mesa-vulkan-drivers \
     libx11-6 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 \
@@ -60,12 +60,18 @@ RUN mkdir -p /out && g++ -std=c++17 -O2 -fPIC -shared \
     && gcc -std=c11 -O2 -Wall -Wextra -Werror \
     /src/vrcompositor_wsi_launcher.c -o /out/vrcompositor-wsi-launcher
 
+FROM --platform=$TARGETPLATFORM alpine:edge AS bluetooth-firmware
+RUN apk add --no-cache linux-firmware-intel \
+    && mkdir -p /out/intel \
+    && cp /lib/firmware/intel/ibt-* /out/intel/
+
 FROM --platform=$TARGETPLATFORM alpine:edge AS rootfs
 # Valve identifies WebUI socket peers with lsof's field output (-F upnR).
 # BusyBox's lsof applet cannot supply that protocol and causes HTTP 403.
 RUN apk add --no-cache alpine-base bash coreutils dbus dbus-x11 e2fsprogs \
     eudev eudev-openrc udev-init-scripts-openrc \
-    font-dejavu grim linux-virt lsof mesa-dri-gallium mesa-egl mesa-vulkan-virtio \
+    font-dejavu grim linux-firmware-none linux-lts bluez bluez-openrc linux-tools-usbip \
+    lsof mesa-dri-gallium mesa-egl mesa-vulkan-virtio \
     mesa-vulkan-swrast mpv networkmanager networkmanager-cli networkmanager-openrc \
     pulseaudio pulseaudio-utils seatd util-linux-misc vulkan-loader xorg-server \
     xf86-input-libinput xrandr xset xwayland \
@@ -77,6 +83,7 @@ RUN rc-update add udev sysinit \
     && rc-update add udev-settle sysinit \
     && rc-update add udev-postmount default \
     && rc-update add dbus default \
+    && rc-update add bluetooth default \
     && rc-update add networkmanager default \
     && rc-update add seatd default \
     && rc-update add local default \
@@ -102,6 +109,7 @@ COPY --from=frame-runtime /resources/stearlight-session/steam_icon.png /usr/shar
 COPY --from=frame-runtime /resources/stearlight-session/gamescope/ /opt/frame-gamescope/
 COPY --from=frame-runtime /resources/stearlight-session/gamescope/share/gamescope/ /usr/share/gamescope/
 COPY --from=venus /out/ /opt/stearlight-vulkan/
+COPY --from=bluetooth-firmware /out/ /lib/firmware/
 COPY --from=steam-client / /opt/steam/
 RUN mkdir -p /home/stearlight/.steam \
     && ln -s /opt/steam /home/stearlight/.steam/steam
@@ -120,10 +128,12 @@ COPY vm/os/overlay/usr/local/libexec/stearlight/boot-animation /usr/local/bin/st
 COPY vm/os/overlay/usr/local/libexec/stearlight/frame-gamescope /usr/local/bin/stearlight-frame-gamescope
 COPY vm/os/overlay/usr/local/libexec/stearlight/frame-vrwebhelper /usr/local/bin/stearlight-frame-vrwebhelper
 COPY vm/os/overlay/usr/local/libexec/stearlight/frame-steam-ipc /usr/local/bin/stearlight-frame-steam-ipc
+COPY vm/os/overlay/usr/local/libexec/stearlight/frame-bluetooth /usr/local/bin/stearlight-frame-bluetooth
 COPY vm/os/overlay/usr/local/libexec/stearlight/gamescope-preview /usr/local/bin/stearlight-gamescope-preview
 COPY vm/os/arm64-vm.start /etc/local.d/arm64-vm.start
 COPY vm/os/vm-overlay/etc/inittab /etc/inittab
 RUN mv /opt/steamvr/bin/linuxarm64/vrcompositor /opt/steamvr/bin/linuxarm64/vrcompositor.bin \
+    && chmod 0755 /usr/local/bin/stearlight-frame-bluetooth \
     && mv /opt/steamvr/bin/linuxarm64/vrcompositor.stearlight-launcher /opt/steamvr/bin/linuxarm64/vrcompositor \
     && sed -i 's/^VRSTARTUP_PLATFORM=linux64$/VRSTARTUP_PLATFORM=linuxarm64/' /opt/steamvr/bin/vrenv.sh \
     && sed -i 's|exec ./vrwebhelper "\$@"|exec /usr/local/bin/stearlight-frame-vrwebhelper "\$@"|' /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh \

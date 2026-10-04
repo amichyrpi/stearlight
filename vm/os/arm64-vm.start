@@ -1,6 +1,25 @@
 #!/bin/sh
 # OpenRC's local service starts this after dbus and seatd.
 (
+  # The LTS kernel has no PL031 RTC. Seed UTC from the tester before Steam
+  # makes TLS requests; account tokens require a current clock.
+  for argument in $(cat /proc/cmdline); do
+    case "$argument" in
+      stearlight.boot-epoch=*)
+        boot_epoch=${argument#*=}
+        case "$boot_epoch" in
+          ''|*[!0-9]*) ;;
+          *)
+            # The timestamp was taken before QEMU booted. Include elapsed
+            # kernel time so starting services does not leave UTC behind.
+            read -r boot_uptime boot_idle </proc/uptime
+            boot_seconds=${boot_uptime%%.*}
+            date -u -s "@$((boot_epoch + boot_seconds))" >/dev/null
+            ;;
+        esac
+        ;;
+    esac
+  done
   # Keep the appliance console brief; detailed diagnostics go to ttyAMA0.
   boot_status() {
     printf '%s\n' "$1" >/dev/tty1 2>/dev/null || true
@@ -173,6 +192,10 @@
     udhcpc -i eth0 -q -n -t 6 >/dev/null 2>&1 || true
   fi
   echo 'STEARLIGHT ARM64 NETWORK STATE'
+  if [ -x /usr/local/bin/stearlight-frame-bluetooth ]; then
+    timeout 30 /usr/local/bin/stearlight-frame-bluetooth > /var/log/stearlight-bluetooth.log 2>&1 ||
+      echo 'STEARLIGHT ARM64 BLUETOOTH ATTACH FAILED: /var/log/stearlight-bluetooth.log'
+  fi
   ip addr show 2>&1 || true
   cat /etc/hosts
   mkdir -p /tmp/.X11-unix
