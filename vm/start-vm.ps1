@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$VmDirectory = $PSScriptRoot,
+    [string]$VmDirectory,
     [ValidateRange(2048, 8192)][int]$MemoryMegabytes = 4096,
     [ValidateRange(1, 12)][int]$CpuCount = 6,
     [ValidatePattern('^\d+-\d+(\.\d+)*$')][string]$BluetoothBusId,
@@ -10,6 +10,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $VmDirectory) { $VmDirectory = $PSScriptRoot }
 $vmRoot = (Resolve-Path -LiteralPath $VmDirectory).Path
 $qemuDir = Join-Path $vmRoot 'qemu'
 $qemu = Join-Path $qemuDir 'qemu-system-aarch64.exe'

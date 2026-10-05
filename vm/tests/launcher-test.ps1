@@ -17,6 +17,7 @@ try {
     if ($launch.Arguments -contains '-snapshot') { throw 'Account disk would be discarded' }
     if (($launch.Arguments | Where-Object { $_ -like '*stearlight.windows-gpu=1*' }).Count -ne 1) { throw 'GPU boot option missing' }
     if (Test-Path -LiteralPath $launch.Overlay) { throw 'Dry run created account state' }
+    Copy-Item (Join-Path $PSScriptRoot '../start-vm.ps1') (Join-Path $package 'start-vm.ps1')
     Push-Location (Join-Path $package 'data')
     try {
         & $qemuImg create -f qcow2 -F qcow2 -b '../stearlight-arm64.qcow2' user.qcow2
@@ -28,6 +29,8 @@ try {
     if ($LASTEXITCODE -or $info.'backing-filename' -ne '../stearlight-arm64.qcow2') { throw 'Overlay lost its relative backing image' }
     & $qemuImg check (Join-Path $moved 'data/user.qcow2')
     if ($LASTEXITCODE) { throw 'Moved account disk is invalid' }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $moved 'start-vm.ps1') -DryRun | Out-Null
+    if ($LASTEXITCODE) { throw 'Default package directory failed through Windows PowerShell -File' }
     Write-Host 'Launcher path, dry-run and portable account disk checks passed.'
 } finally {
     # Remove the junction before recursive cleanup, retaining the real runtime.
