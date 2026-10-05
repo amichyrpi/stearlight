@@ -19,6 +19,13 @@ foreach ($entry in Get-Content -LiteralPath (Join-Path $package 'SHA256SUMS')) {
 }
 & 7z a -tzip -mx=1 $archive (Join-Path $package '*')
 if ($LASTEXITCODE) { throw 'Archive creation failed' }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::OpenRead($archive)
+try {
+    foreach ($entry in @('start-vm.cmd', 'start-vm.ps1', 'stearlight-arm64.qcow2', 'qemu/qemu-system-aarch64.exe')) {
+        if (-not $zip.GetEntry($entry)) { throw "Archive layout is invalid: $entry" }
+    }
+} finally { $zip.Dispose() }
 (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' +
     [IO.Path]::GetFileName($archive) | Set-Content -LiteralPath ($archive + '.sha256') -Encoding ascii
 Write-Host "Packaged Windows VM: $archive"

@@ -48,7 +48,8 @@ QEMU sources; the recovery checksum is verified before extraction.
 The optional `Justfile` provides `just check`, `just build`, `just packages`,
 `just package` and `just run-vm`. The Windows runtime recipe requires MSYS2
 UCRT64 and the dependencies in the GitHub workflow. The package and launch
-recipes run on Windows.
+recipes run on Windows. Packaging requires 7-Zip (`7z` on `PATH`), which the
+GitHub runner provides.
 
 The workflow produces **stearlight-frame-windows**. A `vm-*` tag also publishes
 its ZIP and checksum as a GitHub release. Built files go in `dist/`; account

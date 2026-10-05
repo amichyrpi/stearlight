@@ -3,10 +3,10 @@ name: ARM64 Frame VM
 on:
   push:
     branches: ['**']
-    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
+    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', 'THIRD_PARTY_NOTICES.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
     tags: ['vm-*']
   pull_request:
-    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
+    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', 'THIRD_PARTY_NOTICES.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
   workflow_dispatch:
 
 concurrency:
