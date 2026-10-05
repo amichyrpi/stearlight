@@ -17,7 +17,7 @@ for the tested SteamVR/Gamescope path. The GTK WGL guard lives in
 
 SteamVR and Gamescope use GPU Vulkan rendering. Completed stereo pixels still
 cross a CPU/X11 presentation path, and ARM64 CPU execution is emulated on x64.
-Native login, Home, bottom dock, left Steam menu and laser have rendered on
+Native login, Home, bottom dock and laser have rendered on
 RTX 3050; full GPU scanout and sustained 30 FPS have not been established.
 
 `build.sh` builds only an already patched renderer tree. Use the complete

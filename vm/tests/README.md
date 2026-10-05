@@ -6,6 +6,7 @@ checks paths with spaces, a relative writable overlay moved with its base,
 and launcher arguments.
 
 ```sh
+python3 vm/tests/recovery-test.py
 sh vm/os/tests/layout-test.sh
 sh vm/os/tests/steamvr-native-test.sh
 sh vm/os/tests/frame-browser-test.sh
