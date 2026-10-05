@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 FROM --platform=$TARGETPLATFORM debian:trixie-slim AS venus
 COPY vm/os/driver/mesa/0001-complete-x11-software-presents.patch /tmp/mesa-wsi.patch
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential curl xz-utils patch meson ninja-build pkg-config \
+      build-essential ca-certificates curl xz-utils patch meson ninja-build pkg-config \
       python3-mako python3-yaml python3-packaging libdrm-dev libexpat1-dev \
       zlib1g-dev libzstd-dev libx11-xcb-dev libxcb-dri3-dev libxcb-present-dev \
       libxcb-randr0-dev libxcb-shm0-dev libxcb-sync-dev libxcb-xfixes0-dev libxshmfence-dev \

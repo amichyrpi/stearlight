@@ -21,3 +21,4 @@
 *.qcow2
 *.ext4
 /vm/dist/
+__pycache__/

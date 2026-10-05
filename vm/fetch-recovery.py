@@ -38,8 +38,10 @@ def fetch(lock_path, destination):
     temporary = destination.with_suffix(destination.suffix + ".partial")
     digest = hashlib.sha256()
     decoder = bz2.BZ2Decompressor()
+    created = False
     try:
         with urllib.request.urlopen(recovery["url"], timeout=120) as response, temporary.open("xb") as out:
+            created = True
             while chunk := response.read(1024 * 1024):
                 digest.update(chunk)
                 # Bound decompressed chunks so a corrupt stream cannot exhaust RAM.
@@ -54,7 +56,8 @@ def fetch(lock_path, destination):
         root_partition(temporary)
         temporary.replace(destination)
     except BaseException:
-        temporary.unlink(missing_ok=True)
+        if created:
+            temporary.unlink(missing_ok=True)
         raise
 
 

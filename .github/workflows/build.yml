@@ -24,6 +24,7 @@ jobs:
         run: |
           bash -n vm/build-image.sh vm/host/build-runtime.sh
           python3 -m py_compile vm/fetch-recovery.py
+          python3 vm/tests/recovery-test.py
           sh vm/os/tests/layout-test.sh
           sh vm/os/tests/steamvr-native-test.sh
           sh vm/os/tests/frame-browser-test.sh
