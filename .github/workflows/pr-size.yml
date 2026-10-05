@@ -1,4 +1,3 @@
-# Adapted from pingdotgg/t3code at 7812230572f2d7e042d8d14ada2381fc71377560; MIT license in LICENSE.
 name: PR Size
 
 on:
