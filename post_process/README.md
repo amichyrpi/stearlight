@@ -12,9 +12,9 @@ Use Windows 10/11 x64, a Vulkan-capable GPU with its vendor driver, at least
 administrator access are not needed to run the VM.
 
 This is an alpha ARM64 VM. CPU execution is emulated on x64; first startup
-can take 10?15 minutes on the tested host. Sustained 30 FPS has not been
+can take 10-15 minutes on the tested host. Sustained 30 FPS has not been
 achieved. Wait through the stereo boot/loading animations for native Steam
-sign-in. Use **More Options? > Mobile App - Scan QR code**, or password sign-in.
+sign-in. Use **More Options > Mobile App - Scan QR code**, or password sign-in.
 
 ## Controls
 

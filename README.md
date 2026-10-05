@@ -12,7 +12,7 @@ laser and sign-in. The maintained target is a Windows QEMU VM.
 3. Double-click `start-vm.cmd` and wait for the native sign-in screen.
 
 The download includes QEMU. Running it needs no Docker or WSL. ARM64 CPU
-execution is emulated on x64; first startup can take 10?15 minutes on the
+execution is emulated on x64; first startup can take 10-15 minutes on the
 tested host. See [VM instructions](post_process/README.md) for requirements,
 controls and account storage.
 
