@@ -189,7 +189,9 @@
   # Steam's native System.Network controller uses libnm and its D-Bus service.
   # NetworkManager owns the NAT lease as well as reporting it to Steam.
   if command -v NetworkManager >/dev/null 2>&1; then
-    rc-service networkmanager start 2>&1 || true
+    # OpenRC may start NetworkManager before our udev coldplug. Restart it
+    # after device initialization so it discards the cached unmanaged state.
+    rc-service networkmanager restart 2>&1 || true
     network_attempt=0
     until nmcli general status >/dev/null 2>&1; do
       network_attempt=$((network_attempt + 1))
