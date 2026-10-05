@@ -62,7 +62,9 @@ mkdir "$work/rootfs"
 docker export "$container" | tar -xf - -C "$work/rootfs"
 docker rm "$container" >/dev/null
 container=
-cp "$work/rootfs/boot/vmlinuz-lts" "$work/rootfs/boot/initramfs-lts" "$output/"
+# Kernel packages can mark initramfs root-only. The archive uploader and
+# Windows launcher need readable copies outside the privileged build.
+install -m 0644 "$work/rootfs/boot/vmlinuz-lts" "$work/rootfs/boot/initramfs-lts" "$output/"
 # Preserve device nodes, ownership and executable bits. mkfs populates a
 # sparse 8 GiB disk without a second writable mount or an 8 GiB download.
 truncate -s 8G "$work/rootfs.ext4"

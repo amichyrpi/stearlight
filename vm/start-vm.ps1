@@ -87,6 +87,44 @@ try {
     Write-Host "Account/settings: $data"
     $process = Start-Process -FilePath $qemu -ArgumentList $quotedArguments -PassThru `
         -WorkingDirectory $vmRoot -WindowStyle Normal -RedirectStandardError (Join-Path $data 'qemu.log')
+    # Cache the process handle so PowerShell 5.1 retains the exit code.
+    $null = $process.Handle
+    Add-Type -AssemblyName System.Windows.Forms
+    if (-not ('FrameVmWindow' -as [type])) {
+        Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class FrameVmWindow {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Rect { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr handle, out Rect rect);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr handle, IntPtr after,
+        int x, int y, int width, int height, uint flags);
+}
+'@
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+    while (-not $process.HasExited -and [DateTime]::UtcNow -lt $deadline) {
+        $process.Refresh()
+        $handle = $process.MainWindowHandle
+        if ($handle) {
+            $outer = New-Object FrameVmWindow+Rect
+            $client = New-Object FrameVmWindow+Rect
+            if ([FrameVmWindow]::GetWindowRect($handle, [ref]$outer) -and
+                [FrameVmWindow]::GetClientRect($handle, [ref]$client)) {
+                $area = [Windows.Forms.Screen]::FromHandle($handle).WorkingArea
+                $width = [int][Math]::Min(1440, [Math]::Min($area.Width - 64, ($area.Height - 100) * 1.8))
+                $height = [int][Math]::Round($width / 1.8)
+                $borderWidth = ($outer.Right - $outer.Left) - ($client.Right - $client.Left)
+                $borderHeight = ($outer.Bottom - $outer.Top) - ($client.Bottom - $client.Top)
+                [void][FrameVmWindow]::SetWindowPos($handle, [IntPtr]::Zero, 0, 0,
+                    $width + $borderWidth, $height + $borderHeight, 0x0016)
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    }
     $process.WaitForExit()
     if ($process.ExitCode -ne 0) {
         throw "QEMU exited with code $($process.ExitCode). See $(Join-Path $data 'qemu.log')."
