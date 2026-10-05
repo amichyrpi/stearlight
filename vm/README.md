@@ -38,6 +38,8 @@ Steam's main menu. Startup waits for actual Steam overlay textures before
 selecting the dashboard, including the dynamically named frame-menu surface,
 and refreshes Windows scanout once those surfaces appear. The native rail can
 hide when the laser leaves its frame; aim back at the panel to show it.
+The virtual headset reports its proximity sensor as worn so SteamVR does not
+enter standby and hide the panels while the stationary VM is loading.
 
 Internet uses QEMU's Ethernet connection. Valve's globe icon represents that
 wired connection; the VM has no Wi-Fi device. QR sign-in needs no Bluetooth.

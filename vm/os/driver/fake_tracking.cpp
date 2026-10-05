@@ -164,6 +164,14 @@ class FakeHmd final : public vr::ITrackedDeviceServerDriver,
         properties, vr::Prop_DeviceCanPowerOff_Bool, false);
     vr::VRProperties()->SetBoolProperty(
         properties, vr::Prop_NeverTracked_Bool, false);
+    // The stationary test HMD represents a worn headset. Without proximity,
+    // SteamVR enters standby during slow startup and hides Steam's panels.
+    vr::VRProperties()->SetBoolProperty(
+        properties, vr::Prop_ContainsProximitySensor_Bool, true);
+    if (vr::VRDriverInput()->CreateBooleanComponent(
+            properties, "/proximity", &proximity_) != vr::VRInputError_None)
+      return vr::VRInitError_Driver_Failed;
+    vr::VRDriverInput()->UpdateBooleanComponent(proximity_, true, 0.0);
     vr::HmdMatrix34_t left{};
     vr::HmdMatrix34_t right{};
     for (int axis = 0; axis < 3; ++axis) {
@@ -268,12 +276,14 @@ class FakeHmd final : public vr::ITrackedDeviceServerDriver,
 
   void RunFrame() {
     if (index_ == vr::k_unTrackedDeviceIndexInvalid) return;
+    vr::VRDriverInput()->UpdateBooleanComponent(proximity_, true, 0.0);
     vr::VRServerDriverHost()->TrackedDevicePoseUpdated(
         index_, GetPose(), sizeof(vr::DriverPose_t));
   }
 
  private:
   vr::TrackedDeviceIndex_t index_ = vr::k_unTrackedDeviceIndexInvalid;
+  vr::VRInputComponentHandle_t proximity_ = vr::k_ulInvalidInputComponentHandle;
 };
 
 
