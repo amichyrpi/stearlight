@@ -1,7 +1,4 @@
-# Keep VM recipes compatible with Linux tooling on Windows checkouts.
-vm/** text eol=lf
-.github/workflows/** text eol=lf
-vm/*.cmd text eol=crlf
-*.mkv binary
-*.mp4 binary
+# Linux build and guest scripts must remain LF on Windows checkouts.
+* text=auto eol=lf
+*.cmd text eol=crlf
 *.png binary

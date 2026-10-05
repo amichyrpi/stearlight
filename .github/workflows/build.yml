@@ -3,10 +3,10 @@ name: ARM64 Frame VM
 on:
   push:
     branches: ['**']
-    paths: ['vm/**', '.github/workflows/build.yml', '.gitmodules']
+    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
     tags: ['vm-*']
   pull_request:
-    paths: ['vm/**', '.github/workflows/build.yml', '.gitmodules']
+    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
   workflow_dispatch:
 
 concurrency:
@@ -22,15 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check maintained VM sources
-        run: |
-          bash -n vm/build-image.sh vm/host/build-runtime.sh
-          python3 -m py_compile vm/fetch-recovery.py
-          python3 vm/tests/recovery-test.py
-          sh vm/os/tests/layout-test.sh
-          sh vm/os/tests/steamvr-native-test.sh
-          sh vm/os/tests/frame-browser-test.sh
-          sh vm/os/tests/xr-bridge-env-test.sh
-          sh vm/os/tests/xr-lifecycle-test.sh
+        run: bash build_files/check.sh
 
   vm-image:
     needs: vm-source-checks
@@ -48,11 +40,11 @@ jobs:
           df -h /
       - uses: docker/setup-buildx-action@v3
       - name: Build fresh ARM64 image from the pinned public Frame recovery
-        run: sudo --preserve-env=DOCKER_CONFIG bash vm/build-image.sh "$PWD/vm/dist"
+        run: sudo --preserve-env=DOCKER_CONFIG bash build_files/build-image.sh "$PWD/dist"
       - uses: actions/upload-artifact@v4
         with:
           name: frame-arm64-image
-          path: vm/dist/
+          path: dist/
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
@@ -76,8 +68,8 @@ jobs:
       - uses: actions/cache@v4
         id: windows-runtime-cache
         with:
-          path: vm/dist/qemu
-          key: frame-windows-2022-${{ hashFiles('vm/sources.lock.json', 'vm/host/**') }}
+          path: dist/qemu
+          key: frame-windows-2022-${{ hashFiles('packages/sources.lock.json', 'packages/windows-runtime/**') }}
       - uses: msys2/setup-msys2@v2
         if: steps.windows-runtime-cache.outputs.cache-hit != 'true'
         with:
@@ -103,14 +95,14 @@ jobs:
             mingw-w64-ucrt-x86_64-zstd
       - name: Build pinned GTK QEMU and patched Venus renderer
         if: steps.windows-runtime-cache.outputs.cache-hit != 'true'
-        run: bash vm/host/build-runtime.sh /d/frame-build vm/dist/qemu
+        run: bash packages/windows-runtime/build-runtime.sh /d/frame-build dist/qemu
       - name: Check Windows launcher and paths containing spaces
         shell: powershell
-        run: .\vm\tests\launcher-test.ps1 -QemuDirectory .\vm\dist\qemu
+        run: .\tests\launcher-test.ps1 -QemuDirectory .\dist\qemu
       - uses: actions/upload-artifact@v4
         with:
           name: frame-windows-runtime
-          path: vm/dist/qemu/
+          path: dist/qemu/
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
@@ -121,6 +113,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: frame-arm64-image
@@ -131,15 +124,7 @@ jobs:
           path: package/qemu
       - name: Assemble download and checksums
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          foreach ($entry in Get-Content package/SHA256SUMS) {
-            $hash, $file = $entry -split '\s+', 2
-            if ((Get-FileHash "package/$file" -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash) { throw "Checksum mismatch: $file" }
-          }
-          & 7z a -tzip -mx=1 stearlight-frame-windows.zip ./package/*
-          if ($LASTEXITCODE) { throw 'Archive creation failed' }
-          (Get-FileHash stearlight-frame-windows.zip -Algorithm SHA256).Hash.ToLowerInvariant() + '  stearlight-frame-windows.zip' | Set-Content -Encoding ascii stearlight-frame-windows.zip.sha256
+        run: ./post_process/package-windows.ps1 -PackageDirectory package
       - uses: actions/upload-artifact@v4
         with:
           name: stearlight-frame-windows

@@ -1,8 +1,26 @@
-# Tests
+# VM validation
 
-`ctest` runs the protocol/FEC, transport URL/bounds, and DRM geometry tests. Hardware behavior is tested separately because CI has no Pi HEVC request decoder or KMS display. On a Pi, `scripts/test-pi.sh` generates a 120-frame 2880x1600@60 HEVC stream, sends it through the real 1200-byte UDP 10+2 FEC transport, and requires 120 DRM PRIME frames with zero drops.
+The GitHub workflow checks sources/preparation, builds a fresh ARM64 disk,
+checks ext4/qcow2 integrity and builds the Windows host. `launcher-test.ps1`
+checks paths with spaces, a relative writable overlay moved with its base,
+and launcher arguments.
 
-`pi_2880x1600_90_test.sh` is the decoder-limit test for the fixed stereo
-transport. Give it a pre-generated 2880x1600@90 HEVC elementary stream; it
-requires every frame to be decoded through V4L2 request/DRM PRIME with zero
-drops and reports failure when measured throughput is below 90 FPS.
+```sh
+bash build_files/check.sh
+# Or: just check
+```
+
+```powershell
+.\tests\launcher-test.ps1 -QemuDirectory .\dist\qemu
+```
+
+Visual validation needs a Windows host with a Vulkan driver. Boot a **fresh**
+package to login, capture both eyes and move the laser. Check the separate
+vertical dock beside the panel and the bottom dock. The bottom Steam button
+opens a different main menu. Confirm Gamescope, vrserver, vrcompositor,
+vrdashboard and Steam webhelper remain running. Process names alone do not
+establish that the UI rendered.
+
+`layout-test.sh` checks the OS directories and every local Containerfile
+input, including paths changed during repository reorganization. The legacy
+streaming project is archived outside this repository.

@@ -1,8 +1,10 @@
-# H.265 SVRT
+# Stearlight OS
 
-The maintained OS target is the ARM64 Steam Frame test VM in `vm/`. It is an
-alpha work in progress. Keep it small and straightforward; Valve's SteamVR
-runtime owns its dashboard UI and behavior.
+The maintained OS target is the ARM64 Steam Frame test VM. `Containerfile`
+assembles the OS from `packages/` and `system_files/`; `build_files/` builds
+the image and `post_process/` packages and launches it. It is an alpha work
+in progress. Keep it small and straightforward; Valve's SteamVR runtime
+owns its dashboard UI and behavior.
 
 # A note from Amory
 
