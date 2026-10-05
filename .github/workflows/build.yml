@@ -72,7 +72,13 @@ jobs:
         run: |
           git config core.autocrlf false
           git checkout-index --force --all
+      - uses: actions/cache@v4
+        id: windows-runtime-cache
+        with:
+          path: vm/dist/qemu
+          key: frame-windows-2022-${{ hashFiles('vm/sources.lock.json', 'vm/host/**') }}
       - uses: msys2/setup-msys2@v2
+        if: steps.windows-runtime-cache.outputs.cache-hit != 'true'
         with:
           msystem: UCRT64
           update: true
@@ -95,6 +101,7 @@ jobs:
             mingw-w64-ucrt-x86_64-zlib
             mingw-w64-ucrt-x86_64-zstd
       - name: Build pinned GTK QEMU and patched Venus renderer
+        if: steps.windows-runtime-cache.outputs.cache-hit != 'true'
         run: bash vm/host/build-runtime.sh /d/frame-build vm/dist/qemu
       - name: Check Windows launcher and paths containing spaces
         shell: powershell
