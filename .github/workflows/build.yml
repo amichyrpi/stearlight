@@ -2,6 +2,7 @@ name: ARM64 Frame VM
 
 on:
   push:
+    branches: ['**']
     paths: ['vm/**', '.github/workflows/build.yml', '.gitmodules']
     tags: ['vm-*']
   pull_request:

@@ -29,6 +29,9 @@ uint32_t EyeWidth() {
 }
 uint32_t EyeHeight() { return EyeWidth() * 10 / 9; }
 constexpr float kIpdMeters = 0.063f;
+// The pinned Frame dashboard sits about 1.13 m in front of this HMD.
+// A 2 m aiming plane compresses the mouse's reachable area inside the panel.
+constexpr double kPointerPlaneMeters = 1.15;
 
 // Read QEMU's test devices without grabbing them. SteamVR still owns laser
 // rendering, hit testing, click stabilization, and every dashboard action.
@@ -58,7 +61,6 @@ class VmInput {
       device.fd = -1;
     }
     keys_.fill(false);
-    pointer_valid = false;
   }
 
   void Read() {
@@ -82,7 +84,6 @@ class VmInput {
               value = std::fmax(0.0, std::fmin(value, 1.0));
               if (event.code == ABS_X) pointer_x = value;
               else pointer_y = value;
-              pointer_valid = true;
             }
           }
         }
@@ -91,7 +92,6 @@ class VmInput {
   }
 
   bool Down(unsigned code) const { return code < keys_.size() && keys_[code]; }
-  std::atomic<bool> pointer_valid{false};
   std::atomic<double> pointer_x{0.25}, pointer_y{0.5};
 
  private:
@@ -502,15 +502,15 @@ class FakeController final : public vr::ITrackedDeviceServerDriver {
                                : 0.24;
     pose.vecPosition[1] = 1.22;
     pose.vecPosition[2] = -0.55;
-    if (role_ == vr::TrackedControllerRole_RightHand && vm_input.pointer_valid) {
+    if (role_ == vr::TrackedControllerRole_RightHand) {
       // Either stereo eye can be used to aim. Convert its desktop position
       // to the HMD's 90-degree view and aim the virtual hand along that ray.
       double eye_x = vm_input.pointer_x * 2.0;
       if (eye_x >= 1.0) eye_x -= 1.0;
-      double dx = (eye_x * 2.0 - 1.0) * 2.0 - pose.vecPosition[0];
-      double dy = 1.6 + (1.0 - vm_input.pointer_y * 2.0) * 2.0 -
+      double dx = (eye_x * 2.0 - 1.0) * kPointerPlaneMeters - pose.vecPosition[0];
+      double dy = 1.6 + (1.0 - vm_input.pointer_y * 2.0) * kPointerPlaneMeters -
                   pose.vecPosition[1];
-      double dz = -2.0 - pose.vecPosition[2];
+      double dz = -kPointerPlaneMeters - pose.vecPosition[2];
       double length = std::sqrt(dx * dx + dy * dy + dz * dz);
       dx /= length;
       dy /= length;
