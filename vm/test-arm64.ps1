@@ -486,7 +486,9 @@ public static class StearlightQemuScreenshotWindowCapture {
         CursorInfo previousCursor = new CursorInfo();
         previousCursor.Size = Marshal.SizeOf(typeof(CursorInfo));
         bool hadPreviousCursor = GetCursorInfo(ref previousCursor);
-        SetCursorPos(origin.X + width / 2, origin.Y + height / 2);
+        // Aim at the center of the left eye. The stereo seam is the edge
+        // of an eye and can hide Valve's dock by moving its laser away.
+        SetCursorPos(origin.X + width / 4, origin.Y + height / 2);
         System.Threading.Thread.Sleep(400);
         using (Bitmap source = new Bitmap(width, height, PixelFormat.Format32bppArgb))
         using (Graphics graphics = Graphics.FromImage(source)) {

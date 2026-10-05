@@ -35,7 +35,9 @@ and F1 toggles the SteamVR dashboard.
 The **vertical dock beside the main panel** is Valve's per-frame navigation
 dock. It is separate from the **Steam button on the bottom dock**, which opens
 Steam's main menu. Startup waits for actual Steam overlay textures before
-selecting the dashboard and refreshes Windows scanout once those surfaces appear.
+selecting the dashboard, including the dynamically named frame-menu surface,
+and refreshes Windows scanout once those surfaces appear. The native rail can
+hide when the laser leaves its frame; aim back at the panel to show it.
 
 Internet uses QEMU's Ethernet connection. Valve's globe icon represents that
 wired connection; the VM has no Wi-Fi device. QR sign-in needs no Bluetooth.
