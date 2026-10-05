@@ -1,26 +1,22 @@
-# VM validation
+# Validation
 
-The GitHub workflow checks sources/preparation, builds a fresh ARM64 disk,
-checks ext4/qcow2 integrity and builds the Windows host. `launcher-test.ps1`
-checks paths with spaces, a relative writable overlay moved with its base,
-and launcher arguments.
+From the repository root:
 
 ```sh
 bash build_files/check.sh
-# Or: just check
 ```
+
+With the bundled Windows runtime:
 
 ```powershell
 .\tests\launcher-test.ps1 -QemuDirectory .\dist\qemu
 ```
 
-Visual validation needs a Windows host with a Vulkan driver. Boot a **fresh**
-package to login, capture both eyes and move the laser. Check the separate
-vertical dock beside the panel and the bottom dock. The bottom Steam button
-opens a different main menu. Confirm Gamescope, vrserver, vrcompositor,
-vrdashboard and Steam webhelper remain running. Process names alone do not
-establish that the UI rendered.
+These check recovery preparation, Containerfile inputs, runtime lifecycle,
+launcher paths and the portable account disk. GitHub also builds the ARM64
+image, checks its filesystem, builds QEMU and validates the ZIP layout.
 
-`layout-test.sh` checks the OS directories and every local Containerfile
-input, including paths changed during repository reorganization. The legacy
-streaming project is archived outside this repository.
+For visual verification, boot a freshly extracted package on a Windows host
+with a Vulkan driver. Capture native sign-in, the separate vertical dock,
+bottom dock and laser in both eyes. Check laser movement and dock hover.
+The developer capture helper is `tests/test-arm64.ps1`.

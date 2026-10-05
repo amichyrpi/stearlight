@@ -78,7 +78,7 @@ cp "$repo/post_process/start-vm.ps1" "$repo/post_process/start-vm.cmd" "$repo/po
 mkdir -p "$output/licenses"
 cp "$work/steam/steam_subscriber_agreement.txt" "$work/steam/ThirdPartyLegalNotices"* "$output/licenses/"
 cp "$runtime/third_party_legal_notices"* "$output/licenses/"
-cp "$repo/LICENSE.md" "$repo/THIRD_PARTY_NOTICES.md" "$repo/packages/openvr/LICENSE" "$output/licenses/"
+cp "$repo/LICENSE.md" "$repo/packages/openvr/LICENSE" "$output/licenses/"
 (
   cd "$output"
   sha256sum stearlight-arm64.qcow2 vmlinuz-lts initramfs-lts > SHA256SUMS

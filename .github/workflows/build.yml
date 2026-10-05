@@ -3,11 +3,16 @@ name: ARM64 Frame VM
 on:
   push:
     branches: ['**']
-    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', 'THIRD_PARTY_NOTICES.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
+    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
     tags: ['vm-*']
   pull_request:
-    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', 'THIRD_PARTY_NOTICES.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
+    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
   workflow_dispatch:
+    inputs:
+      publish_continuous:
+        description: Update the Continuous build release
+        type: boolean
+        default: false
 
 concurrency:
   group: frame-vm-${{ github.workflow }}-${{ github.ref }}
@@ -144,3 +149,43 @@ jobs:
         run: |
           gh release create $env:RELEASE_TAG stearlight-frame-windows.zip stearlight-frame-windows.zip.sha256 --verify-tag --title "Steam Frame VM $env:RELEASE_TAG" --notes "Extract the entire ZIP into a writable folder and run start-vm.cmd. Windows 10/11 x64 and a Vulkan-capable GPU driver are required. ARM64 CPU emulation remains slow. Account state is stored locally under data/."
           if ($LASTEXITCODE) { throw 'Release upload failed' }
+
+  continuous-release:
+    name: Continuous build release
+    needs: download-package
+    if: (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified Windows VM
+        uses: actions/download-artifact@v4
+        with:
+          name: stearlight-frame-windows
+          path: release-assets
+      - name: Update Continuous build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/continuous" >/dev/null 2>&1; then
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/continuous" --method PATCH --raw-field sha="${GITHUB_SHA}" --field force=true >/dev/null
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" --method POST --raw-field ref="refs/tags/continuous" --raw-field sha="${GITHUB_SHA}" >/dev/null
+          fi
+          notes="$RUNNER_TEMP/continuous-release.md"
+          printf '%s\n' 'ARM64 Steam Frame VM for Windows x64. Extract the ZIP and run start-vm.cmd.' '' "[Build log](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) | [Source](https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA})" > "$notes"
+          if gh release view continuous >/dev/null 2>&1; then
+            gh release edit continuous --title 'Continuous build' --notes-file "$notes" --latest
+          else
+            gh release create continuous --title 'Continuous build' --notes-file "$notes" --latest
+          fi
+          gh release upload continuous release-assets/stearlight-frame-windows.zip release-assets/stearlight-frame-windows.zip.sha256 --clobber
+          gh release view continuous --json assets --jq '.assets[].name' | while IFS= read -r asset; do
+            case "$asset" in
+              stearlight-frame-windows.zip|stearlight-frame-windows.zip.sha256) ;;
+              *) gh release delete-asset continuous "$asset" --yes ;;
+            esac
+          done
