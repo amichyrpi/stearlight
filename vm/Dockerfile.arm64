@@ -127,6 +127,7 @@ RUN mkdir -p /home/stearlight/.steam \
 COPY vm/os/overlay/usr/share/gamescope-session-plus/ /usr/share/gamescope-session-plus/
 COPY vm/os/overlay/etc/gamescope/scripts/ /etc/gamescope/scripts/
 COPY vm/os/overlay/etc/NetworkManager/ /etc/NetworkManager/
+COPY vm/os/overlay/etc/udev/rules.d/ /etc/udev/rules.d/
 COPY vm/os/overlay/usr/bin/gamescope-session-plus /usr/bin/gamescope-session-plus
 COPY --from=fake-tracking /out/libstearlight-vulkan-wsi-shim.so /opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so
 COPY --from=fake-tracking /out/vrcompositor-wsi-launcher /opt/steamvr/bin/linuxarm64/vrcompositor.stearlight-launcher

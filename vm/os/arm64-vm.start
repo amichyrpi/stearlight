@@ -110,6 +110,7 @@
   rc-service udev start 2>&1 || true
   modprobe evdev 2>/dev/null || true
   udevadm trigger --action=add --subsystem-match=input 2>&1 || true
+  udevadm trigger --action=add --subsystem-match=net 2>&1 || true
   udevadm settle 2>&1 || true
   chmod a+rw /dev/input/event* 2>/dev/null || true
   echo 'STEARLIGHT ARM64 INPUT DEVICES'
@@ -189,6 +190,12 @@
   # NetworkManager owns the NAT lease as well as reporting it to Steam.
   if command -v NetworkManager >/dev/null 2>&1; then
     rc-service networkmanager start 2>&1 || true
+    network_attempt=0
+    until nmcli general status >/dev/null 2>&1; do
+      network_attempt=$((network_attempt + 1))
+      [ "$network_attempt" -lt 30 ] || break
+      sleep 1
+    done
     nmcli --wait 30 connection up 'VM Ethernet' 2>&1 || true
   elif command -v udhcpc >/dev/null 2>&1 && [ -e /sys/class/net/eth0 ]; then
     ip link set eth0 up 2>/dev/null || true
