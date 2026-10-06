@@ -237,6 +237,11 @@ def main():
     webhelper.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(linux / "webhelper-launcher.sh", webhelper)
     webhelper.chmod(0o755)
+    # Observe Valve's native room-view action without replacing its UI.
+    system_ui = Path("opt/steamvr/resources/webinterface/dashboard/systemui.js")
+    (overlay / system_ui).parent.mkdir(parents=True, exist_ok=True)
+    (overlay / system_ui).write_bytes((linux / "roomview-bridge.js").read_bytes() + b"\n" +
+                                    (root / system_ui).read_bytes())
     for name in ["frame-session", "start-session.sh"]:
         (quest / name).chmod(0o755)
     overlay_archive(overlay, assets / "quest-overlay.bin")

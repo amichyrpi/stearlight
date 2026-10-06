@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include "quest_bridge.h"
 #include "gpu_bridge.h"
+#include "passthrough.h"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"StearlightXR",__VA_ARGS__)
 static void check(XrResult result,const char* name){if(XR_FAILED(result)){LOG("%s failed: %d",name,result);throw std::runtime_error(name);}}
@@ -40,16 +41,14 @@ struct Runtime {
  XrSpace stage=XR_NULL_HANDLE,head=XR_NULL_HANDLE,grip[2]{},aim[2]{};
  XrActionSet actions=XR_NULL_HANDLE;XrAction gripAction=XR_NULL_HANDLE,aimAction=XR_NULL_HANDLE,triggerAction=XR_NULL_HANDLE,squeezeAction=XR_NULL_HANDLE,stickAction=XR_NULL_HANDLE;
  XrAction buttonActions[6]{};XrAction touchAction=XR_NULL_HANDLE,hapticAction=XR_NULL_HANDLE,selectAction=XR_NULL_HANDLE;
- XrPath hands[2]{};Eye eyes[2],statusEye;XrTime statusUpdated=0;bool running=false,visible=false,focused=false,passthroughActive=false;
+ XrPath hands[2]{};Eye eyes[2],statusEye;XrTime statusUpdated=0;bool running=false,visible=false,focused=false;
  QuestTracking* tracking=nullptr;GLuint framebuffer=0;GpuBridge gpu;
  XrView frameViews[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};bool haveFrameViews=false;
  PFN_xrConvertTimeToTimespecTimeKHR timeToMonotonic=nullptr;
  PFN_xrGetDisplayRefreshRateFB getRate=nullptr;PFN_xrRequestDisplayRefreshRateFB requestRate=nullptr;
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
  int hapticSocket=-1;
- XrPassthroughFB passthrough=XR_NULL_HANDLE;XrPassthroughLayerFB passthroughLayer=XR_NULL_HANDLE;
- PFN_xrPassthroughStartFB startPassthrough=nullptr;PFN_xrPassthroughPauseFB pausePassthrough=nullptr;
- PFN_xrPassthroughLayerResumeFB resumeLayer=nullptr;PFN_xrPassthroughLayerPauseFB pauseLayer=nullptr;
+ Passthrough camera;
  bool has(const std::vector<XrExtensionProperties>& e,const char* name){for(const auto& p:e)if(!strcmp(p.extensionName,name))return true;return false;}
  XrPath path(const char* s){XrPath p;XR(xrStringToPath(instance,s,&p));return p;}
  void egl(){
@@ -109,10 +108,7 @@ struct Runtime {
   if(has(extensions,XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)){
    getRate=function<PFN_xrGetDisplayRefreshRateFB>(instance,"xrGetDisplayRefreshRateFB");requestRate=function<PFN_xrRequestDisplayRefreshRateFB>(instance,"xrRequestDisplayRefreshRateFB");auto enumerate=function<PFN_xrEnumerateDisplayRefreshRatesFB>(instance,"xrEnumerateDisplayRefreshRatesFB");uint32_t count=0;XR(enumerate(session,0,&count,nullptr));std::vector<float> rates(count);XR(enumerate(session,count,&count,rates.data()));for(float rate:rates)LOG("Supported display refresh %.0f Hz",rate);if(std::find(rates.begin(),rates.end(),120.f)!=rates.end())XR(requestRate(session,120));XR(getRate(session,&tracking->refresh_hz));LOG("Current display refresh %.0f Hz",tracking->refresh_hz);
   }
-  if(has(extensions,XR_FB_PASSTHROUGH_EXTENSION_NAME)){
-   auto createPassthrough=function<PFN_xrCreatePassthroughFB>(instance,"xrCreatePassthroughFB");XrPassthroughCreateInfoFB info{XR_TYPE_PASSTHROUGH_CREATE_INFO_FB};XrResult result=createPassthrough(session,&info,&passthrough);
-   if(XR_SUCCEEDED(result)){auto createLayer=function<PFN_xrCreatePassthroughLayerFB>(instance,"xrCreatePassthroughLayerFB");XrPassthroughLayerCreateInfoFB layer{XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB};layer.passthrough=passthrough;layer.purpose=XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;XR(createLayer(session,&layer,&passthroughLayer));startPassthrough=function<PFN_xrPassthroughStartFB>(instance,"xrPassthroughStartFB");pausePassthrough=function<PFN_xrPassthroughPauseFB>(instance,"xrPassthroughPauseFB");resumeLayer=function<PFN_xrPassthroughLayerResumeFB>(instance,"xrPassthroughLayerResumeFB");pauseLayer=function<PFN_xrPassthroughLayerPauseFB>(instance,"xrPassthroughLayerPauseFB");LOG("Runtime passthrough layer created");}else LOG("Passthrough unavailable: %d",result);
-  }
+  camera.initialize(instance,system,session,directory,has(extensions,XR_FB_PASSTHROUGH_EXTENSION_NAME));
   if(has(extensions,XR_FB_RENDER_MODEL_EXTENSION_NAME))saveModels();
   LOG("OPENXR_READY");
  }
@@ -143,7 +139,10 @@ struct Runtime {
   XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};while(xrPollEvent(instance,&event)==XR_SUCCESS){if(event.type==XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED){auto& state=*reinterpret_cast<XrEventDataSessionStateChanged*>(&event);LOG("Session state %d",state.state);visible=state.state==XR_SESSION_STATE_VISIBLE||state.state==XR_SESSION_STATE_FOCUSED;focused=state.state==XR_SESSION_STATE_FOCUSED;
    if(state.state==XR_SESSION_STATE_READY&&!running){XrSessionBeginInfo begin{XR_TYPE_SESSION_BEGIN_INFO};begin.primaryViewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;XR(xrBeginSession(session,&begin));running=true;if(setPerformance){XR(setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));XR(setPerformance(session,XR_PERF_SETTINGS_DOMAIN_GPU_EXT,XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));}if(requestRate)XR(requestRate(session,120));}
    if(state.state==XR_SESSION_STATE_FOCUSED&&requestRate){XR(requestRate(session,120));XR(getRate(session,&tracking->refresh_hz));LOG("Focused display refresh %.0f Hz",tracking->refresh_hz);}
-   if(state.state==XR_SESSION_STATE_STOPPING&&running){XR(xrEndSession(session));running=false;}
+   if(state.state==XR_SESSION_STATE_STOPPING&&running){camera.suspend();XR(xrEndSession(session));running=false;}
+   __atomic_add_fetch(&tracking->sequence,1,__ATOMIC_ACQ_REL);
+   tracking->session_visible=visible;tracking->session_focused=focused;
+   __atomic_add_fetch(&tracking->sequence,1,__ATOMIC_RELEASE);
    if(state.state==XR_SESSION_STATE_EXITING||state.state==XR_SESSION_STATE_LOSS_PENDING)return false;
   }else if(event.type==XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB){auto& rate=*reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(&event);tracking->refresh_hz=rate.toDisplayRefreshRate;LOG("Display refresh changed to %.0f Hz",rate.toDisplayRefreshRate);}else if(event.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED){for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));char name[XR_MAX_PATH_LENGTH]="none";uint32_t size=0;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d interaction profile %s",i,name);}}event={XR_TYPE_EVENT_DATA_BUFFER};}return true;
  }
@@ -176,7 +175,12 @@ struct Runtime {
    XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));tracking->thumbstick[i][0]=stick.isActive?stick.currentState.x:0;tracking->thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
   }__atomic_add_fetch(&tracking->sequence,1,__ATOMIC_RELEASE);
   // Passthrough is a compositor layer; camera pixels never enter Linux.
-  bool requested=access((directory+"/passthrough.enabled").c_str(),F_OK)==0;if(passthroughLayer&&requested!=passthroughActive){if(requested){XR(startPassthrough(passthrough));XR(resumeLayer(passthroughLayer));}else{XR(pauseLayer(passthroughLayer));XR(pausePassthrough(passthrough));}passthroughActive=requested;LOG("Passthrough %s",requested?"enabled":"disabled");}
+  bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootComplete();
+  bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;
+  if(!loading&&visible&&compositionReady)camera.update();else camera.suspend();
+  bool passthroughActive=camera.active;
+  // The desktop SteamVR output currently has an opaque background. Keep the
+  // working camera view available; mixed composition needs transparent output.
   XrCompositionLayerProjectionView projectionViews[2]={{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
   gpu.poll();
   // Repeated submissions of the same pixels must keep the same layer pose.
@@ -199,15 +203,18 @@ struct Runtime {
     }
    }haveFrameViews=true;
   }
-  bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootComplete();
   if(state.shouldRender)for(int i=0;i<2;i++){
-   Eye& eye=eyes[i];uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eye.chain,&acquire,&index));XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eye.chain,&imageWait));glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[index].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);if(!passthroughActive&&!loading)gpu.draw(i);glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));projectionViews[i].pose=frameViews[i].pose;projectionViews[i].fov=frameViews[i].fov;projectionViews[i].subImage={eye.chain,{{0,0},{static_cast<int32_t>(eye.width),static_cast<int32_t>(eye.height)}},0};
+   Eye& eye=eyes[i];uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eye.chain,&acquire,&index));XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eye.chain,&imageWait));glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[index].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loading)gpu.draw(i,passthroughActive);glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));projectionViews[i].pose=frameViews[i].pose;projectionViews[i].fov=frameViews[i].fov;projectionViews[i].subImage={eye.chain,{{0,0},{static_cast<int32_t>(eye.width),static_cast<int32_t>(eye.height)}},0};
   }
-  XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};projection.space=stage;projection.layerFlags=0;projection.viewCount=2;projection.views=projectionViews;
-  XrCompositionLayerPassthroughFB pass{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};pass.layerHandle=passthroughLayer;XrCompositionLayerQuad status{XR_TYPE_COMPOSITION_LAYER_QUAD};status.space=head;status.eyeVisibility=XR_EYE_VISIBILITY_BOTH;status.subImage={statusEye.chain,{{0,0},{450,450}},0};status.pose=identity();status.pose.position.z=-1.7f;status.size={.8f,.8f};const XrCompositionLayerBaseHeader* layers[3];uint32_t layerCount=0;if(state.shouldRender){if(passthroughActive)layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&pass);if(!passthroughActive)layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);if(loading){updateStatus(state.predictedDisplayTime);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&status);}}
-  XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};end.displayTime=state.predictedDisplayTime;end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;end.layerCount=layerCount;end.layers=layers;XR(xrEndFrame(session,&end));if(state.shouldRender)gpu.finish();
+  XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};projection.space=stage;projection.layerFlags=passthroughActive?XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT:0;projection.viewCount=2;projection.views=projectionViews;
+  XrCompositionLayerPassthroughFB pass{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};pass.layerHandle=camera.layer;XrCompositionLayerQuad status{XR_TYPE_COMPOSITION_LAYER_QUAD};status.space=head;status.eyeVisibility=XR_EYE_VISIBILITY_BOTH;status.subImage={statusEye.chain,{{0,0},{450,450}},0};status.pose=identity();status.pose.position.z=-1.7f;status.size={.8f,.8f};const XrCompositionLayerBaseHeader* layers[3];uint32_t layerCount=0;if(state.shouldRender){if(passthroughActive)layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&pass);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);if(loading){updateStatus(state.predictedDisplayTime);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&status);}}
+  XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};end.displayTime=state.predictedDisplayTime;end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;end.layerCount=layerCount;end.layers=layers;XR(xrEndFrame(session,&end));
+  // The history copy owns no OpenXR swapchain. Acknowledge it even when the
+  // headset is not drawing; otherwise Linux's present times out during login.
+  gpu.finish();
   static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }
- void shutdown(){gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
+ void idle(){gpu.poll();gpu.finish();}
+ void shutdown(){camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
 };
-extern "C" void android_main(android_app* app){Runtime runtime;runtime.app=app;try{while(!app->destroyRequested&&(!app->window||app->activityState!=APP_CMD_RESUME)){int events;android_poll_source* source;if(ALooper_pollOnce(50,nullptr,&events,reinterpret_cast<void**>(&source))>=0&&source)source->process(app,source);}if(app->destroyRequested)return;LOG("Android VR activity resumed with a native window");runtime.initialize(app);while(!app->destroyRequested){int events;android_poll_source* source;while(ALooper_pollOnce(runtime.running?0:50,nullptr,&events,reinterpret_cast<void**>(&source))>=0){if(source)source->process(app,source);if(app->destroyRequested)break;}if(app->destroyRequested||!runtime.events())break;if(runtime.running)runtime.frame();}}catch(const std::exception& e){LOG("Native runtime stopped: %s",e.what());}runtime.shutdown();}
+extern "C" void android_main(android_app* app){Runtime runtime;runtime.app=app;try{while(!app->destroyRequested&&(!app->window||app->activityState!=APP_CMD_RESUME)){int events;android_poll_source* source;if(ALooper_pollOnce(50,nullptr,&events,reinterpret_cast<void**>(&source))>=0&&source)source->process(app,source);}if(app->destroyRequested)return;LOG("Android VR activity resumed with a native window");runtime.initialize(app);while(!app->destroyRequested){int events;android_poll_source* source;while(ALooper_pollOnce(runtime.running?0:50,nullptr,&events,reinterpret_cast<void**>(&source))>=0){if(source)source->process(app,source);if(app->destroyRequested)break;}if(app->destroyRequested||!runtime.events())break;if(runtime.running)runtime.frame();else runtime.idle();}}catch(const std::exception& e){LOG("Native runtime stopped: %s",e.what());}runtime.shutdown();}
