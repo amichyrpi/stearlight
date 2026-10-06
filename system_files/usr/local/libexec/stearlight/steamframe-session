@@ -461,11 +461,26 @@ while [ "$attempt" -lt "$dashboard_wait_attempts" ]; do
       "$steamvr_status"
     while process_present vrserver || process_present vrcompositor ||
           process_present vrdashboard; do
-      if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ] &&
+      if { [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ] ||
+           [ "${STEARLIGHT_QUEST_RUNTIME:-0}" = 1 ]; } &&
          ! kill -0 "$steam_launcher_pid" 2>/dev/null; then
         if wait "$steam_launcher_pid"; then steam_exit_status=0; else steam_exit_status=$?; fi
         printf 'STEARLIGHT ARM64 STEAM EXITED AFTER READY status=%s\n' \
           "$steam_exit_status" >&2
+        # First sign-in can restart the client after its initial configuration.
+        # Preserve the native VR runtime, and retain the same bounded restart
+        # budget used before readiness. Signal/error exits remain failures.
+        if [ "${STEARLIGHT_QUEST_RUNTIME:-0}" = 1 ] &&
+           { [ "$steam_exit_status" -eq 0 ] || [ "$steam_exit_status" -eq 42 ]; } &&
+           [ "$steam_launcher_restarts" -lt 2 ]; then
+          steam_launcher_restarts=$((steam_launcher_restarts + 1))
+          printf 'STEARLIGHT ARM64 STEAM RESTART AFTER READY (%s)\n' "$steam_launcher_restarts"
+          VK_ICD_FILENAMES=$steam_vk_icd bash "$steam_root/RUNSTEAM.sh" >>"$steam_log" 2>&1 &
+          steam_launcher_pid=$!
+          sleep 1
+          continue
+        fi
+        capture_minidumps
         tail -n 30 "$steam_log" >&2
         exit 1
       fi
