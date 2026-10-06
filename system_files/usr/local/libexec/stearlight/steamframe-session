@@ -1,0 +1,527 @@
+#!/bin/sh
+set -eu
+
+export HOME=${HOME:-/home/stearlight}
+export USER=${USER:-stearlight}
+display_value=${DISPLAY:-:0}
+DISPLAY=$(printf '%s' "$display_value" | tr -d '\r\n')
+if [ -z "$DISPLAY" ]; then DISPLAY=:0; fi
+export DISPLAY
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/1000}
+export STEARLIGHT_FAKE_TRACKING=1
+export STEARLIGHT_FAKE_AUTO_SELECT=${STEARLIGHT_FAKE_AUTO_SELECT:-0}
+export STEARLIGHT_FAKE_OPEN_DASHBOARD=${STEARLIGHT_FAKE_OPEN_DASHBOARD:-1}
+export STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM=0
+export STEARLIGHT_NATIVE_STEAM_WAIT_SECONDS=${STEARLIGHT_NATIVE_STEAM_WAIT_SECONDS:-180}
+
+steam_root=/opt/steam
+steam_vk_icd=${STEARLIGHT_STEAM_VULKAN_ICD:-/usr/share/vulkan/icd.d/lvp_icd.aarch64.json}
+steamvr_vk_icd=${STEARLIGHT_STEAMVR_VULKAN_ICD:-/opt/steam/steamrtarm64/vk_swiftshader_icd.json}
+steam_log="$HOME/.local/share/Steam/logs/steam_output.log"
+steam_trace_log=/tmp/stearlight-steam-xtrace.log
+mkdir -p "$HOME/.local/share/Steam/logs" "$HOME/.cache" "$XDG_RUNTIME_DIR"
+: >"$steam_log"
+printf 'STEARLIGHT ARM64 SESSION HOME=%s UID=' "$HOME"
+id -u
+printf 'STEARLIGHT ARM64 SESSION STEAM ROOT=%s\n' "$steam_root"
+# Steam validates local browser connections using lsof's field protocol.
+# BusyBox accepts these arguments but prints a different format.
+if ! lsof -P -F upnR -p "$$" 2>/dev/null | grep -qx "p$$"; then
+  echo 'STEARLIGHT ARM64 FULL LSOF REQUIRED FOR WEBUI TRANSPORT'
+  exit 1
+fi
+printf 'STEARLIGHT ARM64 SESSION DISPLAY=%s WAYLAND_DISPLAY=%s\n' \
+  "${DISPLAY:-unset}" "${WAYLAND_DISPLAY:-unset}"
+if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ] &&
+   command -v xset >/dev/null 2>&1; then
+  if timeout 1s xset q >/dev/null 2>&1; then
+    printf 'STEARLIGHT ARM64 XWAYLAND PROBE=ready DISPLAY=%s\n' "$DISPLAY"
+  else
+    printf 'STEARLIGHT ARM64 XWAYLAND PROBE=failed DISPLAY=%s\n' "$DISPLAY"
+  fi
+fi
+ls -ld "$HOME" "$HOME/.local/share/Steam/logs" "$steam_root" "$steam_root/RUNSTEAM.sh" 2>&1
+if [ -x /lib/ld-linux-aarch64.so.1 ]; then
+  printf '%s\n' 'STEARLIGHT ARM64 STEAM ELF DEPENDENCIES'
+  LD_LIBRARY_PATH="$steam_root/steamrtarm64" \
+    /lib/ld-linux-aarch64.so.1 --list "$steam_root/steamrtarm64/steam" 2>&1 || true
+  if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ] &&
+     [ -e "$steam_root/steamrtarm64/libs/libcurl.so.4.8.0" ]; then
+    printf '%s\n' 'STEARLIGHT ARM64 STEAM CURL ELF DEPENDENCIES'
+    LD_LIBRARY_PATH="/usr/lib/aarch64-linux-gnu:$steam_root/steamrtarm64/libs:$steam_root/steamrtarm64" \
+      /lib/ld-linux-aarch64.so.1 --list \
+      "$steam_root/steamrtarm64/libs/libcurl.so.4.8.0" 2>&1 || true
+  fi
+else
+  printf '%s\n' 'STEARLIGHT ARM64 STEAM GLIBC LOADER MISSING'
+fi
+
+steam_webhelper_pid() {
+  for process_id in $(pidof steamwebhelper 2>/dev/null); do
+    process_state=$(awk '{print $3}' "/proc/$process_id/stat" 2>/dev/null || true)
+    case "$process_state" in ''|Z|X) continue ;; esac
+    process_executable=$(readlink "/proc/$process_id/exe" 2>/dev/null || true)
+    case "$process_executable" in
+      *steamwebhelper*)
+        printf '%s\n' "$process_id"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+steam_webhelper_present() {
+  steam_webhelper_pid >/dev/null
+}
+
+process_present() {
+  expected=$1
+  for process_id in $(pidof "$expected" 2>/dev/null); do
+    process_state=$(awk '{print $3}' "/proc/$process_id/stat" 2>/dev/null || true)
+    case "$process_state" in ''|Z|X) continue ;; esac
+    return 0
+  done
+  return 1
+}
+
+capture_minidumps() {
+  [ -d /tmp/dumps ] || return 0
+  for dump_file in /tmp/dumps/assert_*.dmp; do
+    [ -f "$dump_file" ] || continue
+    dump_name=${dump_file##*/}
+    dump_destination="$HOME/.local/share/Steam/dumps/$dump_name"
+    [ -f "$dump_destination" ] && continue
+    mkdir -p "$HOME/.local/share/Steam/dumps"
+    if cp "$dump_file" "$dump_destination"; then
+      printf 'STEARLIGHT ARM64 MINIDUMP SAVED=%s\n' "$dump_destination"
+    fi
+  done
+}
+
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- /bin/sh "$0" "$@"
+fi
+
+printf '%s\n' 'STEARLIGHT ARM64 STEAMVR CONFIG PREPARE'
+/usr/local/bin/stearlight-steamvr-native prepare
+direct_mode_setting=$(sed -n '/"direct_mode"/,/^[[:space:]]*}/p' \
+  "$HOME/.steam/steam/config/steamvr.vrsettings" \
+  | grep '"enable"' | head -n 1 || true)
+printf 'STEARLIGHT ARM64 VR DIRECT MODE SETTING=%s\n' \
+  "${direct_mode_setting:-missing}"
+
+# Reuse the Windows VM's prestarted runtime. Otherwise initialize it after
+# deferred Gamescope, before Steam, as in the recovery session.
+printf '%s\n' 'STEARLIGHT ARM64 STEAMVR START'
+steamvr_display=${STEARLIGHT_STEAMVR_DISPLAY:-$DISPLAY}
+printf 'STEARLIGHT ARM64 STEAMVR DISPLAY=%s\n' "$steamvr_display"
+printf 'STEARLIGHT ARM64 STEAMVR VULKAN ICD=%s\n' "$steamvr_vk_icd"
+steamvr_trace_log=/tmp/stearlight-steamvr-native.log
+steamvr_pid=
+steamvr_status=
+if [ "${STEARLIGHT_NATIVE_STEAMVR_PRESTARTED:-0}" = 1 ] &&
+   process_present vrserver && process_present vrcompositor; then
+  steamvr_trace_log=/tmp/stearlight-vr-prestart.log
+  steamvr_status=0
+  printf '%s\n' 'STEARLIGHT ARM64 STEAMVR REUSING PRESTARTED RUNTIME'
+else
+  : >"$steamvr_trace_log"
+  NODEVICE_SELECT=1 ENABLE_GAMESCOPE_WSI= DISABLE_GAMESCOPE_WSI=1 \
+    VK_ICD_FILENAMES="$steamvr_vk_icd" DISPLAY="$steamvr_display" \
+    /usr/local/bin/stearlight-steamvr-native startup \
+    >>"$steamvr_trace_log" 2>&1 &
+  steamvr_pid=$!
+fi
+steam_launcher_pid=
+cleanup() {
+  if [ -n "$steam_launcher_pid" ]; then
+    kill "$steam_launcher_pid" 2>/dev/null || true
+  fi
+  if process_present vrserver; then
+    NODEVICE_SELECT=1 ENABLE_GAMESCOPE_WSI= DISABLE_GAMESCOPE_WSI=1 \
+      VK_ICD_FILENAMES="$steamvr_vk_icd" DISPLAY="$steamvr_display" \
+      timeout 10s /usr/local/bin/stearlight-steamvr-native startup -shutdown \
+      >/dev/null 2>&1 || true
+  fi
+  if [ -n "$steamvr_pid" ]; then kill "$steamvr_pid" 2>/dev/null || true; fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+printf 'STEARLIGHT ARM64 STEAMVR LAUNCH PID=%s LOG=%s\n' \
+  "${steamvr_pid:-prestarted}" "$steamvr_trace_log"
+
+runtime_ready=0
+attempt=0
+while [ "$attempt" -lt 240 ]; do
+  if [ -n "$steamvr_pid" ] && ! kill -0 "$steamvr_pid" 2>/dev/null; then
+    if wait "$steamvr_pid"; then steamvr_status=0; else steamvr_status=$?; fi
+    if [ "$steamvr_status" -ne 0 ]; then break; fi
+  fi
+  if process_present vrserver && process_present vrcompositor; then
+    runtime_ready=1
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 0.25
+done
+if [ "$runtime_ready" != 1 ]; then
+  printf '%s\n' 'STEARLIGHT ARM64 STEAMVR EXITED BEFORE STEAM'
+  tail -n 40 "$steamvr_trace_log" >&2 || true
+  exit 1
+fi
+printf '%s\n' 'STEARLIGHT ARM64 STEAMVR RUNTIME READY'
+
+printf '%s\n' 'STEARLIGHT ARM64 STEAM START'
+printf '%s\n' 'STEARLIGHT ARM64 RESOURCE SNAPSHOT'
+free -m
+df -h / /dev/shm 2>&1
+cd "$steam_root"
+: >"$steam_trace_log"
+if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
+  VK_ICD_FILENAMES=$steam_vk_icd bash -x "$steam_root/RUNSTEAM.sh" \
+    >>"$steam_log" 2>"$steam_trace_log" &
+else
+  VK_ICD_FILENAMES=$steam_vk_icd bash "$steam_root/RUNSTEAM.sh" \
+    >>"$steam_log" 2>&1 &
+fi
+steam_launcher_pid=$!
+sleep 1
+attempt=0
+steam_launcher_restarts=0
+steam_wait_seconds=${STEARLIGHT_STEAM_WAIT_SECONDS:-900}
+case "$steam_wait_seconds" in
+  ''|*[!0-9]*)
+    printf 'STEARLIGHT ARM64 INVALID STEAM TIMEOUT=%s\n' \
+      "$steam_wait_seconds" >&2
+    exit 2
+    ;;
+esac
+steam_wait_attempts=$((steam_wait_seconds * 4))
+steam_webhelper_stable_pid=
+steam_webhelper_stable_attempts=0
+while [ "$attempt" -lt "$steam_wait_attempts" ]; do
+  if ! process_present vrcompositor; then
+    printf '%s\n' 'STEARLIGHT ARM64 STEAMVR COMPOSITOR FAILED' >&2
+    tail -n 30 "$steam_root/logs/vrcompositor.txt" >&2 2>/dev/null || true
+    exit 1
+  fi
+  current_webhelper_pid=$(steam_webhelper_pid || true)
+  if [ -n "$current_webhelper_pid" ]; then
+    if [ "$current_webhelper_pid" = "$steam_webhelper_stable_pid" ]; then
+      steam_webhelper_stable_attempts=$((steam_webhelper_stable_attempts + 1))
+    else
+      steam_webhelper_stable_pid=$current_webhelper_pid
+      steam_webhelper_stable_attempts=1
+    fi
+  else
+    steam_webhelper_stable_pid=
+    steam_webhelper_stable_attempts=0
+  fi
+  if [ "$steam_webhelper_stable_attempts" -ge 20 ]; then
+    break
+  fi
+  if ! kill -0 "$steam_launcher_pid" 2>/dev/null; then
+    if wait "$steam_launcher_pid"; then
+      steam_launcher_status=0
+    else
+      steam_launcher_status=$?
+    fi
+    # Steam uses 42 to request a restart after installing a client update.
+    if { [ "$steam_launcher_status" -eq 0 ] ||
+         [ "$steam_launcher_status" -eq 42 ]; } &&
+       [ "$steam_launcher_restarts" -lt 2 ]; then
+      steam_launcher_restarts=$((steam_launcher_restarts + 1))
+      if [ "$steam_launcher_status" -eq 42 ]; then
+        printf 'STEARLIGHT ARM64 STEAM RESTART after update status=42 (%s)\n' \
+          "$steam_launcher_restarts"
+      else
+        printf 'STEARLIGHT ARM64 STEAM RESTART after clean exit (%s)\n' \
+          "$steam_launcher_restarts"
+      fi
+      cd "$steam_root"
+      if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
+        VK_ICD_FILENAMES=$steam_vk_icd bash -x "$steam_root/RUNSTEAM.sh" \
+          >>"$steam_log" 2>"$steam_trace_log" &
+      else
+        VK_ICD_FILENAMES=$steam_vk_icd bash "$steam_root/RUNSTEAM.sh" \
+          >>"$steam_log" 2>&1 &
+      fi
+      steam_launcher_pid=$!
+      sleep 1
+      attempt=0
+      steam_webhelper_stable_pid=
+      steam_webhelper_stable_attempts=0
+      continue
+    fi
+    printf 'STEARLIGHT ARM64 STEAM EXITED BEFORE WEBHELPER status=%s\n' \
+      "$steam_launcher_status" >&2
+    if [ -s "$steam_log" ]; then
+      tail -n 100 "$steam_log" >&2
+    fi
+    if [ -s "$steam_trace_log" ]; then
+      printf '%s\n' 'STEARLIGHT ARM64 STEAM TRACE START' >&2
+      tail -n 100 "$steam_trace_log" >&2
+      printf '%s\n' 'STEARLIGHT ARM64 STEAM TRACE END' >&2
+    fi
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+  if [ "$((attempt % 120))" -eq 0 ]; then
+    capture_minidumps
+    printf 'STEARLIGHT ARM64 STEAM WAIT attempt=%s/%s HOME=%s WEBHELPER=%s stable=%s/20 LOG=%s\n' \
+      "$attempt" "$steam_wait_attempts" "$HOME" \
+      "${current_webhelper_pid:-none}" \
+      "$steam_webhelper_stable_attempts" "$steam_log"
+    if [ -s "$steam_log" ]; then
+      grep -Ei 'failed|error|assert|fatal|steamwebhelper|offscreen|vulkan|timeout' \
+        "$steam_log" | tail -n 40 || true
+    elif [ -e "$steam_log" ]; then
+      printf 'STEARLIGHT ARM64 STEAM OUTPUT LOG EXISTS BUT IS EMPTY\n'
+    else
+      printf 'STEARLIGHT ARM64 STEAM OUTPUT LOG MISSING\n'
+    fi
+    if [ -s "$steam_trace_log" ]; then
+      tail -n 20 "$steam_trace_log"
+    fi
+    ps | grep -E 'steam|bash|session' | grep -v grep | head -n 20 || true
+    dmesg | grep -Ei 'steam|undefined instruction|illegal instruction|segfault|trap' | tail -n 12 || true
+    for process_name in steam steamwebhelper bash; do
+      process_ids=$(pidof "$process_name" 2>/dev/null || true)
+      printf 'STEARLIGHT ARM64 PROCESS %s=%s\n' \
+        "$process_name" "${process_ids:-none}"
+    done
+    for log_file in "$steam_root"/logs/steamwebhelper.log \
+        "$HOME/.local/share/Steam/logs/steamwebhelper.log"; do
+      [ -f "$log_file" ] || continue
+      printf 'STEARLIGHT ARM64 WEBHELPER LOG=%s\n' "$log_file"
+      tail -n 40 "$log_file"
+    done
+  fi
+  sleep 0.25
+done
+
+if [ "$steam_webhelper_stable_attempts" -lt 20 ]; then
+  capture_minidumps
+  printf 'STEARLIGHT ARM64 STEAM WEBHELPER TIMEOUT after %s seconds\n' \
+    "$steam_wait_seconds" >&2
+  for name_file in /proc/[0-9]*/comm; do
+    [ -r "$name_file" ] || continue
+    process_name=
+    IFS= read -r process_name <"$name_file" || true
+    [ "$process_name" = steamwebhelper ] || continue
+    process_id=${name_file#/proc/}
+    process_id=${process_id%/comm}
+    process_state=$(awk '{print $3}' "/proc/$process_id/stat" 2>/dev/null || true)
+    process_executable=$(readlink "/proc/$process_id/exe" 2>/dev/null || true)
+    printf 'STEARLIGHT ARM64 WEBHELPER CANDIDATE pid=%s state=%s exe=%s\n' \
+      "$process_id" "${process_state:-gone}" "${process_executable:-gone}"
+  done
+  if [ -s "$steam_log" ]; then
+    grep -Ei 'failed|error|assert|fatal|steamwebhelper|offscreen|vulkan|timeout' \
+      "$steam_log" | tail -n 80 >&2 || true
+  else
+    printf 'STEARLIGHT ARM64 STEAM LOG MISSING: %s\n' "$steam_log" >&2
+  fi
+  if [ -s "$steam_trace_log" ]; then
+    tail -n 100 "$steam_trace_log" >&2
+  fi
+  sync
+  exit 1
+fi
+printf '%s\n' 'STEARLIGHT ARM64 STEAM READY'
+# Steam now owns the startup/loading UI. Remove the VM's software splash.
+touch "$XDG_RUNTIME_DIR/stearlight-boot-animation.stop"
+if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ] &&
+   command -v xset >/dev/null 2>&1; then
+  if timeout 1s xset q >/dev/null 2>&1; then
+    printf 'STEARLIGHT ARM64 XWAYLAND PROBE=ready DISPLAY=%s\n' "$DISPLAY"
+  else
+    printf 'STEARLIGHT ARM64 XWAYLAND PROBE=failed DISPLAY=%s\n' "$DISPLAY"
+  fi
+fi
+printf '%s\n' 'STEARLIGHT ARM64 STEAMVR GAMESCOPE_WSI=disabled'
+printf '%s\n' 'STEARLIGHT ARM64 STEAMVR MESA_DEVICE_SELECT=disabled'
+
+attempt=0
+dashboard_wait_seconds=${STEARLIGHT_DASHBOARD_WAIT_SECONDS:-900}
+case "$dashboard_wait_seconds" in
+  ''|*[!0-9]*)
+    printf 'STEARLIGHT ARM64 INVALID DASHBOARD TIMEOUT=%s\n' \
+      "$dashboard_wait_seconds" >&2
+    exit 2
+    ;;
+esac
+dashboard_wait_attempts=$((dashboard_wait_seconds * 4))
+compositor_seen=0
+while [ "$attempt" -lt "$dashboard_wait_attempts" ]; do
+  if process_present vrcompositor; then
+    compositor_seen=1
+  elif [ "$compositor_seen" = 1 ]; then
+    printf '%s\n' 'STEARLIGHT ARM64 STEAMVR COMPOSITOR FAILED' >&2
+    tail -n 30 "$steam_root/logs/vrcompositor.txt" >&2 2>/dev/null || true
+    tail -n 20 "$steamvr_trace_log" >&2 2>/dev/null || true
+    exit 1
+  fi
+  # vrstartup coordinates daemon startup and can exit successfully before
+  # the dashboard finishes loading. Only a failed coordinator is fatal.
+  if [ -z "$steamvr_status" ] && ! kill -0 "$steamvr_pid" 2>/dev/null; then
+    if wait "$steamvr_pid"; then steamvr_status=0; else steamvr_status=$?; fi
+    printf 'STEARLIGHT ARM64 VRSTARTUP EXIT status=%s; waiting for dashboard\n' \
+      "$steamvr_status"
+  fi
+  if [ -n "$steamvr_status" ] && [ "$steamvr_status" -ne 0 ]; then
+    printf '%s\n' 'STEARLIGHT ARM64 STEAMVR EXITED BEFORE DASHBOARD' >&2
+    tail -n 100 "$steamvr_trace_log" >&2 || true
+    for log_file in "$steam_root"/logs/vr*.txt \
+        "$HOME/.local/share/Steam/logs/vr*.txt"; do
+      [ -f "$log_file" ] || continue
+      printf 'STEARLIGHT ARM64 STEAMVR LOG=%s\n' "$log_file" >&2
+      tail -n 100 "$log_file" >&2
+    done
+    grep -Ei 'libvulkan|vulkan\.so|not found' "$steamvr_trace_log" \
+      | tail -n 80 >&2 || true
+    if [ -s /opt/steam/logs/stearlight-vulkan-wsi.log ]; then
+      printf '%s\n' 'STEARLIGHT ARM64 VULKAN WSI SHIM TRACE' >&2
+      cat /opt/steam/logs/stearlight-vulkan-wsi.log >&2
+    fi
+    dmesg | grep -Ei 'vrcompositor|vrserver|segfault|trap|oom|killed process' \
+      | tail -n 40 >&2 || true
+    ls -la /tmp/dumps "$HOME/.local/share/Steam/dumps" >&2 2>/dev/null || true
+    if [ -s /tmp/dumps/stearlight_log.txt ]; then
+      printf '%s\n' 'STEARLIGHT ARM64 ASSERTION LOG BEGIN' >&2
+      cat /tmp/dumps/stearlight_log.txt >&2
+      printf '%s\n' 'STEARLIGHT ARM64 ASSERTION LOG END' >&2
+    fi
+    sleep 1
+    latest_crash=
+    for dump_file in /tmp/dumps/assert_*.dmp /tmp/dumps/crash_*.dmp; do
+      [ -s "$dump_file" ] || continue
+      latest_crash=$dump_file
+    done
+    if [ -n "$latest_crash" ]; then
+      printf 'STEARLIGHT ARM64 CRASH DUMP=%s bytes=%s\n' \
+        "$latest_crash" "$(wc -c <"$latest_crash" | tr -d ' ')" >&2
+      printf '%s\n' 'STEARLIGHT ARM64 CRASH DUMP BASE64 BEGIN' >&2
+      base64 -w 76 "$latest_crash" >&2
+      printf '%s\n' 'STEARLIGHT ARM64 CRASH DUMP BASE64 END' >&2
+    fi
+    printf '%s\n' 'STEARLIGHT ARM64 STEAMVR DIAGNOSTICS COMPLETE' >&2
+    exit 1
+  fi
+  if process_present vrserver && process_present vrcompositor &&
+     process_present vrdashboard && process_present vrwebhelper; then
+    if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
+      sleep 8
+      if ! process_present vrserver || ! process_present vrcompositor ||
+         ! process_present vrdashboard || ! process_present vrwebhelper; then
+        printf '%s\n' 'STEARLIGHT ARM64 STEAMVR EXITED BEFORE DASHBOARD' >&2
+        tail -n 40 "$steamvr_trace_log" >&2
+        printf '%s\n' 'STEARLIGHT ARM64 STEAMVR DIAGNOSTICS COMPLETE' >&2
+        exit 1
+      fi
+    fi
+    if ! /lib/ld-linux-aarch64.so.1 /usr/local/libexec/stearlight/dashboard-ready 1200; then
+      printf '%s\n' 'STEARLIGHT ARM64 STEAM SURFACES FAILED' >&2
+      exit 1
+    fi
+    printf '%s\n' 'STEARLIGHT ARM64 DASHBOARD READY'
+    tail -n 40 "$steamvr_trace_log"
+    (
+      # Rebind QEMU's scanout after the native compositor has created its
+      # window. The Windows bridge can otherwise retain the loading image.
+      if [ "${STEARLIGHT_TIMELINE_BRIDGE:-0}" = 1 ] &&
+         command -v xrandr >/dev/null 2>&1 &&
+         DISPLAY="$steamvr_display" xrandr --query | grep -q '^Virtual-1 connected'; then
+        scanout_mode=2880x1600
+        if [ "${STEARLIGHT_VM_LOW_RESOLUTION:-0}" = 1 ]; then scanout_mode=1440x800; fi
+        DISPLAY="$steamvr_display" xrandr --output Virtual-1 --off || true
+        if DISPLAY="$steamvr_display" xrandr --output Virtual-1 --mode "$scanout_mode" --rate 60; then
+          printf '%s\n' 'STEARLIGHT ARM64 HOST SCANOUT REFRESHED'
+        else
+          DISPLAY="$steamvr_display" xrandr --output Virtual-1 --auto || true
+          printf '%s\n' 'STEARLIGHT ARM64 HOST SCANOUT REFRESH FAILED' >&2
+        fi
+      fi
+      # Gamescope does not expose the screencopy protocol used by grim.
+      # The host tester captures the visible QEMU window at its real size.
+      if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
+        printf '%s\n' 'STEARLIGHT ARM64 SCREENSHOT HOST CAPTURE READY'
+      fi
+    )
+    if [ -z "$steamvr_status" ]; then
+      if wait "$steamvr_pid"; then
+        steamvr_status=0
+      else
+        steamvr_status=$?
+      fi
+    fi
+    printf 'STEARLIGHT ARM64 VRSTARTUP EXIT status=%s; waiting for SteamVR daemons\n' \
+      "$steamvr_status"
+    while process_present vrserver || process_present vrcompositor ||
+          process_present vrdashboard; do
+      if { [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ] ||
+           [ "${STEARLIGHT_QUEST_RUNTIME:-0}" = 1 ]; } &&
+         ! kill -0 "$steam_launcher_pid" 2>/dev/null; then
+        if wait "$steam_launcher_pid"; then steam_exit_status=0; else steam_exit_status=$?; fi
+        printf 'STEARLIGHT ARM64 STEAM EXITED AFTER READY status=%s\n' \
+          "$steam_exit_status" >&2
+        # First sign-in can restart the client after its initial configuration.
+        # Preserve the native VR runtime, and retain the same bounded restart
+        # budget used before readiness. Signal/error exits remain failures.
+        if [ "${STEARLIGHT_QUEST_RUNTIME:-0}" = 1 ] &&
+           { [ "$steam_exit_status" -eq 0 ] || [ "$steam_exit_status" -eq 42 ]; } &&
+           [ "$steam_launcher_restarts" -lt 2 ]; then
+          steam_launcher_restarts=$((steam_launcher_restarts + 1))
+          printf 'STEARLIGHT ARM64 STEAM RESTART AFTER READY (%s)\n' "$steam_launcher_restarts"
+          VK_ICD_FILENAMES=$steam_vk_icd bash "$steam_root/RUNSTEAM.sh" >>"$steam_log" 2>&1 &
+          steam_launcher_pid=$!
+          sleep 1
+          continue
+        fi
+        capture_minidumps
+        tail -n 30 "$steam_log" >&2
+        exit 1
+      fi
+      if ! process_present vrcompositor; then
+        printf '%s\n' 'STEARLIGHT ARM64 STEAMVR COMPOSITOR FAILED' >&2
+        tail -n 30 "$steam_root/logs/vrcompositor.txt" >&2 2>/dev/null || true
+        exit 1
+      fi
+      sleep 1
+    done
+    if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
+      printf '%s\n' 'STEARLIGHT ARM64 STEAMVR SESSION ENDED BEFORE CAPTURE' >&2
+      exit 1
+    fi
+    printf 'STEARLIGHT ARM64 STEAMVR DAEMONS EXIT status=%s\n' \
+      "$steamvr_status"
+    exit "$steamvr_status"
+  fi
+  attempt=$((attempt + 1))
+  if [ "$((attempt % 120))" -eq 0 ]; then
+    printf 'STEARLIGHT ARM64 DASHBOARD WAIT attempt=%s/%s\n' \
+      "$attempt" "$dashboard_wait_attempts"
+    for process_name in vrstartup vrserver vrcompositor vrdashboard; do
+      process_ids=$(pidof "$process_name" 2>/dev/null || true)
+      printf 'STEARLIGHT ARM64 PROCESS %s=%s\n' \
+        "$process_name" "${process_ids:-none}"
+    done
+    tail -n 40 "$steamvr_trace_log" 2>/dev/null || true
+    for log_file in "$steam_root"/logs/vr*.txt \
+        "$HOME/.local/share/Steam/logs/vr*.txt"; do
+      [ -f "$log_file" ] || continue
+      printf 'STEARLIGHT ARM64 STEAMVR LOG=%s\n' "$log_file"
+      tail -n 40 "$log_file"
+    done
+    free -m
+    df -h / /dev/shm 2>&1
+  fi
+  sleep 0.25
+done
+
+printf 'STEARLIGHT ARM64 DASHBOARD TIMEOUT after %s seconds\n' \
+  "$dashboard_wait_seconds" >&2
+tail -n 100 "$steamvr_trace_log" >&2 || true
+exit 1

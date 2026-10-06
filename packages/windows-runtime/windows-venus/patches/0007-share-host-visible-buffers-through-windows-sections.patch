@@ -1,0 +1,209 @@
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -84,8 +84,11 @@
+       VkExternalMemoryBufferCreateInfo *external_info =
+          (VkExternalMemoryBufferCreateInfo *)iter;
+ #ifdef _WIN32
+-      if (external_info->handleTypes & VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT) {
+-         external_info->handleTypes &= ~VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
++      const VkExternalMemoryHandleTypeFlags fd_types =
++         VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT |
++         VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++      if (external_info->handleTypes & fd_types) {
++         external_info->handleTypes &= ~fd_types;
+          external_info->handleTypes |= host_handle_types;
+       }
+ #endif
+@@ -140,10 +143,10 @@
+    bool dual = false;
+ #ifdef _WIN32
+    dual = dev->physical_device->host_external_memory_host &&
+-      !vkr_find_struct(create_info->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO) &&
+       !(create_info->flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT);
+ #endif
+-   if (!dual)
++   if (!dual || vkr_find_struct(create_info->pNext,
++                                VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO))
+       vkr_buffer_prepare_external_create_info(dev, &create_info, &create_info_storage,
+                                               &external_info_storage);
+    args->pCreateInfo = create_info;
+@@ -153,8 +156,13 @@
+       obj->plain_buffer = obj->base.handle.buffer;
+       vkr_buffer_prepare_external_create_info(dev, &create_info, &create_info_storage,
+                                               &external_info_storage);
++      VkExternalMemoryBufferCreateInfo *external = vkr_find_struct(create_info->pNext,
++         VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO);
++      VkExternalMemoryHandleTypeFlags saved_types = external->handleTypes;
++      external->handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+       VkResult ret = dev->proc_table.CreateBuffer(dev->base.handle.device,
+          create_info, NULL, &obj->host_buffer);
++      external->handleTypes = saved_types;
+       VkMemoryRequirements host_req = {0};
+       if (ret == VK_SUCCESS)
+          dev->proc_table.GetBufferMemoryRequirements(dev->base.handle.device,
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -200,6 +200,10 @@
+       munmap(res->u.data, res->size);
+    else if (res->u.fd >= 0)
+       os_close_fd(res->u.fd);
++#ifdef _WIN32
++   if (res->shm_fd >= 0)
++      os_close_fd(res->shm_fd);
++#endif
+    free(res);
+ }
+ 
+@@ -244,6 +248,9 @@
+    res->res_id = res_id;
+    res->fd_type = fd_type;
+    res->size = blob_size;
++#ifdef _WIN32
++   res->shm_fd = -1;
++#endif
+ 
+    /* fd and mmap_ptr cannot be valid at the same time, but allowed to be -1 and NULL */
+    assert(fd < 0 || !mmap_ptr);
+@@ -278,6 +285,14 @@
+       return false;
+    }
+ 
++#ifdef _WIN32
++   struct vkr_resource *res = vkr_context_get_resource(ctx, res_id);
++   res->shm_fd = os_dupfd_cloexec(fd);
++   if (res->shm_fd < 0) {
++      vkr_context_remove_resource(ctx, res_id);
++      return false;
++   }
++#endif
+    return true;
+ }
+ 
+--- a/src/venus/vkr_context.h
++++ b/src/venus/vkr_context.h
+@@ -31,6 +31,10 @@
+       uint8_t *data;
+    } u;
+ 
++#ifdef _WIN32
++   /* Keep the section alive independently of the mapped resource view. */
++   int shm_fd;
++#endif
+    size_t size;
+ };
+ 
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -336,7 +336,8 @@
+ static VkResult
+ vkr_host_memory_create(struct vkr_device *dev, VkMemoryAllocateInfo *info,
+                         struct vkr_host_memory **out_host,
+-                        VkImportMemoryHostPointerInfoEXT *import)
++                        VkImportMemoryHostPointerInfoEXT *import,
++                        const struct vkr_resource *resource)
+ {
+    const uint64_t alignment = MAX2(dev->physical_device->min_host_pointer_alignment,
+                                    (uint64_t)getpagesize());
+@@ -350,8 +351,19 @@
+    if (!host)
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+    host->fd = -1;
+-   HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+-                                       (DWORD)(size >> 32), (DWORD)size, NULL);
++   HANDLE section = NULL;
++   if (resource) {
++      HANDLE original = os_get_win32_handle_from_fd(resource->shm_fd);
++      if (size > resource->size || original == INVALID_HANDLE_VALUE ||
++          !DuplicateHandle(GetCurrentProcess(), original, GetCurrentProcess(),
++                           &section, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
++         free(host);
++         return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++      }
++   } else {
++      section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
++                                   (DWORD)(size >> 32), (DWORD)size, NULL);
++   }
+    if (!section) {
+       free(host);
+       return VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -416,10 +428,21 @@
+ #endif
+    const void *import_info = NULL;
+    VkImportMemoryResourceInfoMESA *res_info = NULL;
++#ifdef _WIN32
++   struct vkr_resource *shm_resource = NULL;
++#endif
+    VkBaseInStructure *prev_of_res_info = vkr_find_prev_struct(
+       alloc_info, VK_STRUCTURE_TYPE_IMPORT_MEMORY_RESOURCE_INFO_MESA);
+    if (prev_of_res_info) {
+       res_info = (VkImportMemoryResourceInfoMESA *)prev_of_res_info->pNext;
++#ifdef _WIN32
++      struct vkr_resource *resource = vkr_context_get_resource(ctx, res_info->resourceId);
++      if (resource && resource->fd_type == VIRGL_RESOURCE_FD_SHM &&
++          physical_dev->host_external_memory_host) {
++         shm_resource = resource;
++         import_info = res_info->pNext;
++      } else
++#endif
+       if (!vkr_get_fd_info_from_resource_info(ctx, dev, res_info, &local_import_info,
+ #ifdef _WIN32
+                                               &local_import_win32_info,
+@@ -459,9 +482,22 @@
+ #ifdef _WIN32
+    struct vkr_host_memory *host_memory = NULL;
+    VkImportMemoryHostPointerInfoEXT local_host_import;
+-   if (physical_dev->host_external_memory_host && !might_export && !res_info &&
++   VkMemoryDedicatedAllocateInfo *buffer_dedicated = vkr_find_struct(alloc_info->pNext,
++      VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
++   const bool shared_buffer = might_export && (!buffer_dedicated || !buffer_dedicated->image);
++   if (physical_dev->host_external_memory_host &&
++       ((!might_export && !res_info) || shared_buffer || shm_resource) &&
+        (property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+-      args->ret = vkr_host_memory_create(dev, alloc_info, &host_memory, &local_host_import);
++      /* Section-backed host allocations share the real bytes across Venus
++       * contexts. Windows opaque GPU handles cannot export these memory types. */
++      if (export_info) {
++         VkBaseInStructure *prev = vkr_find_prev_struct(alloc_info,
++            VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO);
++         prev->pNext = export_info->pNext;
++         export_info = NULL;
++      }
++      args->ret = vkr_host_memory_create(dev, alloc_info, &host_memory,
++                                         &local_host_import, shm_resource);
+       if (args->ret != VK_SUCCESS)
+          return;
+    } else
+@@ -693,7 +729,17 @@
+ 
+    vn_replace_vkGetMemoryResourcePropertiesMESA_args_handle(args);
+ #ifdef _WIN32
+-   if ((res->fd_type == VIRGL_RESOURCE_FD_DMABUF && dev->physical_device->dma_buf_shim_active) ||
++   if (res->fd_type == VIRGL_RESOURCE_FD_SHM &&
++       dev->physical_device->host_external_memory_host) {
++      VkMemoryHostPointerPropertiesEXT props = {
++         .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
++      };
++      args->ret = dev->GetMemoryHostPointerPropertiesEXT(args->device,
++         VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, res->u.data, &props);
++      if (args->ret != VK_SUCCESS)
++         return;
++      args->pMemoryResourceProperties->memoryTypeBits = props.memoryTypeBits;
++   } else if ((res->fd_type == VIRGL_RESOURCE_FD_DMABUF && dev->physical_device->dma_buf_shim_active) ||
+        (res->fd_type == VIRGL_RESOURCE_FD_OPAQUE && dev->physical_device->host_external_memory_win32)) {
+       /* OPAQUE_WIN32 cannot be queried with GetMemoryWin32HandleProperties.
+        * Use the actual export allocation, retained with the handle token. */
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -219,7 +219,11 @@
+    TRACE_FUNC();
+ 
+    assert(res_id);
+-   assert(fd_type == VIRGL_RESOURCE_FD_DMABUF || fd_type == VIRGL_RESOURCE_FD_OPAQUE);
++   bool valid_type = fd_type == VIRGL_RESOURCE_FD_DMABUF || fd_type == VIRGL_RESOURCE_FD_OPAQUE;
++#ifdef _WIN32
++   valid_type = valid_type || fd_type == VIRGL_RESOURCE_FD_SHM;
++#endif
++   assert(valid_type);
+    assert(fd >= 0);
+    assert(size);
+ 

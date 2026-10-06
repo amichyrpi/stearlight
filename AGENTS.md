@@ -1,17 +1,20 @@
-# Stearlight
+# Stearlight OS
 
-Stearlight is a SteamOS VR operating system and GUI for streaming vr games directly to a SteamVR capable pc. it run on a raspberry pi 4
-
-This project need to be the smallest and the fastest possible to run on a raspberry pi 4. It is a work in progress and is not stable, consider it as alpha.
+The maintained OS target is the ARM64 Steam Frame test VM. `Containerfile`
+assembles the OS from `packages/` and `system_files/`; `build_files/` builds
+the image and `post_process/` packages and launches it. It is an alpha work
+in progress. Keep it small and straightforward; Valve's SteamVR runtime
+owns its dashboard UI and behavior.
 
 # A note from Amory
 
-I like vr as the technology and for the games that are made for it. I like solutions that are simple yet fonctional. I like the idea of a small and fast operating system that can run on a raspberry pi 4.
+I like VR and solutions that are simple yet functional. Keep the project lean
+and make the VM test path easy to run and inspect.
 
-I never like the messages outputed by an agent, that why in this project, when you output a message, that is a response to a user or a full resume, you will need to be straight to the point with as little useless information as possible to provide the user with the information he/she is looking for.
+When responding, be direct and concise, with only the detail needed to answer
+the user's request.
 
 # The ways to hurt yourself
 
-1. Looping inside a nonworking implementation. Never continue to work on a feature if that feature will never work.
-
-2. Testing too much. when you are testing a feature, you should be testing it in a way that will not overload your context with short responses for a result, not long strings of text with data, a short yet complete response.
+1. Do not loop on a feature that cannot work in the current VM/runtime.
+2. Keep tests focused and report concise results rather than dumping logs.

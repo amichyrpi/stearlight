@@ -1,0 +1,22 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true"/>
+ <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
+ <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false"/>
+ <uses-permission android:name="android.permission.INTERNET"/>
+ <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+ <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+ <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+ <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+ <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+ <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation"/>
+ <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE"/>
+ <uses-permission android:name="com.oculus.permission.RENDER_MODEL"/>
+ <application android:label="Stearlight OS" android:extractNativeLibs="true" android:allowBackup="false" android:hasCode="true">
+  <meta-data android:name="com.oculus.supportedDevices" android:value="quest2"/>
+  <meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>
+  <activity android:name=".QuestActivity" android:exported="true" android:screenOrientation="landscape" android:launchMode="singleTask" android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" android:immersive="true" android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density">
+   <meta-data android:name="android.app.lib_name" android:value="stearlight_quest"/>
+   <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/><category android:name="com.oculus.intent.category.VR"/></intent-filter>
+  </activity>
+ </application>
+</manifest>

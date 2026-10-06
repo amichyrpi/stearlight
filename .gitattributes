@@ -1,6 +1,4 @@
-# The image is assembled by Linux tooling; keep every OS recipe/configuration
-# byte-for-byte Linux compatible when the repository is checked out on Windows.
-/os/** text eol=lf
-*.mkv binary
-*.mp4 binary
+# Linux build and guest scripts must remain LF on Windows checkouts.
+* text=auto eol=lf
+*.cmd text eol=crlf
 *.png binary

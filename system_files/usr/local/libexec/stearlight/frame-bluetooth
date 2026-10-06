@@ -1,0 +1,21 @@
+#!/bin/sh
+# Attach only the host radio explicitly selected for this VM run.
+set -eu
+bus_id=
+for argument in $(cat /proc/cmdline); do
+  case "$argument" in stearlight.bluetooth-busid=*) bus_id=${argument#*=} ;; esac
+done
+[ -n "$bus_id" ] || exit 0
+case "$bus_id" in *[!0-9.-]*|.*|*-|*..*) echo 'Invalid Bluetooth USB bus ID'; exit 1 ;; esac
+modprobe vhci-hcd
+modprobe btusb
+usbip attach --remote=10.0.2.2 --busid="$bus_id"
+rc-service bluetooth start
+attempt=0
+while [ ! -e /sys/class/bluetooth/hci0 ] && [ "$attempt" -lt 15 ]; do
+  sleep 1
+  attempt=$((attempt + 1))
+done
+[ -e /sys/class/bluetooth/hci0 ]
+bluetoothctl power on
+bluetoothctl show

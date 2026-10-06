@@ -1,0 +1,2 @@
+# Persist a udev record for QEMU's MMIO NIC so NetworkManager can manage it.
+SUBSYSTEM=="net", KERNEL=="eth0", ENV{NM_UNMANAGED}="0"

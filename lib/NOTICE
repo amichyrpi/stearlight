@@ -1,3 +1,0 @@
-libsvrt's DRM PRIME/KMS presenter is adapted from the Vanilla project
-(vanilla-master/gui/ui/ui_sdl_drm.c), distributed under GPL-2.0.
-See vanilla-master/LICENSE for the complete license text and copyright notices.

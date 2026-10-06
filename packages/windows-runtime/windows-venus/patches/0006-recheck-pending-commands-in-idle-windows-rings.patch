@@ -1,0 +1,23 @@
+--- a/src/venus/vkr_ring.c
++++ b/src/venus/vkr_ring.c
+@@ -354,7 +354,20 @@
+ 
+          mtx_lock(&ring->mutex);
+          while (ring->started && !ring->pending_notify) {
++#ifdef _WIN32
++            /* A Windows guest can miss the wakeup while publishing a new
++             * command to an idle shared ring. Recheck the real queue on a
++             * bounded wait; do not report commands as completed early.
++             */
++            if (ring->buffer.cur != vkr_ring_load_tail(ring))
++               break;
++            ret = thrd_success;
++            if (!SleepConditionVariableCS(&ring->cond, &ring->mutex, 1) &&
++                GetLastError() != ERROR_TIMEOUT)
++               ret = thrd_error;
++#else
+             ret = cnd_wait(&ring->cond, &ring->mutex);
++#endif
+             if (ret != thrd_success) {
+                vkr_log("%s: ring idle cnd_wait has failed(%d)", __func__, ret);
+                ret = -EINVAL;

@@ -1,0 +1,14 @@
+[connection]
+id=VM Ethernet
+uuid=1e3d8a78-cf07-4f55-ade6-dcab1e055ba2
+type=ethernet
+interface-name=eth0
+autoconnect=true
+
+[ethernet]
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto

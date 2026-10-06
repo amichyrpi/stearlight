@@ -1,6 +1,0 @@
-arm_64bit=1
-dtoverlay=vc4-kms-v3d
-disable_overscan=1
-disable_splash=1
-hdmi_enable_4kp60=1
-gpu_mem=128

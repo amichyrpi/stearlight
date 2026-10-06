@@ -1,0 +1,551 @@
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -6,7 +6,48 @@
+ #include "vkr_buffer.h"
+ 
+ #include "vkr_buffer_gen.h"
++#include "vkr_device_memory.h"
+ #include "vkr_physical_device.h"
++
++#ifdef _WIN32
++static void
++vkr_buffer_merge_requirements(struct vkr_device *dev, VkMemoryRequirements *plain,
++                              const VkMemoryRequirements *host)
++{
++   uint32_t host_visible = 0;
++   const VkPhysicalDeviceMemoryProperties *props = &dev->physical_device->memory_properties;
++   for (uint32_t i = 0; i < props->memoryTypeCount; i++)
++      if (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
++         host_visible |= 1u << i;
++   plain->size = MAX2(plain->size, host->size);
++   plain->alignment = MAX2(plain->alignment, host->alignment);
++   plain->memoryTypeBits = (plain->memoryTypeBits & ~host_visible) |
++                          (host->memoryTypeBits & host_visible);
++}
++
++bool
++vkr_buffer_select_host_memory(struct vkr_buffer *obj, bool host)
++{
++   if (!obj->plain_buffer)
++      return true; /* Explicit external resource: preserve its existing handle. */
++   VkBuffer selected = host ? obj->host_buffer : obj->plain_buffer;
++   if (!selected)
++      return false;
++   obj->base.handle.buffer = selected;
++   return true;
++}
++
++void
++vkr_buffer_release_alternate(struct vkr_device *dev, struct vkr_buffer *obj)
++{
++   if (!obj->plain_buffer)
++      return;
++   VkBuffer other = obj->base.handle.buffer == obj->plain_buffer
++      ? obj->host_buffer : obj->plain_buffer;
++   if (other)
++      dev->proc_table.DestroyBuffer(dev->base.handle.device, other, NULL);
++}
++#endif
+ 
+ static VkExternalMemoryHandleTypeFlags
+ vkr_buffer_get_host_external_handle_types(struct vkr_device *dev)
+@@ -96,17 +137,47 @@
+    VkExternalMemoryBufferCreateInfo external_info_storage;
+    const VkBufferCreateInfo *create_info = args->pCreateInfo;
+ 
+-   vkr_buffer_prepare_external_create_info(dev, &create_info, &create_info_storage,
+-                                           &external_info_storage);
+-   ((struct vn_command_vkCreateBuffer *)args)->pCreateInfo = create_info;
+-
+-   vkr_buffer_create_and_add(dispatch->data, args);
++   bool dual = false;
++#ifdef _WIN32
++   dual = dev->physical_device->host_external_memory_host &&
++      !vkr_find_struct(create_info->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO) &&
++      !(create_info->flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT);
++#endif
++   if (!dual)
++      vkr_buffer_prepare_external_create_info(dev, &create_info, &create_info_storage,
++                                              &external_info_storage);
++   args->pCreateInfo = create_info;
++   struct vkr_buffer *obj = vkr_buffer_create_and_add(dispatch->data, args);
++#ifdef _WIN32
++   if (obj && dual) {
++      obj->plain_buffer = obj->base.handle.buffer;
++      vkr_buffer_prepare_external_create_info(dev, &create_info, &create_info_storage,
++                                              &external_info_storage);
++      VkResult ret = dev->proc_table.CreateBuffer(dev->base.handle.device,
++         create_info, NULL, &obj->host_buffer);
++      VkMemoryRequirements host_req = {0};
++      if (ret == VK_SUCCESS)
++         dev->proc_table.GetBufferMemoryRequirements(dev->base.handle.device,
++            obj->host_buffer, &host_req);
++      dev->proc_table.GetBufferMemoryRequirements(dev->base.handle.device,
++         obj->plain_buffer, &obj->combined_requirements);
++      vkr_buffer_merge_requirements(dev, &obj->combined_requirements, &host_req);
++   }
++#else
++   (void)obj;
++#endif
++
+ }
+ 
+ static void
+ vkr_dispatch_vkDestroyBuffer(struct vn_dispatch_context *dispatch,
+                              struct vn_command_vkDestroyBuffer *args)
+ {
++#ifdef _WIN32
++   struct vkr_buffer *obj = vkr_buffer_from_handle(args->buffer);
++   if (obj)
++      vkr_buffer_release_alternate(vkr_device_from_handle(args->device), obj);
++#endif
+    vkr_buffer_destroy_and_remove(dispatch->data, args);
+ }
+ 
+@@ -118,8 +189,16 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef _WIN32
++   struct vkr_buffer *obj = vkr_buffer_from_handle(args->buffer);
++#endif
+    vn_replace_vkGetBufferMemoryRequirements_args_handle(args);
+    vk->GetBufferMemoryRequirements(args->device, args->buffer, args->pMemoryRequirements);
++#ifdef _WIN32
++   if (obj->plain_buffer)
++      *(args->pMemoryRequirements) = obj->combined_requirements;
++#endif
++
+ }
+ 
+ static void
+@@ -130,8 +209,28 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef _WIN32
++   struct vkr_buffer *obj = vkr_buffer_from_handle(args->pInfo->buffer);
++#endif
+    vn_replace_vkGetBufferMemoryRequirements2_args_handle(args);
+    vk->GetBufferMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
++#ifdef _WIN32
++   if (obj->plain_buffer) {
++      args->pMemoryRequirements->memoryRequirements = obj->combined_requirements;
++      VkMemoryDedicatedRequirements *out = vkr_find_struct(args->pMemoryRequirements->pNext,
++         VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS);
++      VkBuffer other = obj->base.handle.buffer == obj->plain_buffer ? obj->host_buffer : obj->plain_buffer;
++      if (out && other) {
++         VkMemoryDedicatedRequirements dedicated = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
++         VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
++         VkBufferMemoryRequirementsInfo2 info = {.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, .buffer = other};
++         vk->GetBufferMemoryRequirements2(args->device, &info, &req);
++         out->requiresDedicatedAllocation |= dedicated.requiresDedicatedAllocation;
++         out->prefersDedicatedAllocation |= dedicated.prefersDedicatedAllocation;
++      }
++   }
++#endif
++
+ }
+ 
+ static void
+@@ -141,6 +240,14 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef _WIN32
++      struct vkr_buffer *obj = vkr_buffer_from_handle(args->buffer);
++      struct vkr_device_memory *memory = vkr_device_memory_from_handle(args->memory);
++      if (!vkr_buffer_select_host_memory(obj, memory && memory->host_memory)) {
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++#endif
+    vn_replace_vkBindBufferMemory_args_handle(args);
+    args->ret =
+       vk->BindBufferMemory(args->device, args->buffer, args->memory, args->memoryOffset);
+@@ -153,6 +260,16 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef _WIN32
++   for (uint32_t i = 0; i < args->bindInfoCount; i++) {
++      struct vkr_buffer *obj = vkr_buffer_from_handle(args->pBindInfos[i].buffer);
++      struct vkr_device_memory *memory = vkr_device_memory_from_handle(args->pBindInfos[i].memory);
++      if (!vkr_buffer_select_host_memory(obj, memory && memory->host_memory)) {
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++   }
++#endif
+    vn_replace_vkBindBufferMemory2_args_handle(args);
+    args->ret = vk->BindBufferMemory2(args->device, args->bindInfoCount, args->pBindInfos);
+ }
+@@ -205,11 +322,33 @@
+    VkDeviceBufferMemoryRequirements info = *args->pInfo;
+    VkBufferCreateInfo create_info;
+    VkExternalMemoryBufferCreateInfo external_info;
+-   vkr_buffer_prepare_external_create_info(dev, &info.pCreateInfo, &create_info, &external_info);
++   bool dual = false;
++#ifdef _WIN32
++   dual = dev->physical_device->host_external_memory_host &&
++      !vkr_find_struct(info.pCreateInfo->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO) &&
++      !(info.pCreateInfo->flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT);
++#endif
++   if (!dual)
++      vkr_buffer_prepare_external_create_info(dev, &info.pCreateInfo, &create_info, &external_info);
+    args->pInfo = &info;
+    vn_replace_vkGetDeviceBufferMemoryRequirements_args_handle(args);
+-   vk->GetDeviceBufferMemoryRequirements(args->device, args->pInfo,
+-                                         args->pMemoryRequirements);
++   vk->GetDeviceBufferMemoryRequirements(args->device, args->pInfo, args->pMemoryRequirements);
++#ifdef _WIN32
++   if (dual) {
++      VkMemoryDedicatedRequirements dedicated = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
++      VkMemoryRequirements2 host_req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
++      vkr_buffer_prepare_external_create_info(dev, &info.pCreateInfo, &create_info, &external_info);
++      vk->GetDeviceBufferMemoryRequirements(args->device, &info, &host_req);
++      vkr_buffer_merge_requirements(dev, &args->pMemoryRequirements->memoryRequirements, &host_req.memoryRequirements);
++      VkMemoryDedicatedRequirements *out = vkr_find_struct(args->pMemoryRequirements->pNext,
++         VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS);
++      if (out) {
++         out->requiresDedicatedAllocation |= dedicated.requiresDedicatedAllocation;
++         out->prefersDedicatedAllocation |= dedicated.prefersDedicatedAllocation;
++      }
++   }
++#endif
++
+ }
+ 
+ void
+--- a/src/venus/vkr_buffer.h
++++ b/src/venus/vkr_buffer.h
+@@ -10,6 +10,12 @@
+ 
+ struct vkr_buffer {
+    struct vkr_object base;
++#ifdef _WIN32
++   VkBuffer plain_buffer;
++   VkBuffer host_buffer;
++   VkMemoryRequirements combined_requirements;
++#endif
++
+ };
+ VKR_DEFINE_OBJECT_CAST(buffer, VK_OBJECT_TYPE_BUFFER, VkBuffer)
+ 
+@@ -18,6 +24,11 @@
+ };
+ VKR_DEFINE_OBJECT_CAST(buffer_view, VK_OBJECT_TYPE_BUFFER_VIEW, VkBufferView)
+ 
++#ifdef _WIN32
++bool vkr_buffer_select_host_memory(struct vkr_buffer *obj, bool host);
++void vkr_buffer_release_alternate(struct vkr_device *dev, struct vkr_buffer *obj);
++#endif
++
+ void
+ vkr_context_init_buffer_dispatch(struct vkr_context *ctx);
+ 
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -13,6 +13,8 @@
+ #include "vkr_context.h"
+ #include "vkr_descriptor_set.h"
+ #include "vkr_device_memory.h"
++#include "vkr_buffer.h"
++#include "vkr_image.h"
+ #include "vkr_physical_device.h"
+ #include "vkr_queue.h"
+ #include "vkr_win32_shim.h"
+@@ -553,9 +555,15 @@
+          vk->FreeMemory(device, obj->handle.device_memory, NULL);
+          break;
+       case VK_OBJECT_TYPE_BUFFER:
++#ifdef _WIN32
++         vkr_buffer_release_alternate(dev, (struct vkr_buffer *)obj);
++#endif
+          vk->DestroyBuffer(device, obj->handle.buffer, NULL);
+          break;
+       case VK_OBJECT_TYPE_IMAGE:
++#ifdef _WIN32
++         vkr_image_release_alternate(dev, (struct vkr_image *)obj);
++#endif
+          vk->DestroyImage(device, obj->handle.image, NULL);
+          break;
+       case VK_OBJECT_TYPE_EVENT:
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -22,6 +22,8 @@
+ 
+ #include "vkr_device_memory_gen.h"
+ #include "vkr_physical_device.h"
++#include "vkr_buffer.h"
++#include "vkr_image.h"
+ 
+ static bool
+ vkr_get_fd_info_from_resource_info(struct vkr_context *ctx,
+@@ -580,6 +582,22 @@
+    }
+ #endif
+ 
++#ifdef _WIN32
++   VkMemoryDedicatedAllocateInfo *dedicated = vkr_find_struct(alloc_info->pNext,
++      VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO);
++   if (dedicated) {
++      bool valid = true;
++      if (dedicated->buffer)
++         valid = vkr_buffer_select_host_memory(vkr_buffer_from_handle(dedicated->buffer), host_memory != NULL);
++      if (dedicated->image)
++         valid = valid && vkr_image_select_host_memory(vkr_image_from_handle(dedicated->image), host_memory != NULL);
++      if (!valid) {
++         vkr_host_memory_destroy(host_memory);
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++   }
++#endif
+    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
+    if (!mem) {
+ #ifdef _WIN32
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -6,11 +6,52 @@
+ #include "vkr_image.h"
+ 
+ #include "vkr_image_gen.h"
++#include "vkr_device_memory.h"
+ #include "vkr_device.h"
+ #include "vkr_physical_device.h"
+ 
+ #ifndef DRM_FORMAT_MOD_LINEAR
+ #define DRM_FORMAT_MOD_LINEAR 0ULL
++#endif
++
++#ifdef _WIN32
++static void
++vkr_image_merge_requirements(struct vkr_device *dev, VkMemoryRequirements *plain,
++                              const VkMemoryRequirements *host)
++{
++   uint32_t host_visible = 0;
++   const VkPhysicalDeviceMemoryProperties *props = &dev->physical_device->memory_properties;
++   for (uint32_t i = 0; i < props->memoryTypeCount; i++)
++      if (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
++         host_visible |= 1u << i;
++   plain->size = MAX2(plain->size, host->size);
++   plain->alignment = MAX2(plain->alignment, host->alignment);
++   plain->memoryTypeBits = (plain->memoryTypeBits & ~host_visible) |
++                          (host->memoryTypeBits & host_visible);
++}
++
++bool
++vkr_image_select_host_memory(struct vkr_image *obj, bool host)
++{
++   if (!obj->plain_image)
++      return true; /* Explicit external resource: preserve its existing handle. */
++   VkImage selected = host ? obj->host_image : obj->plain_image;
++   if (!selected)
++      return false;
++   obj->base.handle.image = selected;
++   return true;
++}
++
++void
++vkr_image_release_alternate(struct vkr_device *dev, struct vkr_image *obj)
++{
++   if (!obj->plain_image)
++      return;
++   VkImage other = obj->base.handle.image == obj->plain_image
++      ? obj->host_image : obj->plain_image;
++   if (other)
++      dev->proc_table.DestroyImage(dev->base.handle.device, other, NULL);
++}
+ #endif
+ 
+ static void
+@@ -95,9 +136,32 @@
+ 
+    VkImageCreateInfo host_info;
+    VkExternalMemoryImageCreateInfo host_external;
+-   vkr_image_prepare_host_create_info(vkr_device_from_handle(args->device),
+-                                     &args->pCreateInfo, &host_info, &host_external);
++   struct vkr_device *create_dev = vkr_device_from_handle(args->device);
++   bool dual = false;
++#ifdef _WIN32
++   dual = create_dev->physical_device->host_external_memory_host &&
++      !vkr_find_struct(args->pCreateInfo->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO) &&
++      !(args->pCreateInfo->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
++#endif
++   if (!dual)
++      vkr_image_prepare_host_create_info(create_dev, &args->pCreateInfo, &host_info, &host_external);
+    struct vkr_image *img = vkr_image_create_and_add(dispatch->data, args);
++#ifdef _WIN32
++   if (img && dual) {
++      img->plain_image = img->base.handle.image;
++      const VkImageCreateInfo *info = args->pCreateInfo;
++      vkr_image_prepare_host_create_info(create_dev, &info, &host_info, &host_external);
++      VkResult ret = create_dev->proc_table.CreateImage(create_dev->base.handle.device,
++         info, NULL, &img->host_image);
++      VkMemoryRequirements host_req = {0};
++      if (ret == VK_SUCCESS)
++         create_dev->proc_table.GetImageMemoryRequirements(create_dev->base.handle.device,
++            img->host_image, &host_req);
++      create_dev->proc_table.GetImageMemoryRequirements(create_dev->base.handle.device,
++         img->plain_image, &img->combined_requirements);
++      vkr_image_merge_requirements(create_dev, &img->combined_requirements, &host_req);
++   }
++#endif
+ #ifdef _WIN32
+    if (img && shim_linear)
+       img->dma_buf_shim_linear = true;
+@@ -110,6 +174,11 @@
+ vkr_dispatch_vkDestroyImage(struct vn_dispatch_context *dispatch,
+                             struct vn_command_vkDestroyImage *args)
+ {
++#ifdef _WIN32
++   struct vkr_image *obj = vkr_image_from_handle(args->image);
++   if (obj)
++      vkr_image_release_alternate(vkr_device_from_handle(args->device), obj);
++#endif
+    vkr_image_destroy_and_remove(dispatch->data, args);
+ }
+ 
+@@ -121,8 +190,16 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef _WIN32
++   struct vkr_image *obj = vkr_image_from_handle(args->image);
++#endif
+    vn_replace_vkGetImageMemoryRequirements_args_handle(args);
+    vk->GetImageMemoryRequirements(args->device, args->image, args->pMemoryRequirements);
++#ifdef _WIN32
++   if (obj->plain_image)
++      *(args->pMemoryRequirements) = obj->combined_requirements;
++#endif
++
+ }
+ 
+ static void
+@@ -133,8 +210,28 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef _WIN32
++   struct vkr_image *obj = vkr_image_from_handle(args->pInfo->image);
++#endif
+    vn_replace_vkGetImageMemoryRequirements2_args_handle(args);
+    vk->GetImageMemoryRequirements2(args->device, args->pInfo, args->pMemoryRequirements);
++#ifdef _WIN32
++   if (obj->plain_image) {
++      args->pMemoryRequirements->memoryRequirements = obj->combined_requirements;
++      VkMemoryDedicatedRequirements *out = vkr_find_struct(args->pMemoryRequirements->pNext,
++         VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS);
++      VkImage other = obj->base.handle.image == obj->plain_image ? obj->host_image : obj->plain_image;
++      if (out && other) {
++         VkMemoryDedicatedRequirements dedicated = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
++         VkMemoryRequirements2 req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
++         VkImageMemoryRequirementsInfo2 info = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, .image = other};
++         vk->GetImageMemoryRequirements2(args->device, &info, &req);
++         out->requiresDedicatedAllocation |= dedicated.requiresDedicatedAllocation;
++         out->prefersDedicatedAllocation |= dedicated.prefersDedicatedAllocation;
++      }
++   }
++#endif
++
+ }
+ 
+ static void
+@@ -172,6 +269,14 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef _WIN32
++      struct vkr_image *obj = vkr_image_from_handle(args->image);
++      struct vkr_device_memory *memory = vkr_device_memory_from_handle(args->memory);
++      if (!vkr_image_select_host_memory(obj, memory && memory->host_memory)) {
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++#endif
+    vn_replace_vkBindImageMemory_args_handle(args);
+    args->ret =
+       vk->BindImageMemory(args->device, args->image, args->memory, args->memoryOffset);
+@@ -184,6 +289,16 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++#ifdef _WIN32
++   for (uint32_t i = 0; i < args->bindInfoCount; i++) {
++      struct vkr_image *obj = vkr_image_from_handle(args->pBindInfos[i].image);
++      struct vkr_device_memory *memory = vkr_device_memory_from_handle(args->pBindInfos[i].memory);
++      if (!vkr_image_select_host_memory(obj, memory && memory->host_memory)) {
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++   }
++#endif
+    vn_replace_vkBindImageMemory2_args_handle(args);
+    args->ret = vk->BindImageMemory2(args->device, args->bindInfoCount, args->pBindInfos);
+ }
+@@ -346,11 +461,33 @@
+    VkDeviceImageMemoryRequirements info = *args->pInfo;
+    VkImageCreateInfo create_info;
+    VkExternalMemoryImageCreateInfo external_info;
+-   vkr_image_prepare_host_create_info(dev, &info.pCreateInfo, &create_info, &external_info);
++   bool dual = false;
++#ifdef _WIN32
++   dual = dev->physical_device->host_external_memory_host &&
++      !vkr_find_struct(info.pCreateInfo->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO) &&
++      !(info.pCreateInfo->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT);
++#endif
++   if (!dual)
++      vkr_image_prepare_host_create_info(dev, &info.pCreateInfo, &create_info, &external_info);
+    args->pInfo = &info;
+    vn_replace_vkGetDeviceImageMemoryRequirements_args_handle(args);
+-   vk->GetDeviceImageMemoryRequirements(args->device, args->pInfo,
+-                                        args->pMemoryRequirements);
++   vk->GetDeviceImageMemoryRequirements(args->device, args->pInfo, args->pMemoryRequirements);
++#ifdef _WIN32
++   if (dual) {
++      VkMemoryDedicatedRequirements dedicated = {.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
++      VkMemoryRequirements2 host_req = {.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
++      vkr_image_prepare_host_create_info(dev, &info.pCreateInfo, &create_info, &external_info);
++      vk->GetDeviceImageMemoryRequirements(args->device, &info, &host_req);
++      vkr_image_merge_requirements(dev, &args->pMemoryRequirements->memoryRequirements, &host_req.memoryRequirements);
++      VkMemoryDedicatedRequirements *out = vkr_find_struct(args->pMemoryRequirements->pNext,
++         VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS);
++      if (out) {
++         out->requiresDedicatedAllocation |= dedicated.requiresDedicatedAllocation;
++         out->prefersDedicatedAllocation |= dedicated.prefersDedicatedAllocation;
++      }
++   }
++#endif
++
+ }
+ 
+ static void
+--- a/src/venus/vkr_image.h
++++ b/src/venus/vkr_image.h
+@@ -10,6 +10,12 @@
+ 
+ struct vkr_image {
+    struct vkr_object base;
++#ifdef _WIN32
++   VkImage plain_image;
++   VkImage host_image;
++   VkMemoryRequirements combined_requirements;
++#endif
++
+ 
+ #ifdef _WIN32
+    /* Set when the image was created through the VK_EXT_image_drm_format_modifier
+@@ -42,6 +48,11 @@
+                        VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION,
+                        VkSamplerYcbcrConversion)
+ 
++#ifdef _WIN32
++bool vkr_image_select_host_memory(struct vkr_image *obj, bool host);
++void vkr_image_release_alternate(struct vkr_device *dev, struct vkr_image *obj);
++#endif
++
+ void
+ vkr_context_init_image_dispatch(struct vkr_context *ctx);
+ 

@@ -1,0 +1,82 @@
+--- a/src/mesa/util/os_file.c
++++ b/src/mesa/util/os_file.c
+@@ -108,15 +108,21 @@
+ HANDLE
+ os_get_win32_handle_from_fd(int fd)
+ {
+-   intptr_t crt_handle = _get_osfhandle(fd);
+-   if (crt_handle != -1)
+-      return (HANDLE)crt_handle;
+-
+    os_win32_handle_ensure_init();
+    EnterCriticalSection(&os_win32_handle_mutex);
+    const ptrdiff_t idx = os_win32_handle_find_index_locked(fd);
+    HANDLE handle = idx >= 0 ? os_win32_handles[idx].handle : INVALID_HANDLE_VALUE;
+    LeaveCriticalSection(&os_win32_handle_mutex);
++   if (idx >= 0)
++      return handle;
++
++   /* Tokens are not CRT file descriptors. Even a stale token must not reach
++    * _get_osfhandle: UCRT invokes its invalid-parameter handler for it. */
++   if (fd < 0 || fd >= 0x40000000) {
++      errno = EBADF;
++      return INVALID_HANDLE_VALUE;
++   }
++   handle = (HANDLE)_get_osfhandle(fd);
+    return handle;
+ }
+ 
+@@ -144,6 +150,10 @@
+    }
+    LeaveCriticalSection(&os_win32_handle_mutex);
+ 
++   if (fd < 0 || fd >= 0x40000000) {
++      errno = EBADF;
++      return -1;
++   }
+    return _close(fd);
+ }
+ #else
+@@ -178,7 +188,15 @@
+          return -1;
+       }
+ 
+-      return os_wrap_win32_handle(dup_handle);
++      const int token = os_wrap_win32_handle(dup_handle);
++      if (token < 0)
++         CloseHandle(dup_handle);
++      return token;
++   }
++
++   if (fd < 0 || fd >= 0x40000000) {
++      errno = EBADF;
++      return -1;
+    }
+ 
+    /*
+--- a/src/mman_win32.c
++++ b/src/mman_win32.c
+@@ -26,6 +26,7 @@
+ #include <io.h>
+ 
+ #include "mman_win32.h"
++#include "mesa/util/os_file.h"
+ 
+ #ifndef FILE_MAP_EXECUTE
+ #define FILE_MAP_EXECUTE    0x0020
+@@ -116,12 +117,10 @@
+    if ((flags & MAP_ANONYMOUS) != 0) {
+       h = INVALID_HANDLE_VALUE;
+    } else {
+-      h = (HANDLE)_get_osfhandle(fildes);
++      h = os_get_win32_handle_from_fd(fildes);
+       if (h == INVALID_HANDLE_VALUE) {
+-         /* fildes may be a raw HANDLE (e.g. from CreateFileMapping passed as int
+-          * through the Venus proxy protocol). Try using it directly.
+-          */
+-         h = (HANDLE)(intptr_t)fildes;
++         errno = EBADF;
++         return MAP_FAILED;
+       }
+    }
+ 

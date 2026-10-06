@@ -1,0 +1,451 @@
+--- a/src/venus/vkr_buffer.c
++++ b/src/venus/vkr_buffer.c
+@@ -55,7 +55,8 @@
+    *external_info_storage = (VkExternalMemoryBufferCreateInfo){
+       .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+       .pNext = (void *)create_info->pNext,
+-      .handleTypes = host_handle_types,
++      .handleTypes = dev->physical_device->host_external_memory_host
++         ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT : host_handle_types,
+    };
+    create_info->pNext = (void *)external_info_storage;
+    *in_out_create_info = create_info;
+@@ -201,6 +202,11 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   VkDeviceBufferMemoryRequirements info = *args->pInfo;
++   VkBufferCreateInfo create_info;
++   VkExternalMemoryBufferCreateInfo external_info;
++   vkr_buffer_prepare_external_create_info(dev, &info.pCreateInfo, &create_info, &external_info);
++   args->pInfo = &info;
+    vn_replace_vkGetDeviceBufferMemoryRequirements_args_handle(args);
+    vk->GetDeviceBufferMemoryRequirements(args->device, args->pInfo,
+                                          args->pMemoryRequirements);
+--- a/src/venus/vkr_context.c
++++ b/src/venus/vkr_context.c
+@@ -338,6 +338,15 @@
+       return false;
+    }
+ 
++   if (blob.type == VIRGL_RESOURCE_FD_SHM) {
++      if (!vkr_context_import_resource_from_shm(ctx, res_id, blob_size, blob.u.fd)) {
++         os_close_fd(blob.u.fd);
++         return false;
++      }
++      *out_blob = blob;
++      return true;
++   }
++
+    /* If memory might get exported, store a dup'ed fd in vkr_resource for:
+     * - vkAllocateMemory for dma_buf import
+     * - vkGetMemoryFdPropertiesKHR for dma_buf fd properties query
+--- a/src/venus/vkr_device.c
++++ b/src/venus/vkr_device.c
+@@ -119,6 +119,9 @@
+                                   api_version, &ext_table, &dev->proc_table);
+ 
+ #ifdef _WIN32
++   if (dev->physical_device->host_external_memory_host)
++      dev->GetMemoryHostPointerPropertiesEXT = (PFN_vkGetMemoryHostPointerPropertiesEXT)
++         vk->GetDeviceProcAddr(dev->base.handle.device, "vkGetMemoryHostPointerPropertiesEXT");
+    if (dev->physical_device->host_external_memory_win32) {
+       dev->GetMemoryWin32HandleKHR =
+          (PFN_vkGetMemoryWin32HandleKHR)vk->GetDeviceProcAddr(dev->base.handle.device,
+@@ -367,7 +370,7 @@
+    /* append extensions for our own use */
+    const char **exts = NULL;
+    uint32_t guest_ext_count = args->pCreateInfo->enabledExtensionCount;
+-   uint32_t ext_count = guest_ext_count + 6;
++   uint32_t ext_count = guest_ext_count + 7;
+    exts = malloc(sizeof(*exts) * ext_count);
+    if (!exts) {
+       args->ret = VK_ERROR_OUT_OF_HOST_MEMORY;
+@@ -383,6 +386,10 @@
+       if (!vkr_device_has_extension(exts, host_ext_count, host_name))
+          exts[host_ext_count++] = host_name;
+    }
++
++   if (physical_dev->host_external_memory_host &&
++       !vkr_device_has_extension(exts, host_ext_count, "VK_EXT_external_memory_host"))
++      exts[host_ext_count++] = "VK_EXT_external_memory_host";
+ 
+    if (physical_dev->host_external_memory_win32) {
+       if (!vkr_device_has_extension(exts, host_ext_count, "VK_KHR_external_memory_win32"))
+@@ -616,6 +623,10 @@
+    /* always cleanup vkr allocs */
+    switch (obj->type) {
+    case VK_OBJECT_TYPE_DEVICE_MEMORY:
++#ifdef _WIN32
++      if (!ctx->on_worker_thread)
++         ((struct vkr_device_memory *)obj)->host_memory = NULL;
++#endif
+       vkr_device_memory_release((struct vkr_device_memory *)obj);
+       break;
+    case VK_OBJECT_TYPE_DESCRIPTOR_POOL:
+@@ -646,8 +657,12 @@
+    if (!list_is_empty(&dev->objects))
+       vkr_log("destroying device with valid objects");
+ 
+-   /* only wait if on workder thread to prepare for vk obj cleanup */
+-   if (ctx->on_worker_thread) {
++   bool has_host_memory = false;
++#ifdef _WIN32
++   has_host_memory = dev->host_memories != NULL;
++#endif
++   /* Imported host addresses must survive all GPU work and driver teardown. */
++   if (ctx->on_worker_thread || has_host_memory) {
+       VkResult result = vk->DeviceWaitIdle(device);
+       if (result != VK_SUCCESS)
+          vkr_log("vkDeviceWaitIdle(%p) failed(%d)", dev, (int32_t)result);
+@@ -684,8 +699,11 @@
+    mtx_destroy(&dev->free_sync_mutex);
+    mtx_destroy(&dev->vk_api_mutex);
+ 
+-   if (destroy_vk || ctx->on_worker_thread)
++   if (destroy_vk || ctx->on_worker_thread || has_host_memory)
+       vk->DestroyDevice(device, NULL);
++#ifdef _WIN32
++   vkr_device_memory_release_host_backings(dev);
++#endif
+ 
+    list_del(&dev->base.track_head);
+ 
+--- a/src/venus/vkr_device.h
++++ b/src/venus/vkr_device.h
+@@ -41,6 +41,8 @@
+    struct vn_device_proc_table proc_table;
+ 
+ #ifdef _WIN32
++   PFN_vkGetMemoryHostPointerPropertiesEXT GetMemoryHostPointerPropertiesEXT;
++   struct vkr_host_memory *host_memories;
+    PFN_vkGetMemoryWin32HandleKHR GetMemoryWin32HandleKHR;
+    PFN_vkGetMemoryWin32HandlePropertiesKHR GetMemoryWin32HandlePropertiesKHR;
+    PFN_vkGetFenceWin32HandleKHR GetFenceWin32HandleKHR;
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -307,6 +307,87 @@
+ }
+ 
+ #endif /* ENABLE_GBM_ALLOCATION */
++
++#ifdef _WIN32
++static void
++vkr_host_memory_destroy(struct vkr_host_memory *host)
++{
++   if (!host)
++      return;
++   if (host->mapping)
++      UnmapViewOfFile(host->mapping);
++   if (host->fd >= 0)
++      os_close_fd(host->fd);
++   free(host);
++}
++
++void
++vkr_device_memory_release_host_backings(struct vkr_device *dev)
++{
++   while (dev->host_memories) {
++      struct vkr_host_memory *host = dev->host_memories;
++      dev->host_memories = host->next;
++      vkr_host_memory_destroy(host);
++   }
++}
++
++static VkResult
++vkr_host_memory_create(struct vkr_device *dev, VkMemoryAllocateInfo *info,
++                        struct vkr_host_memory **out_host,
++                        VkImportMemoryHostPointerInfoEXT *import)
++{
++   const uint64_t alignment = MAX2(dev->physical_device->min_host_pointer_alignment,
++                                   (uint64_t)getpagesize());
++   if (!alignment || info->allocationSize > SIZE_MAX - (alignment - 1))
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   const uint64_t size = (info->allocationSize + alignment - 1) / alignment * alignment;
++   if (!size || !dev->GetMemoryHostPointerPropertiesEXT)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++
++   struct vkr_host_memory *host = calloc(1, sizeof(*host));
++   if (!host)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   host->fd = -1;
++   HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
++                                       (DWORD)(size >> 32), (DWORD)size, NULL);
++   if (!section) {
++      free(host);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++   host->mapping = MapViewOfFile(section, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, size);
++   if (!host->mapping || (uintptr_t)host->mapping % alignment) {
++      CloseHandle(section);
++      vkr_host_memory_destroy(host);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++   host->fd = os_wrap_win32_handle(section);
++   if (host->fd < 0) {
++      CloseHandle(section);
++      vkr_host_memory_destroy(host);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++
++   VkMemoryHostPointerPropertiesEXT props = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
++   };
++   VkResult ret = dev->GetMemoryHostPointerPropertiesEXT(dev->base.handle.device,
++      VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, host->mapping, &props);
++   if (ret != VK_SUCCESS || !(props.memoryTypeBits & (1u << info->memoryTypeIndex))) {
++      vkr_host_memory_destroy(host);
++      return ret != VK_SUCCESS ? ret : VK_ERROR_INVALID_EXTERNAL_HANDLE;
++   }
++   *import = (VkImportMemoryHostPointerInfoEXT){
++      .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
++      .pNext = info->pNext,
++      .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
++      .pHostPointer = host->mapping,
++   };
++   info->allocationSize = size;
++   info->pNext = import;
++   *out_host = host;
++   return VK_SUCCESS;
++}
++#endif
+ 
+ static void
+ vkr_dispatch_vkAllocateMemory(struct vn_dispatch_context *dispatch,
+@@ -373,6 +454,16 @@
+    int udmabuf_fd = -1;
+    void *gbm_bo = NULL;
+    VkExportMemoryAllocateInfo local_export_info;
++#ifdef _WIN32
++   struct vkr_host_memory *host_memory = NULL;
++   VkImportMemoryHostPointerInfoEXT local_host_import;
++   if (physical_dev->host_external_memory_host && !might_export && !res_info &&
++       (property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
++      args->ret = vkr_host_memory_create(dev, alloc_info, &host_memory, &local_host_import);
++      if (args->ret != VK_SUCCESS)
++         return;
++   } else
++#endif
+    if ((property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !res_info) {
+       /* An implementation can support dma_buf import along with opaque fd export/import.
+        * If the client driver is using external memory and requesting dma_buf, without
+@@ -491,6 +582,9 @@
+ 
+    struct vkr_device_memory *mem = vkr_device_memory_create_and_add(ctx, args);
+    if (!mem) {
++#ifdef _WIN32
++      vkr_host_memory_destroy(host_memory);
++#endif
+       if (local_import_info.fd >= 0)
+          os_close_fd(local_import_info.fd);
+ #ifdef _WIN32
+@@ -504,6 +598,15 @@
+    }
+ 
+    mem->device = dev;
++#ifdef _WIN32
++   mem->host_memory = host_memory;
++   if (host_memory) {
++      mtx_lock(&dev->object_mutex);
++      host_memory->next = dev->host_memories;
++      dev->host_memories = host_memory;
++      mtx_unlock(&dev->object_mutex);
++   }
++#endif
+    mem->might_export = might_export;
+    mem->property_flags = property_flags;
+    mem->valid_fd_types = valid_fd_types;
+@@ -522,8 +625,11 @@
+    if (!mem)
+       return;
+ 
++   struct vkr_device *dev = mem->device;
++   /* Free the imported Vulkan memory before releasing its host address. */
++   vkr_device_memory_destroy_driver_handle(dispatch->data, args);
+    vkr_device_memory_release(mem);
+-   vkr_device_memory_destroy_and_remove(dispatch->data, args);
++   vkr_device_remove_object(dispatch->data, dev, &mem->base);
+ }
+ 
+ static void
+@@ -633,6 +739,19 @@
+ void
+ vkr_device_memory_release(struct vkr_device_memory *mem)
+ {
++#ifdef _WIN32
++   if (mem->host_memory) {
++      mtx_lock(&mem->device->object_mutex);
++      struct vkr_host_memory **link = &mem->device->host_memories;
++      while (*link && *link != mem->host_memory)
++         link = &(*link)->next;
++      assert(*link == mem->host_memory);
++      *link = mem->host_memory->next;
++      mtx_unlock(&mem->device->object_mutex);
++      vkr_host_memory_destroy(mem->host_memory);
++      mem->host_memory = NULL;
++   }
++#endif
+    if (mem->gbm_bo)
+       vkr_gbm_bo_destroy(mem->gbm_bo);
+    if (mem->udmabuf_fd >= 0)
+@@ -669,6 +788,26 @@
+       map_info = (coherent && cached) ? VIRGL_RENDERER_MAP_CACHE_CACHED
+                                       : VIRGL_RENDERER_MAP_CACHE_WC;
+    }
++
++#ifdef _WIN32
++   if (mem->host_memory) {
++      if (blob_size > mem->allocation_size ||
++          (blob_flags & VIRGL_RENDERER_BLOB_FLAG_USE_CROSS_DEVICE)) {
++         vkr_log("internal host allocation cannot satisfy this blob export");
++         return false;
++      }
++      int fd = os_dupfd_cloexec(mem->host_memory->fd);
++      if (fd < 0)
++         return false;
++      mem->exported = true;
++      *out_blob = (struct virgl_context_blob){
++         .type = VIRGL_RESOURCE_FD_SHM,
++         .u.fd = fd,
++         .map_info = map_info,
++      };
++      return true;
++   }
++#endif
+ 
+    const bool can_export_dma_buf = mem->valid_fd_types & (1 << VIRGL_RESOURCE_FD_DMABUF);
+    const bool can_export_opaque = mem->valid_fd_types & (1 << VIRGL_RESOURCE_FD_OPAQUE);
+--- a/src/venus/vkr_device_memory.h
++++ b/src/venus/vkr_device_memory.h
+@@ -9,11 +9,22 @@
+ #include "vkr_common.h"
+ 
+ struct gbm_bo;
++#ifdef _WIN32
++struct vkr_host_memory {
++   struct vkr_host_memory *next;
++   int fd;
++   void *mapping;
++};
++void vkr_device_memory_release_host_backings(struct vkr_device *dev);
++#endif
+ 
+ struct vkr_device_memory {
+    struct vkr_object base;
+ 
+    struct vkr_device *device;
++#ifdef _WIN32
++   struct vkr_host_memory *host_memory;
++#endif
+ 
+    bool might_export;
+ 
+--- a/src/venus/vkr_image.c
++++ b/src/venus/vkr_image.c
+@@ -12,6 +12,26 @@
+ #ifndef DRM_FORMAT_MOD_LINEAR
+ #define DRM_FORMAT_MOD_LINEAR 0ULL
+ #endif
++
++static void
++vkr_image_prepare_host_create_info(struct vkr_device *dev,
++                                  const VkImageCreateInfo **info,
++                                  VkImageCreateInfo *storage,
++                                  VkExternalMemoryImageCreateInfo *external)
++{
++   if (!dev->physical_device->host_external_memory_host)
++      return;
++   if (vkr_find_struct((*info)->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO))
++      return;
++   *storage = **info;
++   *external = (VkExternalMemoryImageCreateInfo){
++      .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
++      .pNext = storage->pNext,
++      .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
++   };
++   storage->pNext = external;
++   *info = storage;
++}
+ 
+ static void
+ vkr_dispatch_vkCreateImage(struct vn_dispatch_context *dispatch,
+@@ -73,6 +93,10 @@
+    }
+ #endif
+ 
++   VkImageCreateInfo host_info;
++   VkExternalMemoryImageCreateInfo host_external;
++   vkr_image_prepare_host_create_info(vkr_device_from_handle(args->device),
++                                     &args->pCreateInfo, &host_info, &host_external);
+    struct vkr_image *img = vkr_image_create_and_add(dispatch->data, args);
+ #ifdef _WIN32
+    if (img && shim_linear)
+@@ -319,6 +343,11 @@
+    struct vkr_device *dev = vkr_device_from_handle(args->device);
+    struct vn_device_proc_table *vk = &dev->proc_table;
+ 
++   VkDeviceImageMemoryRequirements info = *args->pInfo;
++   VkImageCreateInfo create_info;
++   VkExternalMemoryImageCreateInfo external_info;
++   vkr_image_prepare_host_create_info(dev, &info.pCreateInfo, &create_info, &external_info);
++   args->pInfo = &info;
+    vn_replace_vkGetDeviceImageMemoryRequirements_args_handle(args);
+    vk->GetDeviceImageMemoryRequirements(args->device, args->pInfo,
+                                         args->pMemoryRequirements);
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -4,6 +4,9 @@
+  */
+ 
+ #include "vkr_physical_device.h"
++#ifdef _WIN32
++#include <windows.h>
++#endif
+ 
+ #include "venus-protocol/vn_protocol_renderer_device.h"
+ 
+@@ -254,6 +257,24 @@
+        physical_dev->EXT_external_memory_dma_buf)
+       physical_dev->gbm_device = vkr_physical_device_get_gbm_device();
+ 
++#ifdef _WIN32
++   if (physical_dev->host_external_memory_host) {
++      VkPhysicalDeviceExternalMemoryHostPropertiesEXT host = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT,
++      };
++      VkPhysicalDeviceProperties2 host_props = {
++         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &host,
++      };
++      vk->GetPhysicalDeviceProperties2(handle, &host_props);
++      physical_dev->min_host_pointer_alignment = host.minImportedHostPointerAlignment;
++      SYSTEM_INFO system_info;
++      GetSystemInfo(&system_info);
++      /* MapViewOfFile provides allocation-granularity alignment. */
++      if (!host.minImportedHostPointerAlignment ||
++          system_info.dwAllocationGranularity % host.minImportedHostPointerAlignment)
++         physical_dev->host_external_memory_host = false;
++   }
++#endif
+    physical_dev->udmabuf_dev_fd = -1;
+    if (VKR_DEBUG(UDMABUF)) {
+       if (physical_dev->EXT_external_memory_dma_buf)
+@@ -339,6 +360,8 @@
+       else if (!strcmp(props->extensionName, "VK_KHR_external_semaphore_fd"))
+          physical_dev->KHR_external_semaphore_fd = true;
+ #ifdef _WIN32
++      else if (!strcmp(props->extensionName, "VK_EXT_external_memory_host"))
++         physical_dev->host_external_memory_host = true;
+       else if (!strcmp(props->extensionName, "VK_KHR_external_memory_win32"))
+          physical_dev->host_external_memory_win32 = true;
+       else if (!strcmp(props->extensionName, "VK_KHR_external_fence_win32"))
+--- a/src/venus/vkr_physical_device.h
++++ b/src/venus/vkr_physical_device.h
+@@ -27,6 +27,8 @@
+    bool KHR_external_fence_fd;
+    bool KHR_external_semaphore_fd;
+ 
++   bool host_external_memory_host;
++   uint64_t min_host_pointer_alignment;
+    bool host_external_memory_win32;
+    bool host_external_fence_win32;
+    bool host_external_semaphore_win32;

@@ -1,0 +1,162 @@
+diff --git a/src/proxy/proxy_server.c b/src/proxy/proxy_server.c
+index c97d8cb..969feb8 100644
+--- a/src/proxy/proxy_server.c
++++ b/src/proxy/proxy_server.c
+@@ -157,12 +157,6 @@ server_recv_with_fds(int fd, void *data, size_t size,
+    return true;
+ }
+ 
+-static bool
+-server_send_reply(int fd, const void *data, size_t size)
+-{
+-   return server_send_all(fd, data, size);
+-}
+-
+ static bool
+ server_send_reply_with_fds(int fd, const void *data, size_t size,
+                            const int *fds, int fd_count)
+@@ -215,16 +209,9 @@ server_retire_fence_cb(uint32_t ctx_id, uint32_t ring_idx, uint64_t fence_id)
+    mtx_unlock(&state->workers_mutex);
+ }
+ 
+-static void
+-server_cb_debug_logger(UNUSED enum virgl_log_level_flags log_level,
+-                       const char *message,
+-                       UNUSED void *user_data)
+-{
+-   (void)message;
+-}
+ 
+ static const struct vkr_renderer_callbacks server_vkr_cbs = {
+-   .debug_logger = server_cb_debug_logger,
++   .debug_logger = NULL,
+    .retire_fence = server_retire_fence_cb,
+ };
+ 
+@@ -417,7 +404,8 @@ server_context_worker_thread(void *arg)
+ 
+          if (!ok || res_fd < 0) {
+             reply.fd_type = VIRGL_RESOURCE_FD_INVALID;
+-            server_send_reply(w->socket_fd, &reply, sizeof(reply));
++            /* The client always reads the descriptor count after this reply. */
++            server_send_reply_with_fds(w->socket_fd, &reply, sizeof(reply), NULL, 0);
+          } else {
+             server_send_reply_with_fds(w->socket_fd, &reply, sizeof(reply),
+                                        &res_fd, 1);
+diff --git a/src/venus/vkr_renderer.c b/src/venus/vkr_renderer.c
+index c43a96e..a2697ac 100644
+--- a/src/venus/vkr_renderer.c
++++ b/src/venus/vkr_renderer.c
+@@ -69,7 +69,8 @@ vkr_renderer_init(uint32_t flags, const struct vkr_renderer_callbacks *cbs)
+       return false;
+ 
+    vkr_debug_init();
+-   virgl_log_set_handler(cbs->debug_logger, NULL, NULL);
++   if (cbs->debug_logger)
++      virgl_log_set_handler(cbs->debug_logger, NULL, NULL);
+ 
+    vkr_state.cbs = cbs;
+    list_inithead(&vkr_state.contexts);
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+index 7e8d511..cd50624 100644
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -181,6 +181,66 @@ vkr_physical_device_init_id_properties(struct vkr_physical_device *physical_dev)
+    vk->GetPhysicalDeviceProperties2(handle, &props2);
+ }
+ 
++#ifdef _WIN32
++static bool
++vkr_physical_device_host_memory_types(struct vkr_physical_device *physical_dev,
++                                      uint32_t *out_types)
++{
++   struct vn_physical_device_proc_table *vk = &physical_dev->proc_table;
++   VkPhysicalDevice physical = physical_dev->base.handle.physical_device;
++   uint32_t count = 0;
++   vk->GetPhysicalDeviceQueueFamilyProperties(physical, &count, NULL);
++   VkQueueFamilyProperties *families = calloc(count, sizeof(*families));
++   if (!count || !families)
++      return false;
++   vk->GetPhysicalDeviceQueueFamilyProperties(physical, &count, families);
++   uint32_t family = 0;
++   while (family < count && !families[family].queueCount)
++      family++;
++   free(families);
++   if (family == count)
++      return false;
++   const float priority = 1.0f;
++   const VkDeviceQueueCreateInfo queue = {
++      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
++      .queueFamilyIndex = family, .queueCount = 1, .pQueuePriorities = &priority,
++   };
++   const char *extension = "VK_EXT_external_memory_host";
++   const VkDeviceCreateInfo info = {
++      .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
++      .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue,
++      .enabledExtensionCount = 1, .ppEnabledExtensionNames = &extension,
++   };
++   VkDevice device = VK_NULL_HANDLE;
++   if (vk->CreateDevice(physical, &info, NULL, &device) != VK_SUCCESS)
++      return false;
++   PFN_vkGetMemoryHostPointerPropertiesEXT get_pointer =
++      (PFN_vkGetMemoryHostPointerPropertiesEXT)
++         vk->GetDeviceProcAddr(device, "vkGetMemoryHostPointerPropertiesEXT");
++   PFN_vkDestroyDevice destroy =
++      (PFN_vkDestroyDevice)vk->GetDeviceProcAddr(device, "vkDestroyDevice");
++   SYSTEM_INFO system;
++   GetSystemInfo(&system);
++   HANDLE section = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
++                                       0, system.dwAllocationGranularity, NULL);
++   void *pointer = section ? MapViewOfFile(section, FILE_MAP_READ | FILE_MAP_WRITE,
++                                           0, 0, system.dwAllocationGranularity) : NULL;
++   VkMemoryHostPointerPropertiesEXT props = {
++      .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT,
++   };
++   VkResult result = pointer && get_pointer
++      ? get_pointer(device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
++                     pointer, &props)
++      : VK_ERROR_OUT_OF_HOST_MEMORY;
++   if (pointer)
++      UnmapViewOfFile(pointer);
++   if (section)
++      CloseHandle(section);
++   destroy(device, NULL);
++   *out_types = props.memoryTypeBits;
++   return result == VK_SUCCESS && props.memoryTypeBits;
++}
++#endif
+ static void
+ vkr_physical_device_init_memory_properties(struct vkr_physical_device *physical_dev)
+ {
+@@ -273,6 +333,23 @@ vkr_physical_device_init_memory_properties(struct vkr_physical_device *physical_
+       if (!host.minImportedHostPointerAlignment ||
+           system_info.dwAllocationGranularity % host.minImportedHostPointerAlignment)
+          physical_dev->host_external_memory_host = false;
++      if (physical_dev->host_external_memory_host) {
++         uint32_t types = 0;
++         if (!vkr_physical_device_host_memory_types(physical_dev, &types)) {
++            physical_dev->host_external_memory_host = false;
++         } else {
++            /* GPU BAR memory is not necessarily importable as a mapped
++             * Windows section. Retain its index for GPU-only allocations. */
++            for (uint32_t i = 0; i < physical_dev->memory_properties.memoryTypeCount; i++) {
++               if (!(types & (1u << i)))
++                  physical_dev->memory_properties.memoryTypes[i].propertyFlags &=
++                     ~(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
++                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
++            }
++            vkr_log("Windows section import memory types: 0x%x", types);
++         }
++      }
+    }
+ #endif
+    physical_dev->udmabuf_dev_fd = -1;
+@@ -899,6 +976,7 @@ vkr_dispatch_vkGetPhysicalDeviceMemoryProperties2(
+       vn_replace_vkGetPhysicalDeviceMemoryProperties2_args_handle(args);
+       vk->GetPhysicalDeviceMemoryProperties2(args->physicalDevice,
+                                              args->pMemoryProperties);
++      args->pMemoryProperties->memoryProperties = physical_dev->memory_properties;
+    }
+ }
+ 

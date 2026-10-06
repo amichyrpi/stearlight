@@ -1,0 +1,39 @@
+--- a/src/vulkan/wsi/wsi_common_x11.c
++++ b/src/vulkan/wsi/wsi_common_x11.c
+@@ -1582,6 +1582,27 @@
+    }
+    free(err);
+    free(geom);
++
++   /* PutImage is immediate, so it generates no Present completion event.
++    * A request after the upload provides an X-server completion boundary.
++    * The queue worker has already waited for the real GPU copy fence. */
++   if (result == VK_SUCCESS) {
++      xcb_generic_error_t *upload_error = NULL;
++      xcb_get_input_focus_reply_t *uploaded = xcb_get_input_focus_reply(
++         chain->conn, xcb_get_input_focus(chain->conn), &upload_error);
++      if (!uploaded || upload_error) {
++         result = VK_ERROR_SURFACE_LOST_KHR;
++      } else if (image->present_id) {
++         mtx_lock(&chain->present_progress_mutex);
++         if (image->present_id > chain->present_id) {
++            chain->present_id = image->present_id;
++            u_cnd_monotonic_broadcast(&chain->present_progress_cond);
++         }
++         mtx_unlock(&chain->present_progress_mutex);
++      }
++      free(upload_error);
++      free(uploaded);
++   }
+ 
+    wsi_queue_push(&chain->acquire_queue, image_index);
+    return result;
+@@ -2532,7 +2553,7 @@
+       int ret = u_cnd_monotonic_timedwait(&chain->present_progress_cond,
+                                           &chain->present_progress_mutex,
+                                           &abs_timespec);
+-      if (ret == ETIMEDOUT) {
++      if (ret == thrd_timedout) {
+          result = VK_TIMEOUT;
+          break;
+       }

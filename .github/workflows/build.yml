@@ -1,160 +1,191 @@
-name: Build
+name: ARM64 Frame VM
 
 on:
   push:
-    paths-ignore:
-      - README.md
+    branches: ['**']
+    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
+    tags: ['vm-*']
   pull_request:
-    paths-ignore:
-      - README.md
+    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
   workflow_dispatch:
+    inputs:
+      publish_continuous:
+        description: Update the Continuous build release
+        type: boolean
+        default: false
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: frame-vm-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  linux:
-    name: Linux x86_64
+  vm-source-checks:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check maintained VM sources
+        run: bash build_files/check.sh
 
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libsdl2-ttf-dev libavformat-dev libavcodec-dev libavutil-dev libx11-dev libxcomposite-dev libxtst-dev
-
-      - name: Configure
-        run: cmake -S . -B build -G Ninja -DSVRT_BUILD_DRIVER=OFF -DSVRT_BUILD_RECEIVER=OFF -DSVRT_BUILD_OS_SHELL=ON -DSVRT_BUILD_PI_LIBRARY=OFF -DSVRT_BUILD_UTILITY=OFF -DSVRT_STEARLIGHT_OS=ON -DSVRT_BUILD_VENDORED_SDL=OFF -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build and test
-        run: |
-          cmake --build build
-          ctest --test-dir build --output-on-failure
-
-      - name: Package
-        run: |
-          mkdir -p package
-          cp build/os/stearlight-shell README.md LICENSE package/
-          tar -czf svrt-linux-x86_64.tar.gz -C package .
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-linux-x86_64
-          path: svrt-linux-x86_64.tar.gz
-          if-no-files-found: error
-
-  windows-driver:
-    name: SteamVR driver win64
-    runs-on: windows-2022
+  vm-image:
+    needs: vm-source-checks
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-
-      - name: Configure
-        run: cmake -S . -B build -A x64 -DSVRT_BUILD_DRIVER=ON -DSVRT_BUILD_PI_LIBRARY=OFF -DSVRT_BUILD_RECEIVER=OFF
-
-      - name: Build
-        run: cmake --build build --config Release --parallel
-
-      - name: Package
-        shell: pwsh
-        run: Compress-Archive -Path build/svrt,steamvr-driver/README.md -DestinationPath svrt-steamvr-driver-win64.zip -Force
-
-      - uses: actions/upload-artifact@v4
         with:
-          name: release-steamvr-win64
-          path: svrt-steamvr-driver-win64.zip
-          if-no-files-found: error
-
-  stearlight-os-rpi4:
-    name: Stearlight OS Raspberry Pi 4
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
+          submodules: recursive
+      - name: Prepare disk space and image tools
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo apt-get update
+          sudo apt-get install -y pax-utils btrfs-progs zstd e2fsprogs qemu-utils
+          df -h /
       - uses: docker/setup-buildx-action@v3
-
-      - name: Validate OS scripts
-        run: bash os/tests/layout-test.sh
-
-      - name: Build dated flash image
-        env:
-          STEAM_USERNAME: ${{ secrets.STEARLIGHT_STEAM_USERNAME }}
-          STEAM_PASSWORD: ${{ secrets.STEARLIGHT_STEAM_PASSWORD }}
-          STEARLIGHT_FEX_BRANCH: beta
-          STEARLIGHT_PROTON_BRANCH: public
-        run: |
-          set -euo pipefail
-          export STEARLIGHT_BUILD_DATE="$(date -u +%Y%m%d)"
-          export STEARLIGHT_OUTPUT_DIR="$PWD/out/stearlight-os"
-          bash os/build.sh
-
+      - name: Build fresh ARM64 image from the pinned public Frame recovery
+        run: sudo --preserve-env=DOCKER_CONFIG bash build_files/build-image.sh "$PWD/dist"
       - uses: actions/upload-artifact@v4
         with:
-          name: release-stearlight-os-rpi4
-          path: |
-            out/stearlight-os/image/stearlight-os-*rp4.img.gz
-            out/stearlight-os/image/stearlight-os-*rp4.img.gz.sha256
-          if-no-files-found: error
+          name: frame-arm64-image
+          path: dist/
           compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  windows-runtime:
+    needs: vm-source-checks
+    runs-on: windows-2022
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Preserve source line endings
+        shell: pwsh
+        run: |
+          git config core.autocrlf false
+          git checkout-index --force --all
+      - uses: actions/cache@v4
+        id: windows-runtime-cache
+        with:
+          path: dist/qemu
+          key: frame-windows-2022-${{ hashFiles('packages/sources.lock.json', 'packages/windows-runtime/**') }}
+      - uses: msys2/setup-msys2@v2
+        if: steps.windows-runtime-cache.outputs.cache-hit != 'true'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git make patch diffutils tar zstd
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-yaml
+            mingw-w64-ucrt-x86_64-python-packaging
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-libepoxy
+            mingw-w64-ucrt-x86_64-glib2
+            mingw-w64-ucrt-x86_64-pixman
+            mingw-w64-ucrt-x86_64-libslirp
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-vulkan-loader
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-zstd
+      - name: Build pinned GTK QEMU and patched Venus renderer
+        if: steps.windows-runtime-cache.outputs.cache-hit != 'true'
+        run: bash packages/windows-runtime/build-runtime.sh /d/frame-build dist/qemu
+      - name: Check Windows launcher and paths containing spaces
+        shell: powershell
+        run: .\tests\launcher-test.ps1 -QemuDirectory .\dist\qemu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frame-windows-runtime
+          path: dist/qemu/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+  download-package:
+    needs: [vm-image, windows-runtime]
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: frame-arm64-image
+          path: package
+      - uses: actions/download-artifact@v4
+        with:
+          name: frame-windows-runtime
+          path: package/qemu
+      - name: Assemble download and checksums
+        shell: pwsh
+        run: ./post_process/package-windows.ps1 -PackageDirectory package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stearlight-frame-windows
+          path: |
+            stearlight-frame-windows.zip
+            stearlight-frame-windows.zip.sha256
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error
+      - name: Publish tagged VM build
+        if: startsWith(github.ref, 'refs/tags/vm-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          gh release create $env:RELEASE_TAG stearlight-frame-windows.zip stearlight-frame-windows.zip.sha256 --verify-tag --title "Steam Frame VM $env:RELEASE_TAG" --notes "Extract the entire ZIP into a writable folder and run start-vm.cmd. Windows 10/11 x64 and a Vulkan-capable GPU driver are required. ARM64 CPU emulation remains slow. Account state is stored locally under data/."
+          if ($LASTEXITCODE) { throw 'Release upload failed' }
 
   continuous-release:
     name: Continuous build release
-    needs: [linux, windows-driver, stearlight-os-rpi4]
-    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    needs: download-package
+    if: (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous)
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - name: Download release assets
+      - name: Download the verified Windows VM
         uses: actions/download-artifact@v4
         with:
-          pattern: release-*
+          name: stearlight-frame-windows
           path: release-assets
-          merge-multiple: true
-
-      - name: Update continuous release
+      - name: Update Continuous build
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
-
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/continuous" >/dev/null 2>&1; then
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/continuous" \
-              --method PATCH \
-              --raw-field sha="${GITHUB_SHA}" \
-              --field force=true >/dev/null
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/continuous" --method PATCH --raw-field sha="${GITHUB_SHA}" --field force=true >/dev/null
           else
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
-              --method POST \
-              --raw-field ref="refs/tags/continuous" \
-              --raw-field sha="${GITHUB_SHA}" >/dev/null
+            gh api "repos/${GITHUB_REPOSITORY}/git/refs" --method POST --raw-field ref="refs/tags/continuous" --raw-field sha="${GITHUB_SHA}" >/dev/null
           fi
-
-          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          notes="GitHub Actions build log: ${run_url}"
-
+          notes="$RUNNER_TEMP/continuous-release.md"
+          printf '%s\n' 'ARM64 Steam Frame VM for Windows x64. Extract the ZIP and run start-vm.cmd.' '' "[Build log](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) | [Source](https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA})" > "$notes"
           if gh release view continuous >/dev/null 2>&1; then
-            gh release edit continuous \
-              --title "Continuous build" \
-              --notes "${notes}" \
-              --latest
-            gh release view continuous --json assets --jq '.assets[].name' | while read -r asset; do
-              test -z "${asset}" || gh release delete-asset continuous "${asset}" --yes
-            done
+            gh release edit continuous --title 'Continuous build' --notes-file "$notes" --latest
           else
-            gh release create continuous \
-              --title "Continuous build" \
-              --notes "${notes}" \
-              --latest
+            gh release create continuous --title 'Continuous build' --notes-file "$notes" --latest
           fi
-
-          gh release upload continuous release-assets/* --clobber
+          gh release upload continuous release-assets/stearlight-frame-windows.zip release-assets/stearlight-frame-windows.zip.sha256 --clobber
+          gh release view continuous --json assets --jq '.assets[].name' | while IFS= read -r asset; do
+            case "$asset" in
+              stearlight-frame-windows.zip|stearlight-frame-windows.zip.sha256) ;;
+              *) gh release delete-asset continuous "$asset" --yes ;;
+            esac
+          done

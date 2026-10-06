@@ -1,0 +1,5 @@
+#!/bin/sh
+# SteamOS probes this during first-run setup. The VM has no Jupiter firmware
+# payload to apply; virtual firmware is managed by the hypervisor.
+printf '%s\n' 'No firmware updates configured for this device.' >&2
+exit 0

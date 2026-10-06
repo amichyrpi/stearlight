@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+
+# Optional Windows Venus browser rendering. Leave Valve's EGL library intact.
+# Returning to the default restores the original browser launcher.
+root=${STEARLIGHT_STEAM_ROOT:-/opt/steam}
+wrapper="$root/steamrtarm64/steamwebhelper.sh"
+original="$wrapper.stearlight-original"
+mode=${1:-0}
+case "$mode" in 0|1) ;; *) echo 'Expected browser GPU mode 0 or 1.' >&2; exit 1;; esac
+
+if [ "$mode" = 0 ]; then
+    if [ -f "$original" ]; then
+        cp -p "$original" "$wrapper.new"
+        bash -n "$wrapper.new"
+        mv "$wrapper.new" "$wrapper"
+    fi
+    exit 0
+fi
+
+# This adaptation is verified against the maintained Frame recovery's ANGLE.
+expected=26d5bfd7d5921d51101146f5be1c6c7091ad0e1f026c34314bd3d6f412e505b4
+if [ "$(sha256sum "$root/steamrtarm64/libEGL.so" | cut -d ' ' -f 1)" != "$expected" ]; then
+    echo 'Browser GPU adaptation does not match this Frame recovery.' >&2
+    exit 1
+fi
+hook=/opt/steamvr/lib/linuxarm64/libstearlight-angle-visual.so
+shared=/opt/steamvr/lib/linuxarm64/libstearlight-xcb-shm-present.so
+test -r "$hook"
+test -r "$shared"
+test -r /opt/stearlight-vulkan/virtio_icd.json
+test -f "$wrapper"
+[ -f "$original" ] || cp -p "$wrapper" "$original"
+
+cat > "$wrapper.new" <<'EOF'
+#!/bin/bash
+cd "$(dirname -- "${BASH_SOURCE[0]}")" || exit 1
+export DISPLAY="${DISPLAY:-:0}"
+export LIBGL_ALWAYS_SOFTWARE=0
+unset GALLIUM_DRIVER MESA_LOADER_DRIVER_OVERRIDE __EGL_VENDOR_LIBRARY_FILENAMES LD_PRELOAD
+export VK_ICD_FILENAMES=/opt/stearlight-vulkan/virtio_icd.json
+export DISABLE_GAMESCOPE_WSI=0 ENABLE_GAMESCOPE_WSI=1
+export VN_DEBUG=no_drm_syncobj VN_PERF=no_async_mem_alloc,no_async_buffer_create
+export MESA_VK_WSI_DEBUG=sw,noshm STEARLIGHT_XCB_SHM_PRESENT=1
+export STEARLIGHT_ANGLE_EGL_PATH="$PWD/libEGL.so"
+export LD_PRELOAD=/opt/steamvr/lib/linuxarm64/libstearlight-angle-visual.so:/opt/steamvr/lib/linuxarm64/libstearlight-xcb-shm-present.so
+export LD_LIBRARY_PATH="$PWD:/opt/stearlight-vulkan:/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH:-}"
+exec ./steamwebhelper "$@" --use-gl=angle --use-angle=vulkan --ignore-gpu-blocklist &> ~/.steam/steam/logs/steamwebhelper.log
+EOF
+bash -n "$wrapper.new"
+chmod 755 "$wrapper.new"
+mv "$wrapper.new" "$wrapper"
+echo 'STEARLIGHT ARM64 BROWSER GPU MODE ENABLED'

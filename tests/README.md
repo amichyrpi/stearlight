@@ -1,8 +1,22 @@
-# Tests
+# Validation
 
-`ctest` runs the protocol/FEC, transport URL/bounds, and DRM geometry tests. Hardware behavior is tested separately because CI has no Pi HEVC request decoder or KMS display. On a Pi, `scripts/test-pi.sh` generates a 120-frame 2880x1600@60 HEVC stream, sends it through the real 1200-byte UDP 10+2 FEC transport, and requires 120 DRM PRIME frames with zero drops.
+From the repository root:
 
-`pi_2880x1600_90_test.sh` is the decoder-limit test for the fixed stereo
-transport. Give it a pre-generated 2880x1600@90 HEVC elementary stream; it
-requires every frame to be decoded through V4L2 request/DRM PRIME with zero
-drops and reports failure when measured throughput is below 90 FPS.
+```sh
+bash build_files/check.sh
+```
+
+With the bundled Windows runtime:
+
+```powershell
+.\tests\launcher-test.ps1 -QemuDirectory .\dist\qemu
+```
+
+These check recovery preparation, Containerfile inputs, runtime lifecycle,
+launcher paths and the portable account disk. GitHub also builds the ARM64
+image, checks its filesystem, builds QEMU and validates the ZIP layout.
+
+For visual verification, boot a freshly extracted package on a Windows host
+with a Vulkan driver. Capture native sign-in, the separate vertical dock,
+bottom dock and laser in both eyes. Check laser movement and dock hover.
+The developer capture helper is `tests/test-arm64.ps1`.

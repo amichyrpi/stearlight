@@ -1,0 +1,263 @@
+diff --git a/src/proxy/proxy_context.c b/src/proxy/proxy_context.c
+--- a/src/proxy/proxy_context.c
++++ b/src/proxy/proxy_context.c
+@@ -474,13 +474,18 @@
+    if (proxy_context_resource_find(ctx, res_id))
+       return;
+ 
+-   /* The current render protocol only supports importing dma-buf, shm or pipe resource
+-    * that can be exported to dma-buf. A protocol change is needed when there exists use
+-    * case for importing external Vulkan opaque resource.
+-    */
++   bool opaque_import = false;
++#ifdef _WIN32
++   /* Windows workers share the handle table and its verified Vulkan allocation
++    * metadata, which supplies the identity absent from the wire protocol. */
++   if (res->fd_type == VIRGL_RESOURCE_FD_OPAQUE) {
++      struct os_win32_memory_info info;
++      opaque_import = os_get_win32_memory_info(res->fd, &info);
++   }
++#endif
+    if (res->fd_type != VIRGL_RESOURCE_FD_INVALID &&
+        res->fd_type != VIRGL_RESOURCE_FD_DMABUF &&
+-       res->fd_type != VIRGL_RESOURCE_FD_SHM) {
++       res->fd_type != VIRGL_RESOURCE_FD_SHM && !opaque_import) {
+       proxy_log("failed to attach res %d with fd_type %d", res_id, res->fd_type);
+       return;
+    }
+diff --git a/src/proxy/proxy_server.c b/src/proxy/proxy_server.c
+--- a/src/proxy/proxy_server.c
++++ b/src/proxy/proxy_server.c
+@@ -10,6 +10,7 @@
+ #include <errno.h>
+ #include <io.h>
+ #include "mman_win32.h"
++#include "util/os_file.h"
+ #else
+ #include <signal.h>
+ #include <sys/wait.h>
+@@ -414,15 +415,16 @@
+       }
+ 
+       case RENDER_CONTEXT_OP_IMPORT_RESOURCE: {
+-         struct {
+-            uint32_t res_id;
+-            enum virgl_resource_fd_type fd_type;
+-            uint64_t size;
+-         } imp_body;
++         /* The sender writes the whole request, including padding before
++          * size. A separately laid-out body consumes four fewer bytes on
++          * Win64 and mistakes size's high word for the descriptor count. */
++         struct render_context_op_import_resource_request request = { .header = hdr };
+ 
+          int fds[1];
+          int fd_count;
+-         if (!server_recv_with_fds(w->socket_fd, &imp_body, sizeof(imp_body),
++         if (!server_recv_with_fds(w->socket_fd,
++                                   (char *)&request + sizeof(hdr),
++                                   sizeof(request) - sizeof(hdr),
+                                    fds, 1, &fd_count))
+             goto done;
+ 
+@@ -432,9 +434,18 @@
+          }
+ 
+          mtx_lock(&state->renderer_mutex);
+-         vkr_renderer_import_resource(w->ctx_id, imp_body.res_id,
+-                                      imp_body.fd_type, fds[0], imp_body.size);
++         /* Inline tokens share a process, whereas SCM_RIGHTS gives the
++          * Linux receiver its own descriptor. Preserve independent ownership. */
++         int imported_fd = os_dupfd_cloexec(fds[0]);
++         bool imported = imported_fd >= 0 &&
++            vkr_renderer_import_resource(w->ctx_id, request.res_id,
++                                         request.fd_type, imported_fd, request.size);
+          mtx_unlock(&state->renderer_mutex);
++         if (!imported) {
++            if (imported_fd >= 0) os_close_fd(imported_fd);
++            proxy_log("server worker: resource import failed");
++            goto done;
++         }
+          break;
+       }
+ 
+diff --git a/src/mesa/util/os_file.c b/src/mesa/util/os_file.c
+--- a/src/mesa/util/os_file.c
++++ b/src/mesa/util/os_file.c
+@@ -30,6 +30,8 @@
+ struct os_win32_handle_entry {
+    int token;
+    HANDLE handle;
++   bool has_memory_info;
++   struct os_win32_memory_info memory_info;
+ };
+ 
+ static CRITICAL_SECTION os_win32_handle_mutex;
+@@ -135,6 +137,32 @@
+    return os_win32_handle_insert(handle);
+ }
+ 
++bool
++os_get_win32_memory_info(int fd, struct os_win32_memory_info *info)
++{
++   os_win32_handle_ensure_init();
++   EnterCriticalSection(&os_win32_handle_mutex);
++   const ptrdiff_t idx = os_win32_handle_find_index_locked(fd);
++   const bool found = idx >= 0 && os_win32_handles[idx].has_memory_info;
++   if (found) *info = os_win32_handles[idx].memory_info;
++   LeaveCriticalSection(&os_win32_handle_mutex);
++   return found;
++}
++
++bool
++os_set_win32_memory_info(int fd, const struct os_win32_memory_info *info)
++{
++   os_win32_handle_ensure_init();
++   EnterCriticalSection(&os_win32_handle_mutex);
++   const ptrdiff_t idx = os_win32_handle_find_index_locked(fd);
++   if (idx >= 0) {
++      os_win32_handles[idx].memory_info = *info;
++      os_win32_handles[idx].has_memory_info = true;
++   }
++   LeaveCriticalSection(&os_win32_handle_mutex);
++   return idx >= 0;
++}
++
+ int
+ os_close_fd(int fd)
+ {
+@@ -189,8 +217,13 @@
+       }
+ 
+       const int token = os_wrap_win32_handle(dup_handle);
+-      if (token < 0)
++      if (token < 0) {
+          CloseHandle(dup_handle);
++      } else {
++         struct os_win32_memory_info info;
++         if (os_get_win32_memory_info(fd, &info))
++            os_set_win32_memory_info(token, &info);
++      }
+       return token;
+    }
+ 
+diff --git a/src/mesa/util/os_file.h b/src/mesa/util/os_file.h
+--- a/src/mesa/util/os_file.h
++++ b/src/mesa/util/os_file.h
+@@ -9,6 +9,7 @@
+ #define _OS_FILE_H_
+ 
+ #include <stdbool.h>
++#include <stdint.h>
+ #include <stdio.h>
+ 
+ #ifdef _WIN32
+@@ -46,6 +47,16 @@
+ 
+ int
+ os_wrap_win32_handle(HANDLE handle);
++
++/* Opaque Vulkan handles require the exporter's allocation parameters. */
++struct os_win32_memory_info {
++   uint8_t device_uuid[16];
++   uint8_t driver_uuid[16];
++   uint64_t allocation_size;
++   uint32_t memory_type_index;
++};
++bool os_get_win32_memory_info(int fd, struct os_win32_memory_info *info);
++bool os_set_win32_memory_info(int fd, const struct os_win32_memory_info *info);
+ #endif
+ 
+ /*
+diff --git a/src/venus/vkr_device_memory.c b/src/venus/vkr_device_memory.c
+--- a/src/venus/vkr_device_memory.c
++++ b/src/venus/vkr_device_memory.c
+@@ -692,6 +692,24 @@
+    }
+ 
+    vn_replace_vkGetMemoryResourcePropertiesMESA_args_handle(args);
++#ifdef _WIN32
++   if ((res->fd_type == VIRGL_RESOURCE_FD_DMABUF && dev->physical_device->dma_buf_shim_active) ||
++       (res->fd_type == VIRGL_RESOURCE_FD_OPAQUE && dev->physical_device->host_external_memory_win32)) {
++      /* OPAQUE_WIN32 cannot be queried with GetMemoryWin32HandleProperties.
++       * Use the actual export allocation, retained with the handle token. */
++      struct os_win32_memory_info info;
++      const VkPhysicalDeviceIDProperties *ids = &dev->physical_device->id_properties;
++      if (!os_get_win32_memory_info(res->u.fd, &info) ||
++          memcmp(info.device_uuid, ids->deviceUUID, VK_UUID_SIZE) ||
++          memcmp(info.driver_uuid, ids->driverUUID, VK_UUID_SIZE) ||
++          info.memory_type_index >= dev->physical_device->memory_properties.memoryTypeCount) {
++         args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++         return;
++      }
++      args->pMemoryResourceProperties->memoryTypeBits = 1u << info.memory_type_index;
++      args->ret = VK_SUCCESS;
++   } else
++#endif
+    if (res->fd_type == VIRGL_RESOURCE_FD_DMABUF) {
+       static const VkExternalMemoryHandleTypeFlagBits handle_type =
+          VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+@@ -706,22 +724,6 @@
+          return;
+ 
+       args->pMemoryResourceProperties->memoryTypeBits = mem_fd_props.memoryTypeBits;
+-#ifdef _WIN32
+-   } else if (res->fd_type == VIRGL_RESOURCE_FD_OPAQUE &&
+-              dev->GetMemoryWin32HandlePropertiesKHR) {
+-      HANDLE handle = os_get_win32_handle_from_fd(res->u.fd);
+-      VkMemoryWin32HandlePropertiesKHR props = {
+-         .sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR,
+-         .pNext = NULL,
+-         .memoryTypeBits = 0,
+-      };
+-      args->ret = dev->GetMemoryWin32HandlePropertiesKHR(
+-         args->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT, handle, &props);
+-      if (args->ret != VK_SUCCESS)
+-         return;
+-
+-      args->pMemoryResourceProperties->memoryTypeBits = props.memoryTypeBits;
+-#endif
+    } else {
+       args->ret = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+       return;
+@@ -914,6 +916,17 @@
+             CloseHandle(handle);
+             return false;
+          }
++         struct os_win32_memory_info allocation = {
++            .allocation_size = mem->allocation_size,
++            .memory_type_index = mem->memory_type_index,
++         };
++         const VkPhysicalDeviceIDProperties *ids = &mem->device->physical_device->id_properties;
++         memcpy(allocation.device_uuid, ids->deviceUUID, VK_UUID_SIZE);
++         memcpy(allocation.driver_uuid, ids->driverUUID, VK_UUID_SIZE);
++         if (!os_set_win32_memory_info(fd, &allocation)) {
++            os_close_fd(fd);
++            return false;
++         }
+       } else
+ #endif
+       {
+diff --git a/src/venus/vkr_physical_device.c b/src/venus/vkr_physical_device.c
+--- a/src/venus/vkr_physical_device.c
++++ b/src/venus/vkr_physical_device.c
+@@ -1187,8 +1187,18 @@
+          VkExternalMemoryProperties *emp = &ext_props->externalMemoryProperties;
+          /* Force non-exportable for dma-buf on Windows; see the rationale
+           * in vkr_dispatch_vkGetPhysicalDeviceExternalBufferProperties. */
+-         emp->externalMemoryFeatures &= ~VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
+-         emp->exportFromImportedHandleTypes = 0;
++         const char *image_export = getenv("STEARLIGHT_VULKAN_IMAGE_EXPORT");
++         if (!image_export || strcmp(image_export, "1")) {
++            emp->externalMemoryFeatures &= ~VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
++            emp->exportFromImportedHandleTypes = 0;
++         } else {
++            /* Diagnostic Vulkan-to-Vulkan path only. CPU WSI must remain in
++             * use; the host GL path cannot sample this exported allocation. */
++            emp->exportFromImportedHandleTypes =
++               (emp->exportFromImportedHandleTypes &
++                VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT)
++                  ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT : 0;
++         }
+          if (emp->compatibleHandleTypes &
+              VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT) {
+             emp->compatibleHandleTypes =

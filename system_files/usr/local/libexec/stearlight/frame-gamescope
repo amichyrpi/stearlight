@@ -1,0 +1,39 @@
+#!/bin/sh
+# Use Valve's glibc Gamescope/OpenVR client, with glibc Venus for the VM GPU.
+bundle=/opt/frame-gamescope
+library_path="$bundle/lib:/opt/stearlight-vulkan:/opt/steam/steamrtarm64/libs:/opt/steam/steamrtarm64:/usr/lib/aarch64-linux-gnu"
+export VK_ICD_FILENAMES=${STEARLIGHT_GAMESCOPE_VK_ICD:-/opt/stearlight-vulkan/virtio_icd.json}
+export XKB_CONFIG_ROOT="$bundle/share/X11/xkb"
+# --library-path applies to this process and its dlopen calls. Do not export
+# glibc's LD_LIBRARY_PATH into the Alpine Xwayland and session children.
+unset LD_LIBRARY_PATH
+binary="$bundle/bin/gamescope"
+if [ "${STEARLIGHT_GAMESCOPE_VM_UPLOAD:-0}" = 1 ]; then
+  # The Windows section bridge has coherent CPU memory, without GPU-local BAR
+  # memory. Relax only the upload-buffer allocation flags in this known build.
+  original=45a4057095103258d0e673f1c7297265d323c8d102bddbe4ccca53e792ad2e87
+  patched=5deaa0dcdf7e29950e220361529f9150d98ef7ac2873e52a27323d57479a3395
+  binary="${XDG_RUNTIME_DIR:?}/gamescope-vm-upload"
+  if [ "$(sha256sum "$binary" 2>/dev/null | cut -d ' ' -f 1)" != "$patched" ]; then
+    if [ "$(sha256sum "$bundle/bin/gamescope" | cut -d ' ' -f 1)" != "$original" ]; then
+      echo 'Gamescope VM upload adaptation does not match this recovery build.' >&2
+      exit 1
+    fi
+    cp "$bundle/bin/gamescope" "$binary" || exit 1
+    printf %s IQQfEj8YAHE= | base64 -d |
+      dd of="$binary" bs=1 seek=2123212 conv=notrunc 2>/dev/null || exit 1
+    if [ "$(sha256sum "$binary" | cut -d ' ' -f 1)" != "$patched" ]; then
+      echo 'Gamescope VM upload adaptation failed validation.' >&2
+      exit 1
+    fi
+    chmod 0755 "$binary"
+  fi
+fi
+if [ "${STEARLIGHT_TIMELINE_BRIDGE:-0}" = 1 ]; then
+  # Scope the preload to Gamescope; its musl children must not inherit it.
+  shim=${STEARLIGHT_VULKAN_WSI_SHIM:-/opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so}
+  exec "$bundle/lib/ld-linux-aarch64.so.1" --library-path "$library_path" \
+    --preload "$shim" "$binary" "$@"
+fi
+exec "$bundle/lib/ld-linux-aarch64.so.1" --library-path "$library_path" \
+  "$binary" "$@"

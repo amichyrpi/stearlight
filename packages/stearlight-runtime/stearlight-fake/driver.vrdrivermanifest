@@ -1,0 +1,8 @@
+{
+  "alwaysActivate": true,
+  "name": "stearlight-fake",
+  "directory": "",
+  "resourceOnly": false,
+  "redirectsDisplay": false,
+  "hmd_presence": ["*.*"]
+}

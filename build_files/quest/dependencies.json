@@ -1,0 +1,66 @@
+{
+  "mesa": {
+    "url": "https://deb.debian.org/debian/pool/main/m/mesa/mesa_26.1.6.orig.tar.xz",
+    "sha256": "5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606"
+  },
+  "android": {
+    "proot": {
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.96_aarch64.deb",
+      "sha256": "8199dca06dccb693ec09fb1759e3e1ad08b4863f0c11c612f89c20bd9ecdc1a0"
+    },
+    "talloc": {
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.5.0_aarch64.deb",
+      "sha256": "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7"
+    },
+    "shmem": {
+      "url": "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb",
+      "sha256": "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6"
+    }
+  },
+  "linux": {
+    "xvfb": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/community/aarch64/xvfb-21.1.24-r0.apk",
+      "sha256": "3660966448cb7549c4745713cec0f1fd339d269de4018ce2cb40cfff7bba9778"
+    },
+    "xfont": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/community/aarch64/libxfont2-2.0.8-r0.apk",
+      "sha256": "66dcaeabea44f3762374c3727a9981b21a56848933c237ccaddf477daa7ccfb8"
+    },
+    "xkbfile": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/libxkbfile-1.2.0-r0.apk",
+      "sha256": "224fa593a373cda44c6098d1cb7ec2a24ed83f9426d63b695c96ba5e5ecef33e"
+    },
+    "pixman": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/pixman-0.46.4-r0.apk",
+      "sha256": "bb00353d1a9123ade62fe7779c6efaeb6606650d5cfd005532ef06478e445acd"
+    }
+  },
+  "openxr": {
+    "openxr.h": {
+      "url": "https://raw.githubusercontent.com/KhronosGroup/OpenXR-SDK/release-1.0.34/include/openxr/openxr.h",
+      "sha256": "f7d670c13053cfa503512213820184d0986c5b9de173d1c16f0753acec267f07"
+    },
+    "openxr_platform.h": {
+      "url": "https://raw.githubusercontent.com/KhronosGroup/OpenXR-SDK/release-1.0.34/include/openxr/openxr_platform.h",
+      "sha256": "d6749812d1c6fded6c4c8756e95accff90f04cc20415e46fa381da52ff493b14"
+    },
+    "openxr_platform_defines.h": {
+      "url": "https://raw.githubusercontent.com/KhronosGroup/OpenXR-SDK/release-1.0.34/include/openxr/openxr_platform_defines.h",
+      "sha256": "47738e2088a63051ab586fd44da1e0c556aa6f78ccc841bb5eeb29b13e3704c3"
+    }
+  },
+  "sources": {
+    "proot": {
+      "url": "https://github.com/termux/proot/archive/v5.1.107.96.zip",
+      "sha256": "75f654fe60dea92dabff2bf083ae8bfe4f91baa6a1a374786a6bf391015eebaa"
+    },
+    "talloc": {
+      "url": "https://www.samba.org/ftp/talloc/talloc-2.5.0.tar.gz",
+      "sha256": "912afa237510ae542a7733998eb18a12bcda35ab6729c8e2ddb43e8d0ebab007"
+    },
+    "shmem": {
+      "url": "https://github.com/termux/libandroid-shmem/archive/refs/tags/v0.7.tar.gz",
+      "sha256": "1e5ff8459bc0a8c229dd8a94b27d119987e09ef3414331c2b5ebfff20b98e867"
+    }
+  }
+}
