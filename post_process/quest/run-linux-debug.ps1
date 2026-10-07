@@ -40,6 +40,15 @@ $native=$Matches[1].Substring(0,$Matches[1].LastIndexOf('/'))+'/lib/arm64'
 $files="/data/user/0/$package/files"
 $command='/bin/bash /opt/quest/start-session.sh'
 if($TimelineProbe){$command='/usr/bin/env --unset=LD_LIBRARY_PATH MESA_VK_ENABLE_SUBMIT_THREAD=1 /opt/quest/gpu-probe --timeline'}
+# A forcibly closed host launcher cannot run its finally block. Its ADB-side
+# helper survives and keeps spawning run-as processes. Replace only helpers
+# for this package before starting a new one, including on debug restarts.
+foreach($line in (Run-Adb @('shell','ps','-A','-o','PID,ARGS'))){
+ if($line -match '^\s*(\d+)\s+sh\s+/data/local/tmp/stearlight-quest-net\.sh\s+net\.stearlight\.quest\s*$'){
+  $staleMonitorPid=$Matches[1]
+  Run-Adb @('shell',"case `$(cat /proc/$staleMonitorPid/cmdline 2>/dev/null) in *stearlight-quest-net.sh*net.stearlight.quest*) kill -TERM $staleMonitorPid 2>/dev/null || true;; esac") | Out-Null
+ }
+}
 Run-Adb @('push',(Join-Path $PSScriptRoot 'socket-table-monitor.sh'),'/data/local/tmp/stearlight-quest-net.sh') | Out-Null
 $monitorLog=Join-Path ([IO.Path]::GetTempPath()) "stearlight-quest-net-$PID.log"
 $monitorError="$monitorLog.error"

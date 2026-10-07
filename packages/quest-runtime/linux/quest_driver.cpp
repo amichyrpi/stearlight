@@ -1,6 +1,7 @@
 // OpenVR devices backed by real Quest OpenXR poses and Android device state.
 #include <openvr_driver.h>
 #include "quest_bridge.h"
+#include "controller_pose.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -65,7 +66,7 @@ public:
   base(id,serial(),hand?"Oculus Quest2 (Right Controller)":"Oculus Quest2 (Left Controller)");auto* p=vr::VRProperties();p->SetStringProperty(properties,vr::Prop_RenderModelName_String,hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"frame_controller");p->SetStringProperty(properties,vr::Prop_InputProfilePath_String,"{frame_controller}/input/frame_controller_profile.json");p->SetStringProperty(properties,vr::Prop_ControllerType_String,"frame_controller");p->SetInt32Property(properties,vr::Prop_ControllerRoleHint_Int32,hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);p->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,false);
   const char* paths[]={"/input/a/click","/input/b/click","/input/x/click","/input/y/click","/input/thumbstick/click","/input/system/click","/input/trigger/click"};for(int i=0;i<7;i++)vr::VRDriverInput()->CreateBooleanComponent(properties,paths[i],&clicks[i]);vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/trigger/touch",&touch);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/trigger/value",&trigger,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/grip/value",&squeeze,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/x",&x,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/y",&y,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateHapticComponent(properties,"/output/haptic",&haptic);return vr::VRInitError_None;
  }
- vr::DriverPose_t GetPose()override{return trackedPose(state.grip[hand]);}
+ vr::DriverPose_t GetPose()override{return trackedPose(quest::controllerModelPose(state.grip[hand],hand));}
  void frame()override{if(index==vr::k_unTrackedDeviceIndexInvalid)return;vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,GetPose(),sizeof(vr::DriverPose_t));for(int i=0;i<6;i++)vr::VRDriverInput()->UpdateBooleanComponent(clicks[i],(state.buttons[hand]&(1u<<i))!=0,0);vr::VRDriverInput()->UpdateBooleanComponent(clicks[6],state.trigger[hand]>.75f,0);vr::VRDriverInput()->UpdateBooleanComponent(touch,state.touches[hand]!=0,0);vr::VRDriverInput()->UpdateScalarComponent(trigger,state.trigger[hand],0);vr::VRDriverInput()->UpdateScalarComponent(squeeze,state.squeeze[hand],0);vr::VRDriverInput()->UpdateScalarComponent(x,state.thumbstick[hand][0],0);vr::VRDriverInput()->UpdateScalarComponent(y,state.thumbstick[hand][1],0);}
 };
 class Provider final:public vr::IServerTrackedDeviceProvider {

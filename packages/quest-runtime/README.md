@@ -21,6 +21,8 @@ the owner-death test; it currently requires ADB to remain connected. SteamVR
 initializes with the Quest driver and displays its native loading animation
 in both eyes. The native Steam sign-in panel, separate left dock, and bottom
 dock are now visible in the headset, and both Touch lasers respond to triggers.
+The Quest 2 render models use Valve's `openxr_grip` component transform to
+convert tracked grip poses to the model origin for both hands.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
 layer, until the main panel and bottom dock are ready. Display buffers use
 explicit Vulkan ownership transfers before Android reads them. Each image
@@ -141,6 +143,8 @@ The dashboard, docks, controller graphics, and lasers stay over the real room.
 The Turnip adapter selects a separate system-layer composition pipeline for
 room view, omits SteamVR's virtual sky, and preserves the layer's alpha. The
 native construct floor is hidden during room view and restored afterward.
+The shipped star mesh is excluded using its exact shader, depth state and draw
+range; controller, laser and panel draws are preserved.
 Normal VR uses the original SteamVR pipelines.
 
 For a developer toggle check, use:
