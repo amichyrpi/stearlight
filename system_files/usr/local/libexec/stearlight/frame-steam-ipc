@@ -2,25 +2,30 @@
 set -eu
 
 binary=${STEARLIGHT_STEAM_ROOT:-/opt/steam}/steamrtarm64/chromehtml.so
-# ARM TCG can take longer than 500 ms to create the helper's two 25 MiB
-# connection buffers. Retrying before its reply leaks another pair each time.
+# ARM TCG and the Quest Linux runtime can take longer than 500 ms to create
+# the helper's two 25 MiB connection buffers. Retrying leaks another pair.
 # Extend only the master response stream's wait; keep the IPC protocol intact.
-original=9313efbb3c64108cb990271f3c9ba59821595a87e4f1b0c07d7538ab9a21786b
-patched=4ea4e9aa5146e2f4b7c003abd83fb8a4cf6edf2118e8a50c5a7f10ddf14013b0
 current=$(sha256sum "$binary" | cut -d ' ' -f 1)
-[ "$current" != "$patched" ] || exit 0
-if [ "$current" != "$original" ]; then
-    echo 'Steam IPC VM timeout adaptation does not match this recovery build.' >&2
-    exit 1
-fi
+case "$current" in
+    4ea4e9aa5146e2f4b7c003abd83fb8a4cf6edf2118e8a50c5a7f10ddf14013b0|dd22bb0da0e636a52135aa7b4514abac0fa57799813ee301881559f2195f0171) exit 0 ;;
+    9313efbb3c64108cb990271f3c9ba59821595a87e4f1b0c07d7538ab9a21786b)
+        offset=374660
+        patched=4ea4e9aa5146e2f4b7c003abd83fb8a4cf6edf2118e8a50c5a7f10ddf14013b0 ;;
+    86ee414dfb314aa65414051eca76c498bdf4fa0ba5cc3f89d5be712773e153e5)
+        # Build 1791328779: same MasterStream response constructor, verified
+        # against its instructions and SteamChrome_MasterStream string.
+        offset=372668
+        patched=dd22bb0da0e636a52135aa7b4514abac0fa57799813ee301881559f2195f0171 ;;
+    *) echo 'Steam IPC timeout adaptation does not match this recovery build.' >&2; exit 1 ;;
+esac
 temporary="$binary.stearlight-ipc"
 trap 'rm -f "$temporary"' EXIT
 cp -p "$binary" "$temporary"
 # mov w3, #500 -> mov w3, #30000, at the response stream constructor.
 printf %s A6aOUg== | base64 -d |
-    dd of="$temporary" bs=1 seek=374660 conv=notrunc 2>/dev/null
+    dd of="$temporary" bs=1 seek="$offset" conv=notrunc 2>/dev/null
 if [ "$(sha256sum "$temporary" | cut -d ' ' -f 1)" != "$patched" ]; then
-    echo 'Steam IPC VM timeout adaptation failed validation.' >&2
+    echo 'Steam IPC timeout adaptation failed validation.' >&2
     exit 1
 fi
 mv "$temporary" "$binary"

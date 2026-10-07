@@ -20,10 +20,10 @@ class GpuBridge {
  int server=-1,client=-1,current=-1;uint64_t frameId=0;std::string path;
  AHardwareBuffer* buffers[QUEST_GPU_BUFFERS]{};EGLImageKHR images[QUEST_GPU_BUFFERS]{};GLuint textures[QUEST_GPU_BUFFERS]{};
  int dmaFds[QUEST_GPU_BUFFERS]={-1,-1,-1};
- GLuint program=0,vao=0,history=0,copyFramebuffer=0;bool hasFrame=false;GLint eyeUniform=-1,formatUniform=-1;uint32_t frameFormat=37;QuestGpuHello hello{};QuestGpuPresent framePose{};EGLDisplay display=EGL_NO_DISPLAY;
+ GLuint program=0,vao=0,history=0,copyFramebuffer=0;bool hasFrame=false;GLint eyeUniform=-1,formatUniform=-1,alphaUniform=-1;uint32_t frameFormat=37;QuestGpuHello hello{};QuestGpuPresent framePose{};EGLDisplay display=EGL_NO_DISPLAY;
 public:
  void initialize(EGLDisplay,const std::string&,uint32_t,uint32_t);
- void poll();void draw(int);void finish();void shutdown();
+ void poll();void draw(int,bool preserveAlpha=false);void finish();void shutdown();
  void capture();
  bool ready()const{return current>=0;}
  const QuestGpuPresent& inputPose()const{return framePose;}

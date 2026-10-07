@@ -19,10 +19,29 @@ int main() {
     }
     std::puts("QUEST_RUNTIME_MONITOR_CONNECTED");
     std::fflush(stdout);
+    bool passthroughRequested = false;
+    const char* passthrough = "/run/stearlight/quest/passthrough.enabled";
+    unlink(passthrough);
+    auto* settings = vr::VRSettings();
+    settings->SetBool("stearlight_quest", "passthrough_enabled", false);
+    if (access("/run/stearlight/quest/passthrough.supported", F_OK) == 0) {
+        settings->SetBool("camera", "enableCamera", true);
+        settings->SetInt32("camera", "roomView", 2);
+    }
     const char* ready = "/run/stearlight/quest/dashboard.ready";
     unlink(ready);
     bool dashboardRequested = false, dashboardReady = false, steamRequested = false;
     while (!stopping) {
+        vr::EVRSettingsError settingError;
+        bool requested = settings->GetBool("stearlight_quest", "passthrough_enabled", &settingError);
+        if (settingError == vr::VRSettingsError_None && requested != passthroughRequested) {
+            if (requested && access("/run/stearlight/quest/passthrough.supported", F_OK) == 0) {
+                if (FILE* marker = std::fopen(passthrough, "w")) std::fclose(marker);
+            } else unlink(passthrough);
+            passthroughRequested = requested;
+            std::printf("QUEST_NATIVE_ROOMVIEW_REQUESTED %d\n", requested);
+            std::fflush(stdout);
+        }
         vr::VREvent_t event;
         while (system->PollNextEvent(&event, sizeof(event))) {
             if (event.eventType == vr::VREvent_Quit) {
@@ -50,8 +69,6 @@ int main() {
                 overlays->GetOverlayTextureSize(bar, &barWidth, &barHeight) == vr::VROverlayError_None &&
                 barWidth && barHeight;
             steamReady = steamAvailable && overlays->IsOverlayVisible(steamOverlay) && overlays->IsOverlayVisible(bar);
-        } else {
-            steamRequested = false;
         }
         if (overlays && overlays->FindOverlay("system.systemui", &overlay) == vr::VROverlayError_None) {
             if (!dashboardRequested) {
@@ -70,17 +87,15 @@ int main() {
                     std::fflush(stdout);
                 }
             }
-        } else if (dashboardRequested || dashboardReady) {
-            dashboardRequested = dashboardReady = false;
-            unlink(ready);
         }
-        if (!steamAvailable && dashboardReady) {
-            dashboardReady = false;
-            unlink(ready);
-        }
+        // Readiness belongs to this VR session, not a browser page. Valve
+        // recreates overlays during navigation and handles client errors in
+        // its own dashboard. Re-requesting Home here interrupts navigation;
+        // removing readiness would also replay Android's startup animation.
         usleep(200000);
     }
     vr::VR_Shutdown();
+    unlink(passthrough);
     unlink(ready);
     return 0;
 }

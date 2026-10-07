@@ -18,6 +18,9 @@
 #include <cerrno>
 #include <condition_variable>
 #include <chrono>
+#include <atomic>
+#include <unordered_map>
+#include "roomview_shaders.h"
 #include "gpu_bridge.h"
 #include "quest_bridge.h"
 
@@ -25,6 +28,15 @@ namespace {
 PFN_vkGetInstanceProcAddr realGet=nullptr;PFN_vkGetDeviceProcAddr realDeviceGet=nullptr;
 uint32_t activeQueueFamily=0;
 VkInstance activeInstance=VK_NULL_HANDLE;VkPhysicalDevice activePhysical=VK_NULL_HANDLE;
+bool isCompositor(){return program_invocation_short_name&&(!strcmp(program_invocation_short_name,"vrcompositor")||!strcmp(program_invocation_short_name,"vrcompositor.bin"));}
+struct RoomShader {VkShaderModule alternate=VK_NULL_HANDLE;bool background=false,stars=false;};
+struct RoomPipeline {VkPipeline alternate=VK_NULL_HANDLE;bool background=false,stars=false;};
+struct RoomCommand {bool background=false,stars=false;};
+std::mutex roomLock;
+std::unordered_map<VkShaderModule,RoomShader> roomShaders;
+std::unordered_map<VkPipeline,RoomPipeline> roomPipelines;
+std::unordered_map<VkCommandBuffer,RoomCommand> roomBackgroundCommands;
+std::atomic<bool> roomViewMode{false},roomViewReady{false};
 void init(){if(realGet)return;if(program_invocation_short_name&&(!strcmp(program_invocation_short_name,"vrcompositor")||!strcmp(program_invocation_short_name,"vrcompositor.bin")))prctl(PR_SET_NAME,"vrcompositor",0,0,0);void* lib=dlopen("/opt/quest/libvulkan_freedreno.so",RTLD_NOW|RTLD_LOCAL);if(!lib){fprintf(stderr,"Quest Turnip: %s\n",dlerror());abort();}realGet=(PFN_vkGetInstanceProcAddr)dlsym(lib,"vk_icdGetInstanceProcAddr");auto negotiate=(VkResult(*)(uint32_t*))dlsym(lib,"vk_icdNegotiateLoaderICDInterfaceVersion");uint32_t version=5;if(negotiate)negotiate(&version);}
 template<class T>T instanceFunction(const char* name){init();return reinterpret_cast<T>(realGet(activeInstance,name));}
 template<class T>T deviceFunction(VkDevice device,const char* name){if(!realDeviceGet)realDeviceGet=instanceFunction<PFN_vkGetDeviceProcAddr>("vkGetDeviceProcAddr");return reinterpret_cast<T>(realDeviceGet(device,name));}
@@ -91,7 +103,7 @@ template<class T,class H>T* object(H handle){return reinterpret_cast<T*>((uintpt
 }
 extern "C" {
 VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateInstanceExtensionProperties(const char* layer,uint32_t* count,VkExtensionProperties* output){init();auto real=(PFN_vkEnumerateInstanceExtensionProperties)realGet(VK_NULL_HANDLE,"vkEnumerateInstanceExtensionProperties");uint32_t n=0;VkResult result=real(layer,&n,nullptr);if(result!=VK_SUCCESS)return result;std::vector<VkExtensionProperties> values(n);result=real(layer,&n,values.data());if(result!=VK_SUCCESS)return result;const char* names[]={"VK_KHR_surface","VK_KHR_xcb_surface","VK_KHR_xlib_surface","VK_KHR_display","VK_EXT_direct_mode_display","VK_EXT_acquire_xlib_display","VK_EXT_display_surface_counter"};return appendExtensions(values,names,std::size(names),count,output);}
-VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo* info,const VkAllocationCallbacks* callbacks,VkInstance* instance){init();std::vector<const char*> names;for(uint32_t i=0;i<info->enabledExtensionCount;i++)if(!wsiExtension(info->ppEnabledExtensionNames[i]))names.push_back(info->ppEnabledExtensionNames[i]);VkInstanceCreateInfo copy=*info;copy.enabledExtensionCount=names.size();copy.ppEnabledExtensionNames=names.data();auto create=(PFN_vkCreateInstance)realGet(VK_NULL_HANDLE,"vkCreateInstance");VkResult result=create(&copy,callbacks,instance);if(result==VK_SUCCESS)activeInstance=*instance;return result;}
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo* info,const VkAllocationCallbacks* callbacks,VkInstance* instance){init();if(isCompositor())unlink("/run/stearlight/quest/passthrough.composition-ready");std::vector<const char*> names;for(uint32_t i=0;i<info->enabledExtensionCount;i++)if(!wsiExtension(info->ppEnabledExtensionNames[i]))names.push_back(info->ppEnabledExtensionNames[i]);VkInstanceCreateInfo copy=*info;copy.enabledExtensionCount=names.size();copy.ppEnabledExtensionNames=names.data();auto create=(PFN_vkCreateInstance)realGet(VK_NULL_HANDLE,"vkCreateInstance");VkResult result=create(&copy,callbacks,instance);if(result==VK_SUCCESS)activeInstance=*instance;return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physical,const char* layer,uint32_t* count,VkExtensionProperties* output){activePhysical=physical;uint32_t n=0;VkResult result=I(vkEnumerateDeviceExtensionProperties)(physical,layer,&n,nullptr);if(result!=VK_SUCCESS)return result;std::vector<VkExtensionProperties> values(n);result=I(vkEnumerateDeviceExtensionProperties)(physical,layer,&n,values.data());if(result!=VK_SUCCESS)return result;const char* names[]={"VK_KHR_swapchain","VK_KHR_present_id","VK_KHR_present_wait"};return appendExtensions(values,names,std::size(names),count,output);}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physical,const VkDeviceCreateInfo* info,const VkAllocationCallbacks* callbacks,VkDevice* device){activePhysical=physical;if(info->queueCreateInfoCount)activeQueueFamily=info->pQueueCreateInfos[0].queueFamilyIndex;std::vector<const char*> names;for(uint32_t i=0;i<info->enabledExtensionCount;i++)if(!wsiExtension(info->ppEnabledExtensionNames[i]))names.push_back(info->ppEnabledExtensionNames[i]);for(const char* required:{"VK_EXT_external_memory_dma_buf","VK_KHR_external_memory_fd","VK_EXT_queue_family_foreign"}){bool found=false;for(const char* name:names)if(!strcmp(name,required)){found=true;break;}if(!found)names.push_back(required);}for(auto node=(const VkBaseInStructure*)info->pNext;node;node=node->pNext)fprintf(stderr,"Quest device feature structure %d\n",node->sType);VkDeviceCreateInfo copy=*info;copy.enabledExtensionCount=names.size();copy.ppEnabledExtensionNames=names.data();VkResult result=I(vkCreateDevice)(physical,&copy,callbacks,device);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateXcbSurfaceKHR(VkInstance,const VkXcbSurfaceCreateInfoKHR*,const VkAllocationCallbacks*,VkSurfaceKHR* surface){*surface=(VkSurfaceKHR)(uintptr_t)new Surface;return VK_SUCCESS;}
@@ -118,6 +130,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device,const VkSwap
 VKAPI_ATTR void VKAPI_CALL vkDestroySwapchainKHR(VkDevice,VkSwapchainKHR swap,const VkAllocationCallbacks*){delete object<Swapchain>(swap);}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSwapchainImagesKHR(VkDevice,VkSwapchainKHR handle,uint32_t* count,VkImage* images){auto swap=object<Swapchain>(handle);if(!images){*count=QUEST_GPU_BUFFERS;return VK_SUCCESS;}uint32_t n=std::min(*count,(uint32_t)QUEST_GPU_BUFFERS);memcpy(images,swap->images,n*sizeof(VkImage));*count=n;return n<QUEST_GPU_BUFFERS?VK_INCOMPLETE:VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR handle,uint64_t,VkSemaphore semaphore,VkFence fence,uint32_t* index){
+ roomViewMode=roomViewReady&&access("/run/stearlight/quest/passthrough.enabled",F_OK)==0;
  auto swap=object<Swapchain>(handle);std::lock_guard<std::mutex> guard(swap->lock);*index=swap->next++%QUEST_GPU_BUFFERS;
  swap->sampleInputPose(*index);
  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};if(semaphore){submit.signalSemaphoreCount=1;submit.pSignalSemaphores=&semaphore;}
@@ -133,20 +146,88 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSemaphore(VkDevice device,const VkSemapho
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateFence(VkDevice device,const VkFenceCreateInfo* info,const VkAllocationCallbacks* allocator,VkFence* value){VkResult result=D(vkCreateFence)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateFence: %d\n",result);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device,const VkImageCreateInfo* info,const VkAllocationCallbacks* allocator,VkImage* value){VkResult result=D(vkCreateImage)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateImage: %d\n",result);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice device,const VkMemoryAllocateInfo* info,const VkAllocationCallbacks* allocator,VkDeviceMemory* value){VkResult result=D(vkAllocateMemory)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkAllocateMemory: %d\n",result);return result;}
-VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device,VkPipelineCache cache,uint32_t count,const VkGraphicsPipelineCreateInfo* info,const VkAllocationCallbacks* allocator,VkPipeline* values){VkResult result=D(vkCreateGraphicsPipelines)(device,cache,count,info,allocator,values);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateGraphicsPipelines: %d\n",result);return result;}
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device,VkPipelineCache cache,uint32_t count,const VkGraphicsPipelineCreateInfo* info,const VkAllocationCallbacks* allocator,VkPipeline* values){
+ auto create=D(vkCreateGraphicsPipelines);VkResult result=create(device,cache,count,info,allocator,values);
+ if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateGraphicsPipelines: %d\n",result);
+ if(!isCompositor()||result!=VK_SUCCESS)return result;
+ std::lock_guard<std::mutex> guard(roomLock);
+ for(uint32_t i=0;i<count;i++){
+  RoomPipeline pipeline;std::vector<VkPipelineShaderStageCreateInfo> stages(info[i].pStages,info[i].pStages+info[i].stageCount);bool changed=false;
+  for(auto& stage:stages)if(stage.stage==VK_SHADER_STAGE_FRAGMENT_BIT){
+   auto found=roomShaders.find(stage.module);if(found==roomShaders.end())continue;
+   pipeline.background=found->second.background;
+   pipeline.stars=found->second.stars&&info[i].pDepthStencilState&&
+    info[i].pDepthStencilState->depthTestEnable&&!info[i].pDepthStencilState->depthWriteEnable;
+   if(found->second.alternate){stage.module=found->second.alternate;changed=true;}
+  }
+  if(changed){auto copy=info[i];copy.pStages=stages.data();if(copy.basePipelineIndex>=0){copy.basePipelineHandle=values[copy.basePipelineIndex];copy.basePipelineIndex=-1;}
+   VkResult alternate=create(device,cache,1,&copy,allocator,&pipeline.alternate);
+   if(alternate==VK_SUCCESS){if(!roomViewReady.exchange(true)){if(FILE* marker=fopen("/run/stearlight/quest/passthrough.composition-ready","w"))fclose(marker);fprintf(stderr,"QUEST_ROOMVIEW_COMPOSITION_READY\n");}}
+   else{pipeline.alternate=VK_NULL_HANDLE;fprintf(stderr,"Quest room-view pipeline unavailable: %d\n",alternate);}
+  }
+  if(pipeline.stars)fprintf(stderr,"QUEST_ROOMVIEW_STARS_PIPELINE_READY\n");
+  if(pipeline.background||pipeline.stars||pipeline.alternate)roomPipelines[values[i]]=pipeline;
+ }
+ return result;
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateComputePipelines(VkDevice device,VkPipelineCache cache,uint32_t count,const VkComputePipelineCreateInfo* info,const VkAllocationCallbacks* allocator,VkPipeline* values){VkResult result=D(vkCreateComputePipelines)(device,cache,count,info,allocator,values);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateComputePipelines: %d\n",result);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSemaphoreFdKHR(VkDevice device,const VkSemaphoreGetFdInfoKHR* info,int* fd){VkResult result=D(vkGetSemaphoreFdKHR)(device,info,fd);if(result<0)fprintf(stderr,"Quest Vulkan failure vkGetSemaphoreFdKHR: %d\n",result);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkImportSemaphoreFdKHR(VkDevice device,const VkImportSemaphoreFdInfoKHR* info){VkResult result=D(vkImportSemaphoreFdKHR)(device,info);if(result<0)fprintf(stderr,"Quest Vulkan failure vkImportSemaphoreFdKHR: %d\n",result);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdKHR(VkDevice device,const VkMemoryGetFdInfoKHR* info,int* fd){VkResult result=D(vkGetMemoryFdKHR)(device,info,fd);if(result<0)fprintf(stderr,"Quest Vulkan failure vkGetMemoryFdKHR: %d\n",result);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(VkDevice device,const VkSamplerCreateInfo* info,const VkAllocationCallbacks* allocator,VkSampler* value){VkResult result=D(vkCreateSampler)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateSampler: %d\n",result);return result;}
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device,const char* name);
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device,const VkShaderModuleCreateInfo* info,const VkAllocationCallbacks* callbacks,VkShaderModule* output){
+ auto create=D(vkCreateShaderModule);VkResult result=create(device,info,callbacks,output);
+ if(!isCompositor()||result!=VK_SUCCESS)return result;
+ auto code=quest::roomViewShader(info->pCode,info->codeSize/4);RoomShader shader;
+ shader.background=quest::roomViewBackgroundShader(info->pCode,info->codeSize/4);
+ shader.stars=quest::roomViewStarShader(info->pCode,info->codeSize/4);
+ if(!code.empty()){auto copy=*info;copy.pCode=code.data();copy.codeSize=code.size()*4;
+  if(create(device,&copy,callbacks,&shader.alternate)!=VK_SUCCESS)shader.alternate=VK_NULL_HANDLE;
+ }
+ if(shader.alternate||shader.background||shader.stars){std::lock_guard<std::mutex> guard(roomLock);roomShaders[*output]=shader;}
+ return result;
+}
+VKAPI_ATTR void VKAPI_CALL vkDestroyShaderModule(VkDevice device,VkShaderModule shader,const VkAllocationCallbacks* callbacks){
+ if(isCompositor()){std::lock_guard<std::mutex> guard(roomLock);auto found=roomShaders.find(shader);if(found!=roomShaders.end()){if(found->second.alternate)D(vkDestroyShaderModule)(device,found->second.alternate,callbacks);roomShaders.erase(found);}}
+ D(vkDestroyShaderModule)(device,shader,callbacks);
+}
+VKAPI_ATTR void VKAPI_CALL vkDestroyPipeline(VkDevice device,VkPipeline pipeline,const VkAllocationCallbacks* callbacks){
+ if(isCompositor()){std::lock_guard<std::mutex> guard(roomLock);auto found=roomPipelines.find(pipeline);if(found!=roomPipelines.end()){if(found->second.alternate)D(vkDestroyPipeline)(device,found->second.alternate,callbacks);roomPipelines.erase(found);}}
+ D(vkDestroyPipeline)(device,pipeline,callbacks);
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdBindPipeline(VkCommandBuffer command,VkPipelineBindPoint point,VkPipeline pipeline){
+ if(isCompositor()&&point==VK_PIPELINE_BIND_POINT_GRAPHICS){std::lock_guard<std::mutex> guard(roomLock);auto found=roomPipelines.find(pipeline);
+  roomBackgroundCommands[command]=found==roomPipelines.end()?RoomCommand{}:
+   RoomCommand{found->second.background,found->second.stars};
+  if(roomViewMode&&found!=roomPipelines.end()&&found->second.alternate)pipeline=found->second.alternate;
+ }
+ I(vkCmdBindPipeline)(command,point,pipeline);
+}
+VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass(VkCommandBuffer command,const VkRenderPassBeginInfo* info,VkSubpassContents contents){
+ auto copy=*info;std::vector<VkClearValue> clears;
+ if(roomViewMode&&info->clearValueCount){clears.assign(info->pClearValues,info->pClearValues+info->clearValueCount);
+  // The fourth word is alpha for color clears, padding for depth/stencil clears.
+  for(auto& value:clears)value.color.float32[3]=0;copy.pClearValues=clears.data();
+ }
+ I(vkCmdBeginRenderPass)(command,&copy,contents);
+}
+bool hideRoomBackground(VkCommandBuffer command,bool starDraw=false){if(!roomViewMode)return false;std::lock_guard<std::mutex> guard(roomLock);auto found=roomBackgroundCommands.find(command);return found!=roomBackgroundCommands.end()&&(found->second.background||(starDraw&&found->second.stars));}
+VKAPI_ATTR void VKAPI_CALL vkCmdDraw(VkCommandBuffer command,uint32_t vertices,uint32_t instances,uint32_t firstVertex,uint32_t firstInstance){if(!hideRoomBackground(command))I(vkCmdDraw)(command,vertices,instances,firstVertex,firstInstance);}
+VKAPI_ATTR void VKAPI_CALL vkCmdDrawIndexed(VkCommandBuffer command,uint32_t indices,uint32_t instances,uint32_t firstIndex,int32_t offset,uint32_t firstInstance){if(!hideRoomBackground(command,quest::roomViewStarDraw(indices,instances,firstIndex,offset,firstInstance)))I(vkCmdDrawIndexed)(command,indices,instances,firstIndex,offset,firstInstance);}
+VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(VkDevice device,VkCommandPool pool,uint32_t count,const VkCommandBuffer* commands){
+ if(isCompositor()){std::lock_guard<std::mutex> guard(roomLock);for(uint32_t i=0;i<count;i++)roomBackgroundCommands.erase(commands[i]);}
+ D(vkFreeCommandBuffers)(device,pool,count,commands);
+}
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance,const char* name){init();
 #define MAP(fn) if(!strcmp(name,#fn))return reinterpret_cast<PFN_vkVoidFunction>(&fn)
+ MAP(vkCreateShaderModule);MAP(vkDestroyShaderModule);MAP(vkDestroyPipeline);MAP(vkCmdBindPipeline);MAP(vkCmdBeginRenderPass);MAP(vkCmdDraw);MAP(vkCmdDrawIndexed);MAP(vkFreeCommandBuffers);
  MAP(vkGetInstanceProcAddr);MAP(vkGetPhysicalDeviceFeatures2);MAP(vkGetPhysicalDeviceFeatures2KHR);MAP(vkGetDeviceProcAddr);MAP(vkEnumerateInstanceExtensionProperties);MAP(vkCreateInstance);MAP(vkEnumerateDeviceExtensionProperties);MAP(vkCreateDevice);MAP(vkCreateXcbSurfaceKHR);MAP(vkCreateXlibSurfaceKHR);MAP(vkDestroySurfaceKHR);MAP(vkGetPhysicalDeviceXcbPresentationSupportKHR);MAP(vkGetPhysicalDeviceXlibPresentationSupportKHR);MAP(vkGetPhysicalDeviceSurfaceSupportKHR);MAP(vkGetPhysicalDeviceSurfaceCapabilitiesKHR);MAP(vkGetPhysicalDeviceSurfaceFormatsKHR);MAP(vkGetPhysicalDeviceSurfacePresentModesKHR);MAP(vkCreateSwapchainKHR);MAP(vkDestroySwapchainKHR);MAP(vkGetSwapchainImagesKHR);MAP(vkAcquireNextImageKHR);MAP(vkAcquireNextImage2KHR);MAP(vkQueuePresentKHR);MAP(vkWaitForPresentKHR);MAP(vkCreateSemaphore);MAP(vkCreateFence);MAP(vkCreateImage);MAP(vkAllocateMemory);MAP(vkCreateGraphicsPipelines);MAP(vkCreateComputePipelines);MAP(vkGetSemaphoreFdKHR);MAP(vkImportSemaphoreFdKHR);MAP(vkGetMemoryFdKHR);MAP(vkCreateSampler);
  MAP(vkGetPhysicalDeviceDisplayPropertiesKHR);MAP(vkGetPhysicalDeviceDisplayPlanePropertiesKHR);MAP(vkGetDisplayPlaneSupportedDisplaysKHR);MAP(vkGetDisplayModePropertiesKHR);MAP(vkCreateDisplayModeKHR);MAP(vkGetDisplayPlaneCapabilitiesKHR);MAP(vkCreateDisplayPlaneSurfaceKHR);MAP(vkAcquireXlibDisplayEXT);MAP(vkGetRandROutputDisplayEXT);MAP(vkReleaseDisplayEXT);MAP(vkGetPhysicalDeviceSurfaceCapabilities2EXT);
  return realGet(instance,name);
 }
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device,const char* name){
+ MAP(vkCreateShaderModule);MAP(vkDestroyShaderModule);MAP(vkDestroyPipeline);MAP(vkCmdBindPipeline);MAP(vkCmdBeginRenderPass);MAP(vkCmdDraw);MAP(vkCmdDrawIndexed);MAP(vkFreeCommandBuffers);
  MAP(vkGetDeviceProcAddr);MAP(vkCreateSwapchainKHR);MAP(vkDestroySwapchainKHR);MAP(vkGetSwapchainImagesKHR);MAP(vkAcquireNextImageKHR);MAP(vkAcquireNextImage2KHR);MAP(vkQueuePresentKHR);MAP(vkWaitForPresentKHR);MAP(vkCreateSemaphore);MAP(vkCreateFence);MAP(vkCreateImage);MAP(vkAllocateMemory);MAP(vkCreateGraphicsPipelines);MAP(vkCreateComputePipelines);MAP(vkGetSemaphoreFdKHR);MAP(vkImportSemaphoreFdKHR);MAP(vkGetMemoryFdKHR);MAP(vkCreateSampler);
  return deviceFunction<PFN_vkVoidFunction>(device,name);
 }

@@ -21,11 +21,20 @@ the owner-death test; it currently requires ADB to remain connected. SteamVR
 initializes with the Quest driver and displays its native loading animation
 in both eyes. The native Steam sign-in panel, separate left dock, and bottom
 dock are now visible in the headset, and both Touch lasers respond to triggers.
+The Quest 2 render models use Valve's `openxr_grip` component transform to
+convert tracked grip poses to the model origin for both hands.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
 layer, until the main panel and bottom dock are ready. Display buffers use
-explicit Vulkan ownership transfers before Android reads them. Held images
-keep their OpenXR pose; the pose at receipt still approximates the Linux
-compositor's rendering pose, so full motion stability remains under validation.
+explicit Vulkan ownership transfers before Android reads them. Each image
+carries the input eye poses sampled when Linux acquires it, and held images
+keep those poses. These samples approximate SteamVR's final asynchronous
+rendering pose; full motion stability remains under validation.
+
+Dashboard readiness lasts for the VR session, including page changes that
+temporarily replace browser textures. These changes do not replay startup.
+Linux buffers are acknowledged even when OpenXR skips drawing or stops its
+session temporarily. The HMD stays connected during visibility changes, so
+removing the headset for phone sign-in does not simulate unplugging it.
 
 The ADB launcher also publishes the app's real kernel socket rows into the
 guest because Android denies application access to `/proc/net`. This helper
@@ -35,9 +44,21 @@ Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. A BlueZ LE advertising
 bridge passes Steam's original nearby-login advertisement to Android's actual
 radio and reports success only after its callback. It does not implement
-Bluetooth pairing, GATT servers, or audio. NetworkManager and UPower services
-are still missing. Touch
-battery levels are unknown and are not invented.
+Bluetooth pairing, GATT servers, or Bluetooth audio. Linux PulseAudio sends
+48 kHz stereo PCM to Android's AudioTrack and receives the Quest microphone
+through AudioRecord as a 48 kHz mono source. Allow microphone access in the
+headset; denying it leaves speaker output available. Both streams stop when
+the app loses OpenXR or Android audio focus. No microphone recordings are saved.
+The VR Store browser starts on the Store's real origin to avoid CEF rejecting
+the first navigation from its empty data page. A guard for the verified CEF
+binary handles a failed udev monitor without dereferencing it. Android denies
+that monitor's netlink socket. A second guard skips empty shared texture
+entries during SteamVR's browser cleanup. Both guards require an exact binary
+checksum; unknown binaries remain unchanged. Touch input uses OpenXR.
+The Steam adapters are reapplied to the
+installed Steam files after updates, preserving Valve's matching UI chunks.
+NetworkManager and UPower services are still missing. Touch battery levels
+are unknown and are not invented.
 
 ## Build
 
@@ -113,6 +134,32 @@ adb shell run-as net.stearlight.quest tail -n 30 files/logs/linux.log
 adb logcat -s StearlightXR StearlightGPU StearlightQuest
 ```
 
-For a passthrough check, create `files/state/passthrough.enabled` using
-`adb shell run-as net.stearlight.quest touch`; remove it to return to Linux
-rendering. Bluetooth sign-in and sustained 120 Hz are not verified.
+When OpenXR reports Quest room-view support,
+the driver enables SteamVR's native bottom-dock room-view action. A small
+platform adapter forwards that action to Quest's camera layer while preserving
+Valve's event handlers and UI.
+
+The dashboard, docks, controller graphics, and lasers stay over the real room.
+The Turnip adapter selects a separate system-layer composition pipeline for
+room view, omits SteamVR's virtual sky, and preserves the layer's alpha. The
+native construct floor is hidden during room view and restored afterward.
+The shipped star mesh is excluded using its exact shader, depth state and draw
+range; controller, laser and panel draws are preserved.
+Normal VR uses the original SteamVR pipelines.
+
+For a developer toggle check, use:
+
+```sh
+adb shell run-as net.stearlight.quest touch files/state/passthrough.enabled
+adb shell run-as net.stearlight.quest cat files/state/passthrough.status
+adb shell run-as net.stearlight.quest rm files/state/passthrough.enabled
+```
+
+The last command restores VR. `passthrough.supported` is created only after
+OpenXR confirms support and creates the camera layer. The camera also waits
+for the compatible system-layer pipeline and dashboard textures. Boot and
+loading animations always use an opaque black background. The camera pauses
+when loading or when the OpenXR session stops. Camera images stay in Quest's
+compositor and are not exposed to Linux.
+
+Bluetooth sign-in and sustained 120 Hz are not verified.
