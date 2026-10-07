@@ -1,0 +1,9 @@
+# Private PCM sockets connect Linux PulseAudio to Android AudioTrack/AudioRecord.
+load-module module-native-protocol-unix
+load-module module-null-sink sink_name=quest_output rate=48000 channels=2 format=s16le sink_properties=device.description=Quest_Speakers
+load-module module-null-sink sink_name=quest_capture rate=48000 channels=1 format=s16le sink_properties=device.description=Quest_Microphone_Input
+load-module module-remap-source master=quest_capture.monitor source_name=quest_microphone channels=1 source_properties="device.description=Quest_Microphone device.class=sound"
+set-default-sink quest_output
+set-default-source quest_microphone
+load-module module-simple-protocol-unix socket=/run/stearlight/quest/audio-output.sock record=true playback=false source=quest_output.monitor rate=48000 channels=2 format=s16le
+load-module module-simple-protocol-unix socket=/run/stearlight/quest/audio-input.sock record=false playback=true sink=quest_capture rate=48000 channels=1 format=s16le

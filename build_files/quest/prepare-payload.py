@@ -233,6 +233,7 @@ def main():
         "export STEARLIGHT_FAKE_TRACKING=1", "export STEARLIGHT_FAKE_TRACKING=0"))
     (quest / "start-session.sh").write_text((linux / "start-session.sh").read_text())
     shutil.copyfile(linux / "system-bus.conf", quest / "system-bus.conf")
+    shutil.copyfile(linux / "audio.pa", quest / "audio.pa")
     webhelper = overlay / "usr/local/bin/stearlight-frame-vrwebhelper"
     webhelper.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(linux / "webhelper-launcher.sh", webhelper)
@@ -242,6 +243,21 @@ def main():
     (overlay / system_ui).parent.mkdir(parents=True, exist_ok=True)
     (overlay / system_ui).write_bytes((linux / "roomview-bridge.js").read_bytes() + b"\n" +
                                     (root / system_ui).read_bytes())
+    shutil.copyfile(linux / "store-browser-bridge.js", quest / "store-browser-bridge.js")
+    shutil.copyfile(linux / "prepare-store-browser.sh", quest / "prepare-store-browser.sh")
+    shutil.copyfile(linux / "prepare-cef.sh", quest / "prepare-cef.sh")
+    shutil.copyfile(linux / "prepare-vrclient.sh", quest / "prepare-vrclient.sh")
+    shutil.copyfile(REPO / "system_files/usr/local/libexec/stearlight/frame-steam-ipc",
+                    quest / "frame-steam-ipc")
+    run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra",
+        linux / "store-browser-watch.c", "-o", quest / "store-browser-watch")
+    shutil.copyfile(root / "usr/bin/lsof", quest / "lsof")
+    (quest / "lsof").chmod(0o755)
+    shutil.copyfile(linux / "lsof-launcher.sh", overlay / "usr/bin/lsof")
+    (overlay / "usr/bin/lsof").chmod(0o755)
+    # Drop the generated library from older cached overlays. Startup adapts
+    # the installed version instead of replacing Valve's matching UI files.
+    (overlay / "opt/steam/steamui/library.js").unlink(missing_ok=True)
     for name in ["frame-session", "start-session.sh"]:
         (quest / name).chmod(0o755)
     overlay_archive(overlay, assets / "quest-overlay.bin")
@@ -276,6 +292,8 @@ def main():
         for name in ["quest_bridge.h", "gpu_bridge.h"]:
             bundle.write(REPO / "packages/quest-runtime/app/src/main/cpp" / name,
                          "packages/quest-runtime/app/src/main/cpp/" + name)
+        bundle.write(REPO / "system_files/usr/local/libexec/stearlight/frame-steam-ipc",
+                     "system_files/usr/local/libexec/stearlight/frame-steam-ipc")
     archive = args.rootfs_archive
     if archive is None:
         archive = work / "rootfs.tar.gz"

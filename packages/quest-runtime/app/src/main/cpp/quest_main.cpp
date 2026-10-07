@@ -135,8 +135,10 @@ struct Runtime {
    std::string file=directory+"/model-"+(strstr(name,"left")?std::string("left"):strstr(name,"right")?std::string("right"):std::to_string(p.path))+".glb";FILE* output=fopen(file.c_str(),"wb");if(output){fwrite(bytes.data(),1,bytes.size(),output);fclose(output);LOG("Runtime render model %s saved: %zu bytes, model %s",name,bytes.size(),props.modelName);}
   }
  }
+ void audioFocus(bool focused){JNIEnv* env;app->activity->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6);jclass type=env->GetObjectClass(app->activity->clazz);jmethodID method=env->GetMethodID(type,"onXrAudioFocus","(Z)V");env->CallVoidMethod(app->activity->clazz,method,focused);if(env->ExceptionCheck()){env->ExceptionDescribe();env->ExceptionClear();}env->DeleteLocalRef(type);}
  bool events(){
   XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};while(xrPollEvent(instance,&event)==XR_SUCCESS){if(event.type==XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED){auto& state=*reinterpret_cast<XrEventDataSessionStateChanged*>(&event);LOG("Session state %d",state.state);visible=state.state==XR_SESSION_STATE_VISIBLE||state.state==XR_SESSION_STATE_FOCUSED;focused=state.state==XR_SESSION_STATE_FOCUSED;
+   audioFocus(focused);
    if(state.state==XR_SESSION_STATE_READY&&!running){XrSessionBeginInfo begin{XR_TYPE_SESSION_BEGIN_INFO};begin.primaryViewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;XR(xrBeginSession(session,&begin));running=true;if(setPerformance){XR(setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));XR(setPerformance(session,XR_PERF_SETTINGS_DOMAIN_GPU_EXT,XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));}if(requestRate)XR(requestRate(session,120));}
    if(state.state==XR_SESSION_STATE_FOCUSED&&requestRate){XR(requestRate(session,120));XR(getRate(session,&tracking->refresh_hz));LOG("Focused display refresh %.0f Hz",tracking->refresh_hz);}
    if(state.state==XR_SESSION_STATE_STOPPING&&running){camera.suspend();XR(xrEndSession(session));running=false;}

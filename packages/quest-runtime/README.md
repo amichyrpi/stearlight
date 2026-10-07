@@ -28,7 +28,8 @@ carries the input eye poses sampled when Linux acquires it, and held images
 keep those poses. These samples approximate SteamVR's final asynchronous
 rendering pose; full motion stability remains under validation.
 
-Hiding the dashboard keeps its readiness marker while its textures exist.
+Dashboard readiness lasts for the VR session, including page changes that
+temporarily replace browser textures. These changes do not replay startup.
 Linux buffers are acknowledged even when OpenXR skips drawing or stops its
 session temporarily. The HMD stays connected during visibility changes, so
 removing the headset for phone sign-in does not simulate unplugging it.
@@ -41,9 +42,21 @@ Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. A BlueZ LE advertising
 bridge passes Steam's original nearby-login advertisement to Android's actual
 radio and reports success only after its callback. It does not implement
-Bluetooth pairing, GATT servers, or audio. NetworkManager and UPower services
-are still missing. Touch
-battery levels are unknown and are not invented.
+Bluetooth pairing, GATT servers, or Bluetooth audio. Linux PulseAudio sends
+48 kHz stereo PCM to Android's AudioTrack and receives the Quest microphone
+through AudioRecord as a 48 kHz mono source. Allow microphone access in the
+headset; denying it leaves speaker output available. Both streams stop when
+the app loses OpenXR or Android audio focus. No microphone recordings are saved.
+The VR Store browser starts on the Store's real origin to avoid CEF rejecting
+the first navigation from its empty data page. A guard for the verified CEF
+binary handles a failed udev monitor without dereferencing it. Android denies
+that monitor's netlink socket. A second guard skips empty shared texture
+entries during SteamVR's browser cleanup. Both guards require an exact binary
+checksum; unknown binaries remain unchanged. Touch input uses OpenXR.
+The Steam adapters are reapplied to the
+installed Steam files after updates, preserving Valve's matching UI chunks.
+NetworkManager and UPower services are still missing. Touch battery levels
+are unknown and are not invented.
 
 ## Build
 

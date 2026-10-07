@@ -69,8 +69,6 @@ int main() {
                 overlays->GetOverlayTextureSize(bar, &barWidth, &barHeight) == vr::VROverlayError_None &&
                 barWidth && barHeight;
             steamReady = steamAvailable && overlays->IsOverlayVisible(steamOverlay) && overlays->IsOverlayVisible(bar);
-        } else {
-            steamRequested = false;
         }
         if (overlays && overlays->FindOverlay("system.systemui", &overlay) == vr::VROverlayError_None) {
             if (!dashboardRequested) {
@@ -89,14 +87,11 @@ int main() {
                     std::fflush(stdout);
                 }
             }
-        } else if (dashboardRequested || dashboardReady) {
-            dashboardRequested = dashboardReady = false;
-            unlink(ready);
         }
-        if (!steamAvailable && dashboardReady) {
-            dashboardReady = false;
-            unlink(ready);
-        }
+        // Readiness belongs to this VR session, not a browser page. Valve
+        // recreates overlays during navigation and handles client errors in
+        // its own dashboard. Re-requesting Home here interrupts navigation;
+        // removing readiness would also replay Android's startup animation.
         usleep(200000);
     }
     vr::VR_Shutdown();

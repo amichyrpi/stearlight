@@ -24,11 +24,13 @@ public final class QuestActivity extends NativeActivity {
  private int batteryPercent=-1;
  private boolean charging;
  private BluetoothBridge bluetoothBridge;
+ private AudioBridge audioBridge;
  private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));int status=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=status==BatteryManager.BATTERY_STATUS_CHARGING||status==BatteryManager.BATTERY_STATUS_FULL;}};
  @Override public void onCreate(Bundle state){
   super.onCreate(state);
   registerReceiver(batteryReceiver,new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-  List<String> missing=new ArrayList<>();for(String p:new String[]{Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_ADVERTISE})if(checkSelfPermission(p)!=PackageManager.PERMISSION_GRANTED)missing.add(p);
+  audioBridge=new AudioBridge(this,new File(getStateDirectory()));
+  List<String> missing=new ArrayList<>();for(String p:new String[]{Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_ADVERTISE,Manifest.permission.RECORD_AUDIO})if(checkSelfPermission(p)!=PackageManager.PERMISSION_GRANTED)missing.add(p);
   if(!missing.isEmpty())requestPermissions(missing.toArray(new String[0]),7);
   workers.scheduleWithFixedDelay(this::writeDeviceState,0,1,TimeUnit.SECONDS);
   bluetoothBridge=new BluetoothBridge(this,new File(getStateDirectory()));
@@ -36,6 +38,10 @@ public final class QuestActivity extends NativeActivity {
   workers.execute(this::startLinux);
  }
  public String getStateDirectory(){File state=new File(getFilesDir(),"state");state.mkdirs();return state.toString();}
+ @Override public void onResume(){super.onResume();if(audioBridge!=null)audioBridge.setResumed(true);}
+ @Override public void onPause(){if(audioBridge!=null)audioBridge.setResumed(false);super.onPause();}
+ public void onXrAudioFocus(boolean focused){runOnUiThread(()->{if(!closing&&audioBridge!=null)audioBridge.setXrFocused(focused);});}
+ @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(audioBridge!=null)audioBridge.permissionsChanged();}
  private BootAnimation bootAnimation;
  public android.graphics.Bitmap getBootBitmap(){if(bootAnimation==null)bootAnimation=new BootAnimation(getAssets());return bootAnimation.frame();}
  public boolean bootComplete(){if(bootAnimation==null)bootAnimation=new BootAnimation(getAssets());return bootAnimation.bootComplete();}
@@ -81,5 +87,5 @@ public final class QuestActivity extends NativeActivity {
  }
  private InputStream rootfsStream()throws IOException {List<InputStream> parts=new ArrayList<>();try(BufferedReader list=new BufferedReader(new InputStreamReader(getAssets().open("rootfs.list"),StandardCharsets.US_ASCII))){String name;while((name=list.readLine())!=null){if(!name.matches("rootfs/part-[0-9]{3}\\.bin"))throw new IOException("Invalid rootfs part name");parts.add(getAssets().open(name));}}catch(IOException error){for(InputStream part:parts)part.close();throw error;}if(parts.isEmpty())throw new IOException("Empty rootfs payload");return new SequenceInputStream(Collections.enumeration(parts));}
  private void removeIncomplete(File path)throws IOException {File base=new File(getFilesDir(),"rootfs-install");String target=path.getAbsolutePath();if(!target.equals(base.getAbsolutePath())&&!target.startsWith(base.getAbsolutePath()+File.separator))throw new IOException("Invalid staging path");if(java.nio.file.Files.isSymbolicLink(path.toPath())){java.nio.file.Files.delete(path.toPath());return;}if(path.isDirectory()){File[] entries=path.listFiles();if(entries==null)throw new IOException("Cannot read incomplete installation");for(File entry:entries)removeIncomplete(entry);}if(path.exists()&&!path.delete())throw new IOException("Cannot remove incomplete installation");}
- @Override public void onDestroy(){closing=true;if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);if(linux!=null)linux.destroy();workers.shutdownNow();super.onDestroy();}
+ @Override public void onDestroy(){closing=true;if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);if(linux!=null)linux.destroy();workers.shutdownNow();super.onDestroy();}
 }

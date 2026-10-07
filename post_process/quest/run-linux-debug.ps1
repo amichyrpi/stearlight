@@ -16,10 +16,10 @@ if(!$SkipRestart){
  # run-as processes started by adbd survive Activity force-stop. Remove only
  # this package's Linux runtime processes before starting another session.
  $appUid=(Run-Adb @('shell','run-as',$package,'id','-u')).Trim()
- $linuxNames=@('libproot_exec.so','proot','vrserver','vrcompositor','vrdashboard',
-   'vrwebhelper_main','vrwebhelper','steam','steamwebhelper','Xvfb','dbus-daemon','runtime-monitor','bluetooth-bridg','bash')
  foreach($line in (Run-Adb @('shell','ps','-A','-o','UID,PID,NAME'))){
-  if($line -match '^\s*(\d+)\s+(\d+)\s+(\S+)\s*$' -and $Matches[1] -eq $appUid -and $Matches[3] -in $linuxNames){
+  # CEF children can rename themselves to "exe" or thread names. This UID
+  # belongs only to our package; force-stop has already closed its Activity.
+  if($line -match '^\s*(\d+)\s+(\d+)\s+(\S+)\s*$' -and $Matches[1] -eq $appUid){
    $linuxPid=$Matches[2]
    # A tracer's death can remove its children before we reach their ps rows.
    Run-Adb @('shell',"run-as $package /system/bin/sh -c 'kill -KILL $linuxPid 2>/dev/null || true'") | Out-Null

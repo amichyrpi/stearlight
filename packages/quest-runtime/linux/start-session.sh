@@ -31,6 +31,12 @@ system_bus_pid=$(dbus-daemon --config-file=/opt/quest/system-bus.conf --fork --p
 /opt/quest/bluetooth-bridge >/tmp/quest-bluetooth.log 2>&1 &
 bluetooth_pid=$!
 export DBUS_SESSION_BUS_ADDRESS=unix:path="$XDG_RUNTIME_DIR/bus"
+export PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native
+export PULSE_SINK=quest_output PULSE_SOURCE=quest_microphone
+export PULSE_LATENCY_MSEC=30
+pulseaudio -n --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
+ --log-target=stderr --file=/opt/quest/audio.pa >/tmp/quest-audio.log 2>&1 &
+audio_pid=$!
 mkdir -p /var/lib/xkb
 xkbcomp -version
 printf '%s\n' 'xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xkb_types { include "complete" }; xkb_compatibility { include "complete" }; xkb_symbols { include "pc+us+inet(evdev)" }; };' | xkbcomp -w 0 -xkm - /tmp/quest-keymap.xkm
@@ -39,7 +45,13 @@ printf '%s\n' 'xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xk
 Xvfb :0 -screen 0 3664x1920x24 -xkbdir /opt/frame-gamescope/share/X11/xkb -ac -nolisten tcp -noreset > /tmp/xvfb.log 2>&1 &
 xvfb_pid=$!
 monitor_pid=
-trap 'kill ${monitor_pid:+"$monitor_pid"} "$bluetooth_pid" "$xvfb_pid" "$dbus_pid" "$system_bus_pid" 2>/dev/null || true' EXIT
+store_watch_pid=
+trap 'kill ${monitor_pid:+"$monitor_pid"} ${store_watch_pid:+"$store_watch_pid"} "$audio_pid" "$bluetooth_pid" "$xvfb_pid" "$dbus_pid" "$system_bus_pid" 2>/dev/null || true' EXIT
+for attempt in $(seq 1 50);do
+ if pactl info >/dev/null 2>&1;then echo STEARLIGHT_QUEST_AUDIO_READY;break;fi
+ if ! kill -0 "$audio_pid" 2>/dev/null;then cat /tmp/quest-audio.log >&2;break;fi
+ sleep .1
+done
 for attempt in $(seq 1 100);do
  if xset q >/dev/null 2>&1;then break;fi
  if ! kill -0 "$xvfb_pid" 2>/dev/null;then cat /tmp/xvfb.log;exit 1;fi
@@ -53,6 +65,7 @@ VK_ICD_FILENAMES=/opt/quest/quest_icd.json /opt/quest/glx-probe
 export VR_PATHREG_OVERRIDE="$HOME/.config/openvr/openvrpaths.vrpath"
 export VR_CONFIG_PATH="$HOME/.steam/steam/config"
 mkdir -p "$HOME/.config/openvr" "$VR_CONFIG_PATH"
+/bin/sh /opt/quest/prepare-vrclient.sh || true
 /usr/local/bin/stearlight-steamvr-native prepare
 /opt/steamvr/bin/linuxarm64/vrpathreg removedriver /opt/steamvr/drivers/stearlight-fake || true
 /opt/steamvr/bin/linuxarm64/vrpathreg adddriver /opt/quest/stearlight-quest
@@ -68,7 +81,15 @@ export STEARLIGHT_GAMESCOPE_VK_ICD=/opt/quest/turnip_icd.json
 export VK_ICD_FILENAMES=/opt/quest/turnip_icd.json
 # The adapter supplies Valve's required surface extension discovery; ANGLE
 # renders offscreen. Only vrcompositor may create an OpenXR display swapchain.
-export STEAM_EXTRA_ARGS="${STEAM_EXTRA_ARGS:-} -cef-use-vulkan"
+# Adapt the installed UI rather than copying a library from another version.
+/bin/sh /opt/quest/prepare-store-browser.sh
+/bin/sh /opt/quest/prepare-cef.sh || true
+/bin/sh /opt/quest/frame-steam-ipc || true
+/opt/quest/store-browser-watch >/tmp/quest-store-browser.log 2>&1 &
+store_watch_pid=$!
+# The APK verifies its rootfs payload. Steam's optional repair pass would undo
+# the VR Store-origin adapter before its browser starts.
+export STEAM_EXTRA_ARGS="${STEAM_EXTRA_ARGS:-} -cef-use-vulkan -noverifyfiles"
 export STEARLIGHT_FAKE_TRACKING=0
 export STEARLIGHT_QUEST_RUNTIME=1
 printf '%s' 'Starting SteamVR and Steam' >/run/stearlight/quest/linux-status
