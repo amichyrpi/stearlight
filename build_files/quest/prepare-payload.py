@@ -166,8 +166,11 @@ def main():
     parser.add_argument("--work", type=Path, required=True, help="Linux build/cache directory")
     parser.add_argument("--output", type=Path, required=True, help="New Android payload directory")
     parser.add_argument("--rootfs-archive", type=Path, help="Reuse an existing clean rootfs.tar.gz")
+    parser.add_argument("--android-ndk", type=Path, required=True, help="Linux Android NDK for the standalone PRoot adapter")
     args = parser.parse_args()
     root, work, output = (path.resolve() for path in (args.root, args.work, args.output))
+    if not (args.android_ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang").is_file():
+        parser.error("--android-ndk must contain the Linux Android NDK toolchain")
     if not (root / "opt/steam/steamrtarm64/steam").is_file():
         parser.error("--root must be the clean ARM64 Frame rootfs")
     if output.exists() and any(output.iterdir()):
@@ -209,6 +212,8 @@ def main():
         "-o", driver / "bin/linuxarm64/driver_stearlight-quest.so")
     for name, libs in [("gpu-probe", ["-ldl"]), ("angle-probe", ["-ldl"]), ("glx-probe", ["-ldl"]), ("ipc-probe", ["-pthread"])]:
         run("aarch64-linux-gnu-gcc", "-O2", linux / f"{name}.c", *libs, "-o", quest / name)
+    run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
+        linux / "socket-report.c", "-ldl", "-o", quest / "libquest_socket.so")
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
@@ -246,6 +251,9 @@ def main():
     shutil.copyfile(linux / "store-browser-bridge.js", quest / "store-browser-bridge.js")
     shutil.copyfile(linux / "prepare-store-browser.sh", quest / "prepare-store-browser.sh")
     shutil.copyfile(linux / "prepare-cef.sh", quest / "prepare-cef.sh")
+    shutil.copyfile(linux / "prepare-frame-controls.sh", quest / "prepare-frame-controls.sh")
+    shutil.copyfile(linux / "steamwebhelper-launcher.sh", quest / "steamwebhelper-launcher.sh")
+    shutil.copyfile(linux / "cef-arguments.sh", quest / "cef-arguments.sh")
     shutil.copyfile(linux / "prepare-vrclient.sh", quest / "prepare-vrclient.sh")
     shutil.copyfile(REPO / "system_files/usr/local/libexec/stearlight/frame-steam-ipc",
                     quest / "frame-steam-ipc")
@@ -253,8 +261,8 @@ def main():
         linux / "store-browser-watch.c", "-o", quest / "store-browser-watch")
     shutil.copyfile(root / "usr/bin/lsof", quest / "lsof")
     (quest / "lsof").chmod(0o755)
-    shutil.copyfile(linux / "lsof-launcher.sh", overlay / "usr/bin/lsof")
-    (overlay / "usr/bin/lsof").chmod(0o755)
+    run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror",
+        linux / "lsof-launcher.c", "-o", overlay / "usr/bin/lsof")
     # Drop the generated library from older cached overlays. Startup adapts
     # the installed version instead of replacing Valve's matching UI files.
     (overlay / "opt/steam/steamui/library.js").unlink(missing_ok=True)
@@ -270,8 +278,9 @@ def main():
     for source, name in [("bin/proot", "libproot_exec.so"), ("libexec/proot/loader", "libproot_loader.so"),
                           ("lib/libtalloc.so.2.5.0", "libtalloc.so"), ("lib/libandroid-shmem.so", "libandroid-shmem.so")]:
         shutil.copyfile(prefix / source, jni / name)
-    run("patchelf", "--replace-needed", "libtalloc.so.2", "libtalloc.so", "--set-rpath", "$ORIGIN",
-        jni / "libproot_exec.so")
+    run(sys.executable, REPO / "build_files/quest/build-proot.py",
+        "--archive", fetch(LOCK["sources"]["proot"], downloads), "--prefix", prefix,
+        "--android-ndk", args.android_ndk.resolve(), "--output", jni / "libproot_exec.so")
     headers = output / "include/openxr"
     headers.mkdir(parents=True, exist_ok=True)
     for name, spec in LOCK["openxr"].items():
@@ -289,9 +298,13 @@ def main():
         for source in linux.glob("*"):
             if source.is_file():
                 bundle.write(source, "packages/quest-runtime/linux/" + source.name)
-        for name in ["quest_bridge.h", "gpu_bridge.h"]:
-            bundle.write(REPO / "packages/quest-runtime/app/src/main/cpp" / name,
-                         "packages/quest-runtime/app/src/main/cpp/" + name)
+        for source in (REPO / "packages/quest-runtime/proot").glob("*"):
+            if source.is_file():
+                bundle.write(source, "packages/quest-runtime/proot/" + source.name)
+        for directory in ["packages/quest-runtime/app/src", "packages/quest-runtime/tests"]:
+            for source in (REPO / directory).rglob("*"):
+                if source.is_file():
+                    bundle.write(source, source.relative_to(REPO))
         bundle.write(REPO / "system_files/usr/local/libexec/stearlight/frame-steam-ipc",
                      "system_files/usr/local/libexec/stearlight/frame-steam-ipc")
     archive = args.rootfs_archive

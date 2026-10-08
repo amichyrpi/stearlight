@@ -14,8 +14,8 @@ final class RootfsArchive {
   try{return Long.parseLong(value,8);}catch(NumberFormatException e){throw new IOException("Invalid tar number",e);}
  }
  private static String text(byte[] header,int offset,int length){int end=offset;while(end<offset+length&&header[end]!=0)end++;return new String(header,offset,end-offset,StandardCharsets.UTF_8);}
- private static void readFully(InputStream in,byte[] bytes) throws IOException {int n=0;while(n<bytes.length){int got=in.read(bytes,n,bytes.length-n);if(got<0)throw new EOFException("Incomplete rootfs archive");n+=got;}}
- private static void copy(InputStream in,OutputStream out,long count) throws IOException {byte[] bytes=new byte[131072];while(count>0){int n=in.read(bytes,0,(int)Math.min(bytes.length,count));if(n<0)throw new EOFException("Incomplete rootfs file");if(out!=null)out.write(bytes,0,n);count-=n;}}
+ private static void readFully(InputStream in,byte[] bytes) throws IOException {int n=0;while(n<bytes.length){if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("Rootfs installation cancelled");int got=in.read(bytes,n,bytes.length-n);if(got<0)throw new EOFException("Incomplete rootfs archive");n+=got;}}
+ private static void copy(InputStream in,OutputStream out,long count) throws IOException {byte[] bytes=new byte[131072];while(count>0){if(Thread.currentThread().isInterrupted())throw new InterruptedIOException("Rootfs installation cancelled");int n=in.read(bytes,0,(int)Math.min(bytes.length,count));if(n<0)throw new EOFException("Incomplete rootfs file");if(out!=null)out.write(bytes,0,n);count-=n;}}
  private static String safeName(String name) throws IOException {
   while(name.startsWith("./"))name=name.substring(2);
   if(name.startsWith("/"))throw new IOException("Absolute archive path");

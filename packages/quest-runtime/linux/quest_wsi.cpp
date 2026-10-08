@@ -205,6 +205,16 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBindPipeline(VkCommandBuffer command,VkPipelineB
  I(vkCmdBindPipeline)(command,point,pipeline);
 }
 VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass(VkCommandBuffer command,const VkRenderPassBeginInfo* info,VkSubpassContents contents){
+ // SteamVR splits each eye's scene into passes which reuse color and depth
+ // attachments. Make those writes visible before Turnip begins the next pass;
+ // stale attachment data otherwise leaves holes and trails in the right eye.
+ if(isCompositor()){
+  VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  barrier.srcAccessMask=VK_ACCESS_MEMORY_WRITE_BIT;
+  barrier.dstAccessMask=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT;
+  I(vkCmdPipelineBarrier)(command,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,0,1,&barrier,0,nullptr,0,nullptr);
+ }
  auto copy=*info;std::vector<VkClearValue> clears;
  if(roomViewMode&&info->clearValueCount){clears.assign(info->pClearValues,info->pClearValues+info->clearValueCount);
   // The fourth word is alpha for color clears, padding for depth/stencil clears.

@@ -52,7 +52,7 @@ int main() {
         vr::VROverlayHandle_t overlay;
         auto* overlays = vr::VROverlay();
         vr::VROverlayHandle_t steamOverlay;
-        bool steamReady = false, steamAvailable = false;
+        bool steamAvailable = false;
         if (overlays && overlays->FindOverlay("valve.steam.gamepadui.main", &steamOverlay) == vr::VROverlayError_None) {
             uint32_t width = 0, height = 0;
             bool hasTexture = overlays->GetOverlayTextureSize(steamOverlay, &width, &height) == vr::VROverlayError_None && width && height;
@@ -68,7 +68,6 @@ int main() {
                 overlays->FindOverlay("valve.steam.gamepadui.bar", &bar) == vr::VROverlayError_None &&
                 overlays->GetOverlayTextureSize(bar, &barWidth, &barHeight) == vr::VROverlayError_None &&
                 barWidth && barHeight;
-            steamReady = steamAvailable && overlays->IsOverlayVisible(steamOverlay) && overlays->IsOverlayVisible(bar);
         }
         if (overlays && overlays->FindOverlay("system.systemui", &overlay) == vr::VROverlayError_None) {
             if (!dashboardRequested) {
@@ -78,7 +77,11 @@ int main() {
                 std::fflush(stdout);
             }
             uint32_t width = 0, height = 0;
-            if (!dashboardReady && steamReady && overlays->IsDashboardVisible() && overlays->IsOverlayVisible(overlay) &&
+            // Frame embeds the Steam textures in its scene graph. Their direct
+            // overlay visibility can be false while the panels are rendered.
+            // Readiness tracks available textures so hiding the dashboard
+            // during startup cannot leave Android's loading loop on top.
+            if (!dashboardReady && steamAvailable &&
                 overlays->GetOverlayTextureSize(overlay, &width, &height) == vr::VROverlayError_None && width && height) {
                 if (FILE* marker = std::fopen(ready, "w")) {
                     std::fclose(marker);
