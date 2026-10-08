@@ -14,13 +14,25 @@ The eye buffers
 are 1832 × 1920 each. The app requests
 120 Hz; the connected headset has so far reported 72 Hz.
 
-**This is not yet a standalone Steam Frame APK.** Android's ordinary app
-syscall policy blocks Linux robust futex registration. SteamVR needs that
-IPC contract. The debug launcher inherits ADB's syscall policy and passes
-the owner-death test; it currently requires ADB to remain connected. SteamVR
-initializes with the Quest driver and displays its native loading animation
-in both eyes. The native Steam sign-in panel, separate left dock, and bottom
-dock are now visible in the headset, and both Touch lasers respond to triggers.
+Launch **Stearlight OS** from the Quest app library after installing the APK.
+It installs the bundled rootfs and starts Linux, SteamVR, and Steam itself.
+The PC launcher and an ADB connection are optional developer tools. First
+installation takes longer while the rootfs is extracted; later launches reuse
+it and preserve Steam's account data.
+
+The app's PRoot adapter tracks real guest robust-mutex lists and handles owner
+death, including an owner killed while another process is waiting. It handles
+Android's inherited syscall traps while retaining syscall acceleration. Shared
+memory uses anonymous memfd files inside the session's IPC namespace. Browser
+launchers avoid zygote and separate audio service processes to reduce Android's
+child-process count. Network and GPU services remain separate processes for
+Steam's browser ownership checks and shared GPU textures.
+
+Steam's native sign-in panel, separate left dock, bottom dock, and Touch lasers
+are supplied by Valve's runtime.
+CPU-painted move and resize controls use Valve's explicit atlas bounds on Quest;
+embedded scanline coordinates otherwise display gray blocks or unrelated text.
+The adapter checks the matching UI code and preserves unknown runtime versions.
 The Quest 2 render models use Valve's `openxr_grip` component transform to
 convert tracked grip poses to the model origin for both hands.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
@@ -38,9 +50,11 @@ Linux buffers are acknowledged even when OpenXR skips drawing or stops its
 session temporarily. The HMD stays connected during visibility changes, so
 removing the headset for phone sign-in does not simulate unplugging it.
 
-The ADB launcher also publishes the app's real kernel socket rows into the
-guest because Android denies application access to `/proc/net`. This helper
-runs only with the developer launcher and excludes other apps' socket rows.
+The app publishes its actual loopback socket endpoints, inodes, and UIDs into
+the guest because Android denies app access to `/proc/net`. Linux passes real
+socket descriptors to an app-owned registry; kernel credentials and the
+sender's descriptor are checked before publishing a row. No host socket-table
+helper is required.
 Steam's CEF owner query reads those socket inodes and the actual process
 descriptors directly, avoiding repeated shell forks under PRoot. Other `lsof`
 queries retain the original GNU implementation.
@@ -73,7 +87,8 @@ Bison, Flex, glslangValidator, zlib headers, dpkg-deb, patchelf, FFmpeg (includi
 ffprobe), and libdbus-1 development headers. Create a
 Python environment with `build_files/quest/requirements.txt`. Mesa's code
 generators also need those Python modules visible to the Python interpreter
-selected by Meson.
+selected by Meson. Install the Linux Android NDK as well; it compiles the
+patched PRoot against the pinned Termux headers and talloc library.
 
 ```sh
 python3 -m venv --system-site-packages /path/to/quest-tools
@@ -81,6 +96,7 @@ python3 -m venv --system-site-packages /path/to/quest-tools
 /path/to/quest-tools/bin/python build_files/quest/prepare-payload.py \
   --root /path/to/mounted-clean-rootfs \
   --work /path/to/linux-build-cache \
+  --android-ndk /path/to/android-ndk \
   --output /path/to/new-quest-payload
 ```
 
@@ -130,7 +146,10 @@ adb install -r C:/path/to/apk-build/outputs/apk/debug/app-debug.apk
 ./post_process/quest/run-linux-debug.ps1 -Adb adb
 ```
 
-Wear the headset and wake both controllers. Keep the launcher running.
+For a normal launch, open Stearlight OS in the Quest app library. Wear the
+headset and wake both controllers. The debug launcher above is an optional
+alternative that inherits ADB's kernel syscall policy; keep it running only
+when using that diagnostic path.
 `-TimelineProbe` runs the cross-process GPU synchronization check instead of
 Steam. To inspect logs in another terminal:
 

@@ -16,17 +16,26 @@ import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 
 public final class QuestActivity extends NativeActivity {
+ static { System.loadLibrary("stearlight_quest"); }
  private final ScheduledExecutorService workers=Executors.newScheduledThreadPool(2);
  private volatile java.lang.Process linux;
  private volatile boolean closing;
+ private final AtomicBoolean starting=new AtomicBoolean();
  private int batteryPercent=-1;
  private boolean charging;
  private BluetoothBridge bluetoothBridge;
  private AudioBridge audioBridge;
  private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));int status=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=status==BatteryManager.BATTERY_STATUS_CHARGING||status==BatteryManager.BATTERY_STATUS_FULL;}};
  @Override public void onCreate(Bundle state){
+  new File(getStateDirectory(),"dashboard.ready").delete();
+  new File(getStateDirectory(),"gpu-capture.request").delete();
+  new File(getStateDirectory(),"xr-eye-capture.request").delete();
   super.onCreate(state);
   registerReceiver(batteryReceiver,new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
   audioBridge=new AudioBridge(this,new File(getStateDirectory()));
@@ -35,14 +44,18 @@ public final class QuestActivity extends NativeActivity {
   workers.scheduleWithFixedDelay(this::writeDeviceState,0,1,TimeUnit.SECONDS);
   bluetoothBridge=new BluetoothBridge(this,new File(getStateDirectory()));
   workers.scheduleWithFixedDelay(bluetoothBridge::poll,0,25,TimeUnit.MILLISECONDS);
-  workers.execute(this::startLinux);
+  requestLinux();
  }
+ @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);requestLinux();}
+ private void requestLinux(){if(!closing&&(linux==null||!linux.isAlive())&&starting.compareAndSet(false,true))workers.execute(()->{try{startLinux();}finally{starting.set(false);}});}
  public String getStateDirectory(){File state=new File(getFilesDir(),"state");state.mkdirs();return state.toString();}
- @Override public void onResume(){super.onResume();if(audioBridge!=null)audioBridge.setResumed(true);}
+ @Override public void onResume(){super.onResume();if(audioBridge!=null)audioBridge.setResumed(true);requestLinux();}
  @Override public void onPause(){if(audioBridge!=null)audioBridge.setResumed(false);super.onPause();}
  public void onXrAudioFocus(boolean focused){runOnUiThread(()->{if(!closing&&audioBridge!=null)audioBridge.setXrFocused(focused);});}
  @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(audioBridge!=null)audioBridge.permissionsChanged();}
  private BootAnimation bootAnimation;
+ private native void startSocketRegistry(String directory);
+ private native void stopSocketRegistry();
  public android.graphics.Bitmap getBootBitmap(){if(bootAnimation==null)bootAnimation=new BootAnimation(getAssets());return bootAnimation.frame();}
  public boolean bootComplete(){if(bootAnimation==null)bootAnimation=new BootAnimation(getAssets());return bootAnimation.bootComplete();}
  private void writeDeviceState(){
@@ -60,7 +73,40 @@ public final class QuestActivity extends NativeActivity {
  }
  private void status(String value) throws IOException {File dir=new File(getStateDirectory());try(FileOutputStream out=new FileOutputStream(new File(dir,"linux-status"))){out.write(value.getBytes(StandardCharsets.UTF_8));}Log.i("StearlightQuest",value);}
  private void startLinux(){
+  // Quest can recreate the Activity in the same Android process. Keep the
+  // old session's shutdown ahead of the next session's temporary-file cleanup.
+  try(RandomAccessFile file=new RandomAccessFile(new File(getFilesDir(),"linux-session.lock"),"rw");FileChannel channel=file.getChannel()){
+   FileLock lock=null;
+   while(!closing&&lock==null){try{lock=channel.tryLock();}catch(OverlappingFileLockException busy){}if(lock==null)Thread.sleep(50);}
+   if(lock==null)return;
+   try{runLinux();}finally{stopLinux();stopSocketRegistry();lock.release();}
+  }catch(Exception error){if(!closing)Log.e("StearlightQuest","Linux session failed",error);}
+ }
+ private void stopLinux(){
+  java.lang.Process process=linux;if(process==null)return;
+  boolean interrupted=Thread.interrupted();killLinux();
+  try{while(process.isAlive()){try{process.waitFor(100,TimeUnit.MILLISECONDS);}catch(InterruptedException stop){interrupted=true;}}}
+  finally{if(!process.isAlive())linux=null;if(interrupted)Thread.currentThread().interrupt();}
+ }
+ private void killLinux(){
+  java.lang.Process process=linux;if(process==null||!process.isAlive())return;
+  // Android's Process.destroyForcibly() inherits destroy(), which sends TERM.
+  // PRoot can inherit ART's blocked signals; use KILL for its owned session.
+  try{
+   File pidFile=new File(getFilesDir(),"linux.pid");String value="";
+   for(int attempt=0;attempt<100&&process.isAlive();attempt++){
+    if(pidFile.exists())value=new String(java.nio.file.Files.readAllBytes(pidFile.toPath()),StandardCharsets.US_ASCII).trim();
+    if(value.matches("[0-9]+"))break;SystemClock.sleep(10);
+   }
+   if(!process.isAlive())return;int pid=Integer.parseInt(value);
+   if(pid<=1||pid==android.os.Process.myPid())throw new IOException("Invalid Linux pid");
+   if(process.isAlive())android.os.Process.killProcess(pid);
+  }
+  catch(Exception error){Log.e("StearlightQuest","Cannot kill Linux session",error);process.destroyForcibly();}
+ }
+ private void runLinux(){
   try {
+   if(closing)return;
    new File(getStateDirectory(),"external-runtime.ready").delete();
    File root=new File(getFilesDir(),"rootfs"),marker=new File(root,".stearlight-ready");
    if(!marker.exists()){
@@ -75,17 +121,32 @@ public final class QuestActivity extends NativeActivity {
     if(!staging.renameTo(root))throw new IOException("Cannot complete rootfs installation");
     try(FileOutputStream out=new FileOutputStream(marker)){out.write("1\n".getBytes(StandardCharsets.US_ASCII));}
    }
-   try(InputStream in=getAssets().open("quest-overlay.bin")){RootfsArchive.extract(in,root);}
-   File tmp=new File(getFilesDir(),"tmp"),shm=new File(getFilesDir(),"shm");tmp.mkdirs();shm.mkdirs();
+   String overlayVersion=Long.toString(getPackageManager().getPackageInfo(getPackageName(),0).lastUpdateTime);
+   File overlayMarker=new File(getFilesDir(),"quest-overlay-version");
+   String installed=overlayMarker.exists()?new String(java.nio.file.Files.readAllBytes(overlayMarker.toPath()),StandardCharsets.US_ASCII):"";
+   if(!installed.equals(overlayVersion)){
+    status("Preparing Stearlight runtime");
+    try(InputStream in=getAssets().open("quest-overlay.bin")){RootfsArchive.extract(in,root);}
+    java.nio.file.Files.write(overlayMarker.toPath(),overlayVersion.getBytes(StandardCharsets.US_ASCII));
+   }
+   File tmp=new File(getFilesDir(),"tmp"),shm=new File(getFilesDir(),"shm");
+   removeTree(tmp,tmp);removeTree(shm,shm);tmp.mkdirs();shm.mkdirs();
    String nativeDir=getApplicationInfo().nativeLibraryDir;
    File logs=new File(getFilesDir(),"logs");logs.mkdirs();
-   if(new File(getStateDirectory(),"external-runtime").exists()){new File(getStateDirectory(),"external-runtime.ready").createNewFile();status("Waiting for the ADB Linux runtime");return;}
-   List<String> args=new ArrayList<>(Arrays.asList(nativeDir+"/libproot_exec.so","--sysvipc","--link2symlink","-r",root.toString(),"-b","/dev","-b","/proc","-b","/sys","-b",tmp+":/tmp","-b",shm+":/dev/shm","-b",getStateDirectory()+":/run/stearlight/quest","-w","/home/stearlight","/bin/bash","/opt/quest/start-session.sh"));
-   ProcessBuilder builder=new ProcessBuilder(args);Map<String,String> env=builder.environment();env.put("LD_LIBRARY_PATH",nativeDir);env.put("PROOT_LOADER",nativeDir+"/libproot_loader.so");env.put("PROOT_TMP_DIR",tmp.toString());env.put("PROOT_NO_SECCOMP","1");env.put("TMPDIR",tmp.toString());env.put("HOME","/home/stearlight");env.put("USER","stearlight");env.put("LOGNAME","stearlight");env.put("PATH","/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");env.put("GLIBC_TUNABLES","glibc.pthread.rseq=0");
-   builder.redirectErrorStream(true);builder.redirectOutput(new File(logs,"linux.log"));status("Starting Stearlight OS");linux=builder.start();int result=linux.waitFor();if(!closing)status(result==78?"Linux IPC needs the ADB developer runtime":"Stearlight stopped ("+result+")");
-  }catch(Exception e){Log.e("StearlightQuest","Linux startup failed",e);try{status("Stearlight startup failed: "+e.getMessage());}catch(IOException ignored){}}
+   if(getIntent().getBooleanExtra("developerRuntime",false)){new File(getStateDirectory(),"external-runtime.ready").createNewFile();status("Waiting for the ADB Linux runtime");return;}
+   new File(getStateDirectory(),"external-runtime").delete();
+   if(closing)return;
+   startSocketRegistry(getStateDirectory());
+   List<String> args=new ArrayList<>(Arrays.asList(nativeDir+"/libproot_exec.so","--kill-on-exit","--sysvipc","--link2symlink","-r",root.toString(),"-b","/dev","-b","/proc","-b","/sys","-b",tmp+":/tmp","-b",shm+":/dev/shm","-b",getStateDirectory()+":/run/stearlight/quest","-b",getStateDirectory()+"/proc-net:/proc/net","-w","/home/stearlight","/bin/bash","/opt/quest/start-session.sh"));
+   File pidFile=new File(getFilesDir(),"linux.pid");java.nio.file.Files.deleteIfExists(pidFile.toPath());
+   // The shell records its pid and immediately execs PRoot, retaining that pid.
+   args.addAll(0,Arrays.asList("/system/bin/sh","-c","printf '%s\\n' \"$$\" > \"$1\" || exit; shift; exec \"$@\"","stearlight-linux",pidFile.toString()));
+   ProcessBuilder builder=new ProcessBuilder(args);Map<String,String> env=builder.environment();env.put("LD_LIBRARY_PATH",nativeDir);env.put("PROOT_LOADER",nativeDir+"/libproot_loader.so");env.put("PROOT_TMP_DIR",tmp.toString());env.remove("PROOT_NO_SECCOMP");env.put("PROOT_QUEST_ROBUST","1");env.put("TMPDIR","/tmp");env.put("HOME","/home/stearlight");env.put("USER","stearlight");env.put("LOGNAME","stearlight");env.put("PATH","/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");env.put("GLIBC_TUNABLES","glibc.pthread.rseq=0");
+   builder.redirectErrorStream(true);builder.redirectOutput(new File(logs,"linux.log"));status("Starting Stearlight OS");if(closing)return;linux=builder.start();int result=linux.waitFor();if(!closing)status(result==78?"Linux IPC verification failed":"Stearlight stopped ("+result+")");
+  }catch(Exception|LinkageError e){if(closing)return;Log.e("StearlightQuest","Linux startup failed",e);try{status("Stearlight startup failed: "+e.getMessage());}catch(IOException ignored){}}
  }
  private InputStream rootfsStream()throws IOException {List<InputStream> parts=new ArrayList<>();try(BufferedReader list=new BufferedReader(new InputStreamReader(getAssets().open("rootfs.list"),StandardCharsets.US_ASCII))){String name;while((name=list.readLine())!=null){if(!name.matches("rootfs/part-[0-9]{3}\\.bin"))throw new IOException("Invalid rootfs part name");parts.add(getAssets().open(name));}}catch(IOException error){for(InputStream part:parts)part.close();throw error;}if(parts.isEmpty())throw new IOException("Empty rootfs payload");return new SequenceInputStream(Collections.enumeration(parts));}
- private void removeIncomplete(File path)throws IOException {File base=new File(getFilesDir(),"rootfs-install");String target=path.getAbsolutePath();if(!target.equals(base.getAbsolutePath())&&!target.startsWith(base.getAbsolutePath()+File.separator))throw new IOException("Invalid staging path");if(java.nio.file.Files.isSymbolicLink(path.toPath())){java.nio.file.Files.delete(path.toPath());return;}if(path.isDirectory()){File[] entries=path.listFiles();if(entries==null)throw new IOException("Cannot read incomplete installation");for(File entry:entries)removeIncomplete(entry);}if(path.exists()&&!path.delete())throw new IOException("Cannot remove incomplete installation");}
- @Override public void onDestroy(){closing=true;if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);if(linux!=null)linux.destroy();workers.shutdownNow();super.onDestroy();}
+ private void removeIncomplete(File path)throws IOException {removeTree(path,new File(getFilesDir(),"rootfs-install"));}
+ private void removeTree(File path,File base)throws IOException {String target=path.getAbsolutePath();if(!target.equals(base.getAbsolutePath())&&!target.startsWith(base.getAbsolutePath()+File.separator))throw new IOException("Invalid runtime cleanup path");if(java.nio.file.Files.isSymbolicLink(path.toPath())){java.nio.file.Files.delete(path.toPath());return;}if(path.isDirectory()){File[] entries=path.listFiles();if(entries==null)throw new IOException("Cannot read runtime directory");for(File entry:entries)removeTree(entry,base);}if(path.exists()&&!path.delete())throw new IOException("Cannot remove runtime directory");}
+ @Override public void onDestroy(){closing=true;if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);killLinux();workers.shutdownNow();super.onDestroy();}
 }

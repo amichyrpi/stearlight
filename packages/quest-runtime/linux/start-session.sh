@@ -6,6 +6,7 @@ export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export DISPLAY=:0 XDG_RUNTIME_DIR=/tmp/stearlight-runtime
 export GLIBC_TUNABLES=glibc.pthread.rseq=0
 export MESA_VK_ENABLE_SUBMIT_THREAD=1
+export QUEST_SOCKET_REGISTRY=/run/stearlight/quest/socket-registry.sock
 # SteamVR creates a separate GLX context for browser texture sharing. Xvfb
 # has no DRI3 display; Zink still renders its offscreen GL objects on Turnip.
 export GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink
@@ -22,7 +23,7 @@ echo "STEARLIGHT_QUEST_NATIVE_LINUX uid=$app_uid arch=$(uname -m)"
 /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu:/opt/quest /opt/quest/gpu-probe
 /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu:/opt/quest /opt/quest/gpu-probe --bridge
 if ! /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu /opt/quest/ipc-probe;then
- printf '%s' 'Linux IPC needs the ADB developer runtime' >/run/stearlight/quest/linux-status
+ printf '%s' 'Linux IPC verification failed' >/run/stearlight/quest/linux-status
  exit 78
 fi
 dbus-uuidgen --ensure=/etc/machine-id
@@ -67,6 +68,13 @@ export VR_CONFIG_PATH="$HOME/.steam/steam/config"
 mkdir -p "$HOME/.config/openvr" "$VR_CONFIG_PATH"
 /bin/sh /opt/quest/prepare-vrclient.sh || true
 /usr/local/bin/stearlight-steamvr-native prepare
+/bin/sh /opt/quest/prepare-frame-controls.sh || true
+# SteamVR invokes this installed launcher directly. Refresh our Quest adapter
+# after runtime updates as well as APK updates.
+cp /usr/local/bin/stearlight-frame-vrwebhelper /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh
+chmod 755 /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh
+cp /opt/quest/steamwebhelper-launcher.sh /opt/steam/steamrtarm64/steamwebhelper.sh
+chmod 755 /opt/steam/steamrtarm64/steamwebhelper.sh
 /opt/steamvr/bin/linuxarm64/vrpathreg removedriver /opt/steamvr/drivers/stearlight-fake || true
 /opt/steamvr/bin/linuxarm64/vrpathreg adddriver /opt/quest/stearlight-quest
 if [ ! -f "$VR_CONFIG_PATH/quest-prepared" ];then
@@ -104,4 +112,5 @@ printf '%s' 'Starting SteamVR and Steam' >/run/stearlight/quest/linux-status
  exit 1
 ) >/tmp/quest-runtime-monitor.log 2>&1 &
 monitor_pid=$!
+export LD_PRELOAD=/opt/quest/libquest_socket.so
 /opt/quest/frame-session

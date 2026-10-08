@@ -13,6 +13,12 @@
 struct endpoint { unsigned local,remote,lp,rp; uint64_t inode; };
 static struct endpoint endpoints[256];
 static unsigned count;
+static int paired(void){
+ for(unsigned i=0;i<count;i++)for(unsigned j=i+1;j<count;j++)
+  if(endpoints[i].remote&&endpoints[i].lp==endpoints[j].rp&&endpoints[i].rp==endpoints[j].lp&&
+     endpoints[i].local==endpoints[j].remote&&endpoints[i].remote==endpoints[j].local)return 1;
+ return 0;
+}
 static int table(unsigned port){
  FILE* f=fopen("/proc/net/tcp","r");if(!f)return -1;
  char* line=NULL;size_t length=0;count=0;
@@ -50,7 +56,10 @@ static int output(void){
 int main(int argc,char** argv){
  if(argc==6&&!strcmp(argv[1],"-P")&&!strcmp(argv[2],"-F")&&!strcmp(argv[3],"upnR")&&!strcmp(argv[4],"-i")&&!strncmp(argv[5],"TCP@127.0.0.1:",14)){
   char* end;unsigned long port=strtoul(argv[5]+14,&end,10);
-  if(port>0&&port<65536&&!*end){for(int i=0;i<6;i++){int n=table(port);if(n<0)break;if(n&&output()>0)return 0;usleep(40000);}}
+  // App socket reports arrive separately for the connecting and accepting
+  // processes. Returning the server alone makes Steam reject its real CEF
+  // peer. Wait briefly for both actual kernel endpoint rows before scanning.
+  if(port>0&&port<65536&&!*end){for(int i=0;i<20;i++){int n=table(port);if(n<0)break;if(n&&paired()&&output()>0)return 0;usleep(50000);}}
  }
  argv[0]="/opt/quest/lsof";execv(argv[0],argv);perror("lsof fallback");return 127;
 }

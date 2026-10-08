@@ -11,6 +11,8 @@ foreach($file in @('assets/rootfs.list','assets/rootfs.sha256','assets/quest-ove
     if(!(Test-Path -LiteralPath (Join-Path $payloadPath $file))){throw "Incomplete Quest payload: $file"}
 }
 $parts=@(Get-Content -LiteralPath (Join-Path $payloadPath 'assets/rootfs.list'))
+$prootBytes=[IO.File]::ReadAllBytes((Join-Path $payloadPath 'jniLibs/arm64-v8a/libproot_exec.so'))
+if([Text.Encoding]::ASCII.GetString($prootBytes).IndexOf('PROOT_QUEST_ROBUST',[StringComparison]::Ordinal) -lt 0){throw 'This payload lacks the standalone PRoot adapter. Rebuild it with prepare-payload.py and --android-ndk.'}
 if(!$parts.Count){throw 'Quest rootfs list is empty'}
 for($index=0;$index -lt $parts.Count;$index++){
     $expected='rootfs/part-{0:D3}.bin' -f $index

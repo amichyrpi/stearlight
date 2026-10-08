@@ -6,8 +6,8 @@ function Run-Adb([string[]]$Arguments) {
     if($LASTEXITCODE){throw "ADB failed: $($Arguments[0])"}
     return $result
 }
-# Developer validation path: run-as inherits adbd's syscall policy, allowing
-# Linux robust futexes which Android's ordinary application policy blocks.
+# Optional developer runtime: start Linux through adbd for diagnostics.
+# Normal launches use the app-owned runtime and need no ADB helper.
 Run-Adb @('shell','run-as',$package,'mkdir','-p','files/state') | Out-Null
 Run-Adb @('shell','run-as',$package,'touch','files/state/external-runtime') | Out-Null
 if(!$SkipRestart){
@@ -25,7 +25,7 @@ if(!$SkipRestart){
    Run-Adb @('shell',"run-as $package /system/bin/sh -c 'kill -KILL $linuxPid 2>/dev/null || true'") | Out-Null
   }
  }
- Run-Adb @('shell','am','start','-a','android.intent.action.MAIN','-c','com.oculus.intent.category.VR','-n',"$package/.QuestActivity") | Out-Null
+ Run-Adb @('shell','am','start','-a','android.intent.action.MAIN','-c','com.oculus.intent.category.VR','-n',"$package/.QuestActivity","--ez","developerRuntime","true") | Out-Null
 }
 $ready=$false
 for($attempt=0;$attempt -lt 120;$attempt++) {
