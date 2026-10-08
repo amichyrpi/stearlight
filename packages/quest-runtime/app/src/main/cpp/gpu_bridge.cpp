@@ -38,13 +38,27 @@ void GpuBridge::poll(){
 // Explicit, one-shot diagnostic of Linux's image before color conversion.
 void GpuBridge::capture(){
  auto directory=path.substr(0,path.find_last_of('/'));auto request=directory+"/gpu-capture.request";
- if(access(request.c_str(),F_OK)!=0)return;unlink(request.c_str());
+ if(access(request.c_str(),F_OK)!=0&&access((directory+"/xr-eye-capture.request").c_str(),F_OK)!=0)return;unlink(request.c_str());
  uint32_t width=hello.buffers[current].width,height=hello.buffers[current].height;
  std::vector<unsigned char> pixels(static_cast<size_t>(width)*height*4);
  glReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
  auto output=fopen((directory+"/gpu-capture.rgba").c_str(),"wb");
  if(output){fwrite(&width,4,1,output);fwrite(&height,4,1,output);fwrite(&frameFormat,4,1,output);fwrite(pixels.data(),1,pixels.size(),output);fclose(output);LOG("Captured Linux GPU frame %llu format=%u",(unsigned long long)frameId,frameFormat);}
 }
-void GpuBridge::draw(int eye,bool preserveAlpha){if(!hasFrame)return;glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glUseProgram(program);glUniform1i(eyeUniform,eye);glUniform1i(formatUniform,frameFormat);glUniform1i(alphaUniform,preserveAlpha);glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,history);glBindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);}
+void GpuBridge::draw(int eye,bool preserveAlpha){if(!hasFrame)return;
+ glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glUseProgram(program);glUniform1i(eyeUniform,eye);glUniform1i(formatUniform,frameFormat);glUniform1i(alphaUniform,preserveAlpha);glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,history);glBindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);
+ // Pair the Linux capture with the actual right-eye image after conversion,
+ // before OpenXR accepts it. Only an explicit one-shot request reads pixels.
+ if(eye!=1||current<0)return;
+ auto directory=path.substr(0,path.find_last_of('/'));auto request=directory+"/xr-eye-capture.request";
+ if(access(request.c_str(),F_OK)!=0)return;unlink(request.c_str());
+ GLint viewport[4];glGetIntegerv(GL_VIEWPORT,viewport);uint32_t width=viewport[2],height=viewport[3],format=43;
+ std::vector<unsigned char> pixels(static_cast<size_t>(width)*height*4);
+ glReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels.data());
+ if(FILE* output=fopen((directory+"/xr-eye-capture.rgba").c_str(),"wb")){
+  fwrite(&width,4,1,output);fwrite(&height,4,1,output);fwrite(&format,4,1,output);
+  fwrite(pixels.data(),1,pixels.size(),output);fclose(output);LOG("Captured OpenXR right eye for Linux frame %llu",(unsigned long long)frameId);
+ }
+}
 void GpuBridge::finish(){if(current<0)return;glFinish();if(frameId<=2)LOG("OpenXR frame %llu submitted; releasing Linux buffer",(unsigned long long)frameId);QuestGpuRelease release{QUEST_GPU_MAGIC,static_cast<uint32_t>(current),frameId};if(client>=0&&send(client,&release,sizeof(release),MSG_NOSIGNAL)!=sizeof(release)){close(client);client=-1;}current=-1;}
 void GpuBridge::shutdown(){if(client>=0)close(client);if(server>=0)close(server);if(!path.empty())unlink(path.c_str());auto destroyImage=reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(eglGetProcAddress("eglDestroyImageKHR"));for(int i=0;i<QUEST_GPU_BUFFERS;i++){if(images[i]&&destroyImage)destroyImage(display,images[i]);if(dmaFds[i]>=0)close(dmaFds[i]);if(buffers[i])AHardwareBuffer_release(buffers[i]);}glDeleteTextures(QUEST_GPU_BUFFERS,textures);if(history)glDeleteTextures(1,&history);if(copyFramebuffer)glDeleteFramebuffers(1,&copyFramebuffer);if(program)glDeleteProgram(program);if(vao)glDeleteVertexArrays(1,&vao);}

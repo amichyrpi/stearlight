@@ -25,9 +25,11 @@ The Quest 2 render models use Valve's `openxr_grip` component transform to
 convert tracked grip poses to the model origin for both hands.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
 layer, until the main panel and bottom dock are ready. Display buffers use
-explicit Vulkan ownership transfers before Android reads them. Each image
-carries the input eye poses sampled when Linux acquires it, and held images
-keep those poses. These samples approximate SteamVR's final asynchronous
+explicit Vulkan ownership transfers before Android reads them. A memory
+barrier makes earlier compositor pass writes visible before the next pass reads
+color and depth attachments, preventing stale right-eye trails on Turnip.
+Each image carries the input eye poses sampled when Linux acquires it, and held
+images keep those poses. These samples approximate SteamVR's final asynchronous
 rendering pose; full motion stability remains under validation.
 
 Dashboard readiness lasts for the VR session, including page changes that
@@ -39,6 +41,9 @@ removing the headset for phone sign-in does not simulate unplugging it.
 The ADB launcher also publishes the app's real kernel socket rows into the
 guest because Android denies application access to `/proc/net`. This helper
 runs only with the developer launcher and excludes other apps' socket rows.
+Steam's CEF owner query reads those socket inodes and the actual process
+descriptors directly, avoiding repeated shell forks under PRoot. Other `lsof`
+queries retain the original GNU implementation.
 
 Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. A BlueZ LE advertising
@@ -133,6 +138,20 @@ Steam. To inspect logs in another terminal:
 adb shell run-as net.stearlight.quest tail -n 30 files/logs/linux.log
 adb logcat -s StearlightXR StearlightGPU StearlightQuest
 ```
+
+For a one-shot graphics capture while the dashboard is visible:
+
+```sh
+adb shell run-as net.stearlight.quest touch files/state/xr-eye-capture.request
+```
+
+The app writes `gpu-capture.rgba` and `xr-eye-capture.rgba` in that
+directory for the same fresh Linux frame. The first contains the Linux stereo
+image; the second contains the right eye after Android color conversion and
+before OpenXR composition. Check the matching frame IDs in `StearlightGPU`
+logcat. Captures have three little-endian 32-bit header words (width, height,
+pixel format) followed by four bytes per pixel. Passthrough camera pixels are
+not included. Capturing reads back GPU pixels and briefly stalls rendering.
 
 When OpenXR reports Quest room-view support,
 the driver enables SteamVR's native bottom-dock room-view action. A small

@@ -253,8 +253,8 @@ def main():
         linux / "store-browser-watch.c", "-o", quest / "store-browser-watch")
     shutil.copyfile(root / "usr/bin/lsof", quest / "lsof")
     (quest / "lsof").chmod(0o755)
-    shutil.copyfile(linux / "lsof-launcher.sh", overlay / "usr/bin/lsof")
-    (overlay / "usr/bin/lsof").chmod(0o755)
+    run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror",
+        linux / "lsof-launcher.c", "-o", overlay / "usr/bin/lsof")
     # Drop the generated library from older cached overlays. Startup adapts
     # the installed version instead of replacing Valve's matching UI files.
     (overlay / "opt/steam/steamui/library.js").unlink(missing_ok=True)
