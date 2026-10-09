@@ -11,10 +11,19 @@ export QUEST_SOCKET_REGISTRY=/run/stearlight/quest/socket-registry.sock
 # has no DRI3 display; Zink still renders its offscreen GL objects on Turnip.
 export GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink
 export LIBGL_KOPPER_DISABLE=true LIBGL_KOPPER_DRI2=1
+# SDL's OpenVR streaming player uses EGL without an Android/X11 window.
+export EGL_PLATFORM=surfaceless
 mkdir -p "$HOME" "$HOME/.config" "$HOME/.cache" "$XDG_RUNTIME_DIR" /tmp/.X11-unix /run/dbus
 rm -f /run/stearlight/quest/dashboard.ready /tmp/.X0-lock /tmp/.X11-unix/X0
 printf '%s' 'Starting Linux GPU and IPC services' >/run/stearlight/quest/linux-status
 chmod 700 "$XDG_RUNTIME_DIR"
+# Fonts are bundled for offline use. Rebuild the ARM64 cache only when the
+# font payload changes, keeping later launches inexpensive.
+if [ -f /opt/quest/fonts.version ] && ! cmp -s /opt/quest/fonts.version "$HOME/.cache/stearlight-fonts.version";then
+ if fc-cache -f /usr/share/fonts/truetype/noto /usr/share/fonts/opentype/noto;then
+  cp /opt/quest/fonts.version "$HOME/.cache/stearlight-fonts.version"
+ fi
+fi
 # Linux and Android share the real uid. Steam checks the uid on its local IPC.
 app_uid=$(id -u)
 sed -i '/^stearlight:/d' /etc/passwd
@@ -63,6 +72,7 @@ echo STEARLIGHT_QUEST_X11_READY
 # Verify pixels in shared GPU memory, not just extension names. SteamVR uses
 # this separate GLX context even when its browser renders through ANGLE.
 VK_ICD_FILENAMES=/opt/quest/quest_icd.json /opt/quest/glx-probe
+VK_ICD_FILENAMES=/opt/quest/turnip_icd.json /opt/quest/glx-probe --egl
 export VR_PATHREG_OVERRIDE="$HOME/.config/openvr/openvrpaths.vrpath"
 export VR_CONFIG_PATH="$HOME/.steam/steam/config"
 mkdir -p "$HOME/.config/openvr" "$VR_CONFIG_PATH"
@@ -73,16 +83,17 @@ mkdir -p "$HOME/.config/openvr" "$VR_CONFIG_PATH"
 # after runtime updates as well as APK updates.
 cp /usr/local/bin/stearlight-frame-vrwebhelper /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh
 chmod 755 /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh
-cp /opt/quest/steamwebhelper-launcher.sh /opt/steam/steamrtarm64/steamwebhelper.sh
-chmod 755 /opt/steam/steamrtarm64/steamwebhelper.sh
 /opt/steamvr/bin/linuxarm64/vrpathreg removedriver /opt/steamvr/drivers/stearlight-fake || true
 /opt/steamvr/bin/linuxarm64/vrpathreg adddriver /opt/quest/stearlight-quest
 if [ ! -f "$VR_CONFIG_PATH/quest-prepared" ];then
  cat > "$VR_CONFIG_PATH/steamvr.vrsettings" <<'SETTINGS'
-{"steamvr":{"requireHmd":true,"activateMultipleDrivers":true,"allowDisplayLockedMode":true,"allowFallbackMirrorWindowLinux":true,"disableAsync":false,"enableLinuxVulkanAsync":true,"useFacetRenderer":false,"renderSystemLayerInDistortPass":false,"mirrorViewGeometry":"0 0 3664 1920","showMirrorView":false,"showLegacyMirrorView":false},"direct_mode":{"enable":false},"driver_stearlight-fake":{"enable":false},"driver_stearlight-quest":{"enable":true,"blocked_by_safe_mode":false}}
+{"steamvr":{"requireHmd":true,"activateMultipleDrivers":true,"allowDisplayLockedMode":true,"allowFallbackMirrorWindowLinux":true,"disableAsync":false,"enableLinuxVulkanAsync":true,"useFacetRenderer":true,"renderSystemLayerInDistortPass":true,"mirrorViewGeometry":"0 0 3664 1920","showMirrorView":false,"showLegacyMirrorView":false},"direct_mode":{"enable":false},"driver_stearlight-fake":{"enable":false},"driver_stearlight-quest":{"enable":true,"blocked_by_safe_mode":false}}
 SETTINGS
  touch "$VR_CONFIG_PATH/quest-prepared"
 fi
+# Existing installations also need Frame's final-pass composition. The old
+# precomposition path asserts when a spatially encoded PCVR frame arrives.
+sed -i 's/"useFacetRenderer"[[:space:]]*:[[:space:]]*false/"useFacetRenderer":true/g;s/"renderSystemLayerInDistortPass"[[:space:]]*:[[:space:]]*false/"renderSystemLayerInDistortPass":true/g' "$VR_CONFIG_PATH/steamvr.vrsettings"
 export STEARLIGHT_STEAM_VULKAN_ICD=/opt/quest/quest_icd.json
 export STEARLIGHT_STEAMVR_VULKAN_ICD=/opt/quest/turnip_icd.json
 export STEARLIGHT_GAMESCOPE_VK_ICD=/opt/quest/turnip_icd.json
@@ -90,9 +101,8 @@ export VK_ICD_FILENAMES=/opt/quest/turnip_icd.json
 # The adapter supplies Valve's required surface extension discovery; ANGLE
 # renders offscreen. Only vrcompositor may create an OpenXR display swapchain.
 # Adapt the installed UI rather than copying a library from another version.
-/bin/sh /opt/quest/prepare-store-browser.sh
-/bin/sh /opt/quest/prepare-cef.sh || true
-/bin/sh /opt/quest/frame-steam-ipc || true
+/bin/sh /opt/quest/prepare-steam-client.sh
+/bin/sh /opt/quest/prepare-streaming-client.sh
 /opt/quest/store-browser-watch >/tmp/quest-store-browser.log 2>&1 &
 store_watch_pid=$!
 # The APK verifies its rootfs payload. Steam's optional repair pass would undo

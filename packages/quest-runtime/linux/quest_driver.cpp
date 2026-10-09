@@ -41,7 +41,7 @@ class Headset final:public Device,public vr::IVRDisplayComponent {
 public:
  vr::EVRInitError Activate(uint32_t id)override{
   haveProximity=haveEyes=false;lastRate=0;lastIpd=-1;lastBattery={};
-  base(id,"STEARLIGHT-QUEST2-HMD","Quest 2");auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,"stearlight-quest/quest2");p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);frame();return vr::VRInitError_None;
+  base(id,"STEARLIGHT-QUEST2-HMD","Oculus Quest2");auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,"stearlight-quest/quest2");p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);frame();return vr::VRInitError_None;
  }
  void* GetComponent(const char* version)override{return version&&!strcmp(version,vr::IVRDisplayComponent_Version)?static_cast<vr::IVRDisplayComponent*>(this):nullptr;}
  void GetWindowBounds(int32_t* x,int32_t* y,uint32_t* w,uint32_t* h)override{*x=*y=0;*w=state.width*2;*h=state.height;}
@@ -64,7 +64,15 @@ public:
    float ipd=std::fabs(eyes[1].m[0][3]-eyes[0].m[0][3]);
    if(std::fabs(ipd-lastIpd)>1e-5f){vr::VRProperties()->SetFloatProperty(properties,vr::Prop_UserIpdMeters_Float,ipd);lastIpd=ipd;}
   }
-  if(state.refresh_hz!=lastRate){vr::VRProperties()->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);lastRate=state.refresh_hz;}
+  if(state.refresh_hz>0&&state.refresh_hz!=lastRate){
+   auto* p=vr::VRProperties();p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);
+   // vrlink requires a nonempty frequency list before activating the remote
+   // HMD. Advertise the actual active OpenXR rate; runtime switching is not
+   // exposed by this driver yet.
+   p->SetProperty(properties,vr::Prop_DisplayAvailableFrameRates_Float_Array,&state.refresh_hz,sizeof(state.refresh_hz),vr::k_unFloatPropertyTag);
+   p->SetBoolProperty(properties,vr::Prop_DisplaySupportsMultipleFramerates_Bool,false);
+   p->SetBoolProperty(properties,vr::Prop_DisplaySupportsRuntimeFramerateChange_Bool,false);lastRate=state.refresh_hz;
+  }
   auto now=std::chrono::steady_clock::now();if(now-lastBattery<std::chrono::seconds(1))return;lastBattery=now;std::ifstream file("/run/stearlight/quest/device.json");std::string json((std::istreambuf_iterator<char>(file)),{});auto key=json.find("\"battery_percent\":");if(key!=std::string::npos){int value=std::atoi(json.c_str()+key+18);vr::VRProperties()->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,value>=0);if(value>=0)vr::VRProperties()->SetFloatProperty(properties,vr::Prop_DeviceBatteryPercentage_Float,value/100.f);}key=json.find("\"charging\":");if(key!=std::string::npos)vr::VRProperties()->SetBoolProperty(properties,vr::Prop_DeviceIsCharging_Bool,json.compare(key+11,4,"true")==0);
  }
 };
@@ -109,7 +117,13 @@ public:
    if(state.sequence!=measuredSequence){measuredSequence=state.sequence;++measuredSamples;}
    // OpenXR writes at the headset rate. Re-reading a sample must not repeat
    // SteamVR property/input work, but haptics below are polled on every call.
-   if(!havePublished||publishedSequence!=state.sequence){head.frame();left.frame();right.frame();publishedSequence=state.sequence;havePublished=true;}
+   if(!havePublished||publishedSequence!=state.sequence){
+    // Android owns presentation. Forward each observed OpenXR display tick
+    // so Frame's renderer does not wait for an unavailable Linux display IRQ.
+    if(state.session_visible&&state.predicted_monotonic_ns&&state.refresh_hz>0)
+     vr::VRServerDriverHost()->VsyncEvent(0);
+    head.frame();left.frame();right.frame();publishedSequence=state.sequence;havePublished=true;
+   }
   }
   auto measuredNow=std::chrono::steady_clock::now();double measuredSeconds=std::chrono::duration<double>(measuredNow-measuredSince).count();
   if(measuredSeconds>=10){char message[160];snprintf(message,sizeof(message),"Quest tracking: %.1f calls/s, %.1f new samples/s",measuredCalls/measuredSeconds,measuredSamples/measuredSeconds);vr::VRDriverLog()->Log(message);measuredCalls=measuredSamples=0;measuredSince=measuredNow;}

@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include "quest_bridge.h"
 #include "gpu_bridge.h"
+#include "video_bridge.h"
 #include "passthrough.h"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"StearlightXR",__VA_ARGS__)
@@ -42,7 +43,7 @@ struct Runtime {
  XrActionSet actions=XR_NULL_HANDLE;XrAction gripAction=XR_NULL_HANDLE,aimAction=XR_NULL_HANDLE,triggerAction=XR_NULL_HANDLE,squeezeAction=XR_NULL_HANDLE,stickAction=XR_NULL_HANDLE;
  XrAction buttonActions[6]{};XrAction touchAction=XR_NULL_HANDLE,hapticAction=XR_NULL_HANDLE,selectAction=XR_NULL_HANDLE;
  XrPath hands[2]{};Eye eyes[2],statusEye;XrTime statusUpdated=0;bool running=false,visible=false,focused=false;
- QuestTracking* tracking=nullptr;GLuint framebuffer=0;GpuBridge gpu;
+ QuestTracking* tracking=nullptr;GLuint framebuffer=0;GpuBridge gpu;VideoBridge video;
  XrView frameViews[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};bool haveFrameViews=false;
  bool eyesDirty=true,lastLoading=true,lastPassthrough=false;
  std::chrono::steady_clock::time_point eyeReport{};double eyeMs=0;unsigned eyeFrames=0;
@@ -100,13 +101,16 @@ struct Runtime {
   std::vector<XrViewConfigurationView> views(viewsCount,{XR_TYPE_VIEW_CONFIGURATION_VIEW});XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,viewsCount,&viewsCount,views.data()));
   uint32_t formatCount;XR(xrEnumerateSwapchainFormats(session,0,&formatCount,nullptr));std::vector<int64_t> formats(formatCount);XR(xrEnumerateSwapchainFormats(session,formatCount,&formatCount,formats.data()));int64_t format=GL_SRGB8_ALPHA8;if(std::find(formats.begin(),formats.end(),format)==formats.end())format=GL_RGBA8;
   for(int i=0;i<2;i++){
-   Eye& eye=eyes[i];eye.width=std::min(1832u,views[i].maxImageRectWidth);eye.height=std::min(1920u,views[i].maxImageRectHeight);
+   // Cap each scene dimension at 75% of the Quest 2 panel resolution.
+   // OpenXR scales the completed projection to the physical display.
+   Eye& eye=eyes[i];eye.width=std::min(1374u,views[i].maxImageRectWidth);eye.height=std::min(1440u,views[i].maxImageRectHeight);
    LOG("Eye %d requested %ux%u; recommended %ux%u; maximum %ux%u",i,eye.width,eye.height,views[i].recommendedImageRectWidth,views[i].recommendedImageRectHeight,views[i].maxImageRectWidth,views[i].maxImageRectHeight);
    XrSwapchainCreateInfo swap{XR_TYPE_SWAPCHAIN_CREATE_INFO};swap.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;swap.format=format;swap.sampleCount=1;swap.width=eye.width;swap.height=eye.height;swap.faceCount=1;swap.arraySize=1;swap.mipCount=1;XR(xrCreateSwapchain(session,&swap,&eye.chain));uint32_t count=0;XR(xrEnumerateSwapchainImages(eye.chain,0,&count,nullptr));eye.images.resize(count,{XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});XR(xrEnumerateSwapchainImages(eye.chain,count,&count,reinterpret_cast<XrSwapchainImageBaseHeader*>(eye.images.data())));
   }
   tracking->width=eyes[0].width;tracking->height=eyes[0].height;glGenFramebuffers(1,&framebuffer);
   XrSwapchainCreateInfo statusSwap{XR_TYPE_SWAPCHAIN_CREATE_INFO};statusSwap.usageFlags=XR_SWAPCHAIN_USAGE_SAMPLED_BIT|XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;statusSwap.format=GL_SRGB8_ALPHA8;statusSwap.sampleCount=1;statusSwap.width=450;statusSwap.height=450;statusSwap.faceCount=statusSwap.arraySize=statusSwap.mipCount=1;XR(xrCreateSwapchain(session,&statusSwap,&statusEye.chain));uint32_t statusCount=0;XR(xrEnumerateSwapchainImages(statusEye.chain,0,&statusCount,nullptr));statusEye.images.resize(statusCount,{XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});XR(xrEnumerateSwapchainImages(statusEye.chain,statusCount,&statusCount,reinterpret_cast<XrSwapchainImageBaseHeader*>(statusEye.images.data())));
   gpu.initialize(display,directory,eyes[0].width*2,eyes[0].height);
+  video.initialize(directory);
   if(has(extensions,XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)){
    getRate=function<PFN_xrGetDisplayRefreshRateFB>(instance,"xrGetDisplayRefreshRateFB");requestRate=function<PFN_xrRequestDisplayRefreshRateFB>(instance,"xrRequestDisplayRefreshRateFB");auto enumerate=function<PFN_xrEnumerateDisplayRefreshRatesFB>(instance,"xrEnumerateDisplayRefreshRatesFB");uint32_t count=0;XR(enumerate(session,0,&count,nullptr));std::vector<float> rates(count);XR(enumerate(session,count,&count,rates.data()));for(float rate:rates)LOG("Supported display refresh %.0f Hz",rate);if(std::find(rates.begin(),rates.end(),120.f)!=rates.end())XR(requestRate(session,120));XR(getRate(session,&tracking->refresh_hz));LOG("Current display refresh %.0f Hz",tracking->refresh_hz);
   }
@@ -239,6 +243,6 @@ struct Runtime {
   static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }
  void idle(){gpu.poll();gpu.finish();}
- void shutdown(){camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
+ void shutdown(){video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
 };
 extern "C" void android_main(android_app* app){Runtime runtime;runtime.app=app;try{while(!app->destroyRequested&&(!app->window||app->activityState!=APP_CMD_RESUME)){int events;android_poll_source* source;if(ALooper_pollOnce(50,nullptr,&events,reinterpret_cast<void**>(&source))>=0&&source)source->process(app,source);}if(app->destroyRequested)return;LOG("Android VR activity resumed with a native window");runtime.initialize(app);while(!app->destroyRequested){int events;android_poll_source* source;while(ALooper_pollOnce(runtime.running?0:50,nullptr,&events,reinterpret_cast<void**>(&source))>=0){if(source)source->process(app,source);if(app->destroyRequested)break;}if(app->destroyRequested||!runtime.events())break;if(runtime.running)runtime.frame();else runtime.idle();}}catch(const std::exception& e){LOG("Native runtime stopped: %s",e.what());}runtime.shutdown();}

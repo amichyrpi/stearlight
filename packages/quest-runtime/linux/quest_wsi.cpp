@@ -24,12 +24,20 @@
 #include "roomview_shaders.h"
 #include "gpu_bridge.h"
 #include "quest_bridge.h"
+#include "video_image_layout.h"
 
 namespace {
 PFN_vkGetInstanceProcAddr realGet=nullptr;PFN_vkGetDeviceProcAddr realDeviceGet=nullptr;
 uint32_t activeQueueFamily=0;
 VkInstance activeInstance=VK_NULL_HANDLE;VkPhysicalDevice activePhysical=VK_NULL_HANDLE;
 bool isCompositor(){return program_invocation_short_name&&(!strcmp(program_invocation_short_name,"vrcompositor")||!strcmp(program_invocation_short_name,"vrcompositor.bin"));}
+VkExtent2D displayExtent(){
+ QuestTracking state{};int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);
+ if(fd<0)return {3664,1920};
+ ssize_t bytes=pread(fd,&state,sizeof(state),0);close(fd);
+ if(bytes!=sizeof(state)||state.magic!=QUEST_BRIDGE_MAGIC||state.version!=QUEST_BRIDGE_VERSION||!state.width||!state.height)return {3664,1920};
+ return {state.width*2,state.height};
+}
 struct RoomShader {VkShaderModule alternate=VK_NULL_HANDLE;bool background=false,stars=false;};
 struct RoomPipeline {VkPipeline alternate=VK_NULL_HANDLE;bool background=false,stars=false;};
 struct RoomCommand {bool background=false,stars=false;};
@@ -120,15 +128,15 @@ VKAPI_ATTR void VKAPI_CALL vkDestroySurfaceKHR(VkInstance,VkSurfaceKHR surface,c
 VKAPI_ATTR VkBool32 VKAPI_CALL vkGetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice,uint32_t,xcb_connection_t*,xcb_visualid_t){return VK_TRUE;}
 VKAPI_ATTR VkBool32 VKAPI_CALL vkGetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice,uint32_t,Display*,VisualID){return VK_TRUE;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice,uint32_t,VkSurfaceKHR,VkBool32* supported){*supported=VK_TRUE;return VK_SUCCESS;}
-VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice,VkSurfaceKHR,VkSurfaceCapabilitiesKHR* caps){*caps={};caps->minImageCount=caps->maxImageCount=QUEST_GPU_BUFFERS;caps->currentExtent=caps->minImageExtent=caps->maxImageExtent={3664,1920};caps->maxImageArrayLayers=1;caps->supportedTransforms=caps->currentTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;caps->supportedCompositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;caps->supportedUsageFlags=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice,VkSurfaceKHR,VkSurfaceCapabilitiesKHR* caps){*caps={};caps->minImageCount=caps->maxImageCount=QUEST_GPU_BUFFERS;caps->currentExtent=caps->minImageExtent=caps->maxImageExtent=displayExtent();caps->maxImageArrayLayers=1;caps->supportedTransforms=caps->currentTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;caps->supportedCompositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;caps->supportedUsageFlags=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice,VkSurfaceKHR,uint32_t* count,VkSurfaceFormatKHR* output){fprintf(stderr,"Quest surface formats capacity=%u output=%p\n",*count,(void*)output);const VkSurfaceFormatKHR formats[]={{VK_FORMAT_B8G8R8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},{VK_FORMAT_B8G8R8A8_SRGB,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},{VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},{VK_FORMAT_R8G8B8A8_SRGB,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR}};if(!output){*count=4;return VK_SUCCESS;}uint32_t n=std::min(*count,4u);memcpy(output,formats,n*sizeof(*output));*count=n;return n<4?VK_INCOMPLETE:VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevice,VkSurfaceKHR,uint32_t* count,VkPresentModeKHR* modes){if(modes&&*count){modes[0]=VK_PRESENT_MODE_FIFO_KHR;*count=1;}else *count=1;return VK_SUCCESS;}
-VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceDisplayPropertiesKHR(VkPhysicalDevice,uint32_t* count,VkDisplayPropertiesKHR* output){if(!output){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;output[0]={};output[0].display=(VkDisplayKHR)1;output[0].displayName="Stearlight Quest OpenXR bridge";output[0].physicalResolution={3664,1920};output[0].supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;output[0].persistentContent=VK_TRUE;*count=1;return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceDisplayPropertiesKHR(VkPhysicalDevice,uint32_t* count,VkDisplayPropertiesKHR* output){if(!output){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;output[0]={};output[0].display=(VkDisplayKHR)1;output[0].displayName="Stearlight Quest OpenXR bridge";output[0].physicalResolution=displayExtent();output[0].supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;output[0].persistentContent=VK_TRUE;*count=1;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceDisplayPlanePropertiesKHR(VkPhysicalDevice,uint32_t* count,VkDisplayPlanePropertiesKHR* output){if(!output){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;output[0]={(VkDisplayKHR)1,0};*count=1;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetDisplayPlaneSupportedDisplaysKHR(VkPhysicalDevice,uint32_t,uint32_t* count,VkDisplayKHR* output){if(!output){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;output[0]=(VkDisplayKHR)1;*count=1;return VK_SUCCESS;}
-VKAPI_ATTR VkResult VKAPI_CALL vkGetDisplayModePropertiesKHR(VkPhysicalDevice,VkDisplayKHR,uint32_t* count,VkDisplayModePropertiesKHR* output){if(!output){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;output[0]={(VkDisplayModeKHR)1,{{3664,1920},72000}};*count=1;return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetDisplayModePropertiesKHR(VkPhysicalDevice,VkDisplayKHR,uint32_t* count,VkDisplayModePropertiesKHR* output){if(!output){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;output[0]={(VkDisplayModeKHR)1,{displayExtent(),72000}};*count=1;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDisplayModeKHR(VkPhysicalDevice,VkDisplayKHR,const VkDisplayModeCreateInfoKHR*,const VkAllocationCallbacks*,VkDisplayModeKHR* mode){*mode=(VkDisplayModeKHR)1;return VK_SUCCESS;}
-VKAPI_ATTR VkResult VKAPI_CALL vkGetDisplayPlaneCapabilitiesKHR(VkPhysicalDevice,VkDisplayModeKHR,uint32_t,VkDisplayPlaneCapabilitiesKHR* output){*output={};output->supportedAlpha=VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;output->minSrcExtent=output->maxSrcExtent=output->minDstExtent=output->maxDstExtent={3664,1920};return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetDisplayPlaneCapabilitiesKHR(VkPhysicalDevice,VkDisplayModeKHR,uint32_t,VkDisplayPlaneCapabilitiesKHR* output){*output={};output->supportedAlpha=VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;output->minSrcExtent=output->maxSrcExtent=output->minDstExtent=output->maxDstExtent=displayExtent();return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateDisplayPlaneSurfaceKHR(VkInstance,const VkDisplaySurfaceCreateInfoKHR*,const VkAllocationCallbacks*,VkSurfaceKHR* surface){*surface=(VkSurfaceKHR)(uintptr_t)new Surface;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkAcquireXlibDisplayEXT(VkPhysicalDevice,Display*,VkDisplayKHR){return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetRandROutputDisplayEXT(VkPhysicalDevice,Display*,unsigned long,VkDisplayKHR* display){*display=(VkDisplayKHR)1;return VK_SUCCESS;}
@@ -223,7 +231,15 @@ VKAPI_ATTR VkResult VKAPI_CALL vkRegisterDeviceEventEXT(VkDevice device,const Vk
  // The Android-owned display never hotplugs inside this Linux session.
  VkFenceCreateInfo create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};return D(vkCreateFence)(device,&create,allocator,fence);
 }
-VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device,const VkImageCreateInfo* info,const VkAllocationCallbacks* allocator,VkImage* value){VkResult result=D(vkCreateImage)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateImage: %d\n",result);return result;}
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateImage(VkDevice device,const VkImageCreateInfo* info,const VkAllocationCallbacks* allocator,VkImage* value){
+ quest::LinearVideoImage linear;
+ // Correct both the producer and SteamVR's import of the same video FD.
+ // The private decoder negotiates NV12, but the player retains its compressed
+ // modifier. Other formats and valid plane layouts pass through unchanged.
+ bool videoPlayer=program_invocation_short_name&&!strcmp(program_invocation_short_name,"vrlink")&&getenv("QUEST_VIDEO_STATEFUL");
+ if((videoPlayer||isCompositor())&&linear.prepare(*info))info=&linear.image;
+ VkResult result=D(vkCreateImage)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateImage: %d\n",result);return result;
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice device,const VkMemoryAllocateInfo* info,const VkAllocationCallbacks* allocator,VkDeviceMemory* value){VkResult result=D(vkAllocateMemory)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkAllocateMemory: %d\n",result);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device,VkPipelineCache cache,uint32_t count,const VkGraphicsPipelineCreateInfo* info,const VkAllocationCallbacks* allocator,VkPipeline* values){
  auto create=D(vkCreateGraphicsPipelines);VkResult result=create(device,cache,count,info,allocator,values);
@@ -245,6 +261,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device,VkPipel
    else{pipeline.alternate=VK_NULL_HANDLE;fprintf(stderr,"Quest room-view pipeline unavailable: %d\n",alternate);}
   }
   if(pipeline.stars)fprintf(stderr,"QUEST_ROOMVIEW_STARS_PIPELINE_READY\n");
+  // Frame draws its system layer directly into the final attachment. Its
+  // background pipelines are identified above; clearing alpha and omitting
+  // those draws preserves the panels without the desktop PS_DISTORT shader.
+  if(pipeline.background&&getenv("QUEST_FRAME_FINAL_PASS")&&!roomViewReady.exchange(true)){
+   if(FILE* marker=fopen("/run/stearlight/quest/passthrough.composition-ready","w"))fclose(marker);
+   fprintf(stderr,"QUEST_ROOMVIEW_FRAME_COMPOSITION_READY\n");
+  }
   if(pipeline.background||pipeline.stars||pipeline.alternate)roomPipelines[values[i]]=pipeline;
  }
  return result;

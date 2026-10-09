@@ -35,6 +35,20 @@
       "sha256": "bb00353d1a9123ade62fe7779c6efaeb6606650d5cfd005532ef06478e445acd"
     }
   },
+  "fonts": {
+    "noto-core": {
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-noto/fonts-noto-core_20201225-2_all.deb",
+      "sha256": "4fee136cb12fc197703a340e010478f780a41044339fcefbd78ed9aa96c8b617"
+    },
+    "noto-cjk": {
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-noto-cjk/fonts-noto-cjk_20230817+repack1-3_all.deb",
+      "sha256": "7d64b985f6fe128c99eae5610d5c047338e572bdcfb2bb09736be01b824a7f6c"
+    },
+    "noto-emoji": {
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-noto-color-emoji/fonts-noto-color-emoji_2.047-0ubuntu0.24.04.1_all.deb",
+      "sha256": "b102b62ce6a7313315223cff5e052bdf8fc0ad162c9e961ce0dc2202bc139ce2"
+    }
+  },
   "openxr": {
     "openxr.h": {
       "url": "https://raw.githubusercontent.com/KhronosGroup/OpenXR-SDK/release-1.0.34/include/openxr/openxr.h",

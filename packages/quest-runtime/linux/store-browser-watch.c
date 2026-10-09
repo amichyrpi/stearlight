@@ -7,10 +7,8 @@
 #include <string.h>
 
 static void prepare(void) {
-    if (system("/bin/sh /opt/quest/prepare-store-browser.sh") != 0)
+    if (system("/bin/sh /opt/quest/prepare-steam-client.sh") != 0)
         fputs("Quest browser adaptation failed\n", stderr);
-    if (system("/bin/sh /opt/quest/frame-steam-ipc") != 0)
-        fputs("Quest IPC adaptation unavailable for this Steam build\n", stderr);
 }
 
 static void prepare_cef(void) {
@@ -21,12 +19,12 @@ static void prepare_cef(void) {
 int main(void) {
     int descriptor = inotify_init1(IN_CLOEXEC);
     if (descriptor < 0) { perror("Store UI watch"); return 1; }
-    const char *directories[] = {"/opt/steam/steamui", "/opt/steam/steamrtarm64"};
-    int watches[] = {-1, -1};
+    const char *directories[] = {"/opt/steam/steamui", "/opt/steam/steamrtarm64", "/opt/steam"};
+    int watches[] = {-1, -1, -1};
     char events[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
     for (;;) {
         int missing = 0, added = 0;
-        for (int i = 0; i < 2; ++i) {
+        for (int i = 0; i < 3; ++i) {
             if (watches[i] >= 0) continue;
             watches[i] = inotify_add_watch(descriptor, directories[i],
                 IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF);
@@ -43,7 +41,7 @@ int main(void) {
         for (char *cursor = events; cursor < events + count;) {
             struct inotify_event *event = (struct inotify_event *)cursor;
             if (event->mask & (IN_IGNORED | IN_DELETE_SELF | IN_MOVE_SELF)) {
-                for (int i = 0; i < 2; ++i) {
+                for (int i = 0; i < 3; ++i) {
                     if (watches[i] != event->wd) continue;
                     inotify_rm_watch(descriptor, watches[i]);
                     watches[i] = -1;
@@ -51,7 +49,10 @@ int main(void) {
             } else if (event->len && !strcmp(event->name, "libcef.so")) prepare_cef();
             else if (event->len &&
                 (!strcmp(event->name, "library.js") ||
-                 !strcmp(event->name, "chromehtml.so"))) prepare();
+                 !strcmp(event->name, "chromehtml.so") ||
+                 !strcmp(event->name, "steamwebhelper.sh") ||
+                 !strcmp(event->name, "streaming_client") ||
+                 !strcmp(event->name, "RUNSTEAM.sh"))) prepare();
             cursor += sizeof(*event) + event->len;
         }
     }
