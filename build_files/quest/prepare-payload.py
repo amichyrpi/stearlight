@@ -194,6 +194,19 @@ def stage_update_helpers(overlay):
         target.chmod(0o755)
 
 
+def roomview_system_ui(native):
+    # The hidden-floor branch still draws a reflective floor in theater mode.
+    # Observe native room-view state without mutating saved floor preferences.
+    floors = [b'o&&ne.JJ.isTheaterMode&&r.createElement(s.B4o',
+              b'o&&c.H.m_bShowFloor&&(l||ne.JJ.isTheaterMode)&&r.createElement(s.B4o',
+              b'o&&c.H.m_bShowFloorFar&&!ne.JJ.isTheaterMode&&!l&&r.createElement(s.B4o']
+    if any(native.count(condition) != 1 for condition in floors):
+        raise RuntimeError("Quest room-view adapter does not match this SteamVR construct")
+    for condition in floors:
+        native = native.replace(condition, b'!(globalThis.RoomViewStore?.roomViewShowing||globalThis.RoomViewStore?.roomViewEnabled)&&' + condition)
+    return native
+
+
 def main():
     global BUILD_LOG
     parser = argparse.ArgumentParser(description=__doc__)
@@ -221,6 +234,8 @@ def main():
     overlay.mkdir(exist_ok=True)
     stage_fonts(overlay, downloads)
     stage_update_helpers(overlay)
+    for spec in LOCK["audio"].values():
+        run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
     for spec in LOCK["linux"].values():
         with tarfile.open(fetch(spec, downloads), "r:gz") as archive:
             archive.extractall(overlay, members=[m for m in archive
@@ -294,6 +309,10 @@ def main():
     (quest / "start-session.sh").write_text((linux / "start-session.sh").read_text())
     shutil.copyfile(linux / "system-bus.conf", quest / "system-bus.conf")
     shutil.copyfile(linux / "audio.pa", quest / "audio.pa")
+    shutil.copyfile(linux / "pipewire.conf", quest / "pipewire.conf")
+    wireplumber_config = overlay / "etc/wireplumber/wireplumber.conf.d/20-quest.conf"
+    wireplumber_config.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(linux / "wireplumber-quest.conf", wireplumber_config)
     webhelper = overlay / "usr/local/bin/stearlight-frame-vrwebhelper"
     webhelper.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(linux / "webhelper-launcher.sh", webhelper)
@@ -301,8 +320,9 @@ def main():
     # Observe Valve's native room-view action without replacing its UI.
     system_ui = Path("opt/steamvr/resources/webinterface/dashboard/systemui.js")
     (overlay / system_ui).parent.mkdir(parents=True, exist_ok=True)
-    (overlay / system_ui).write_bytes((linux / "roomview-bridge.js").read_bytes() + b"\n" +
-                                    (root / system_ui).read_bytes())
+    (overlay / system_ui).write_bytes((linux / "systemui-overlay-bridge.js").read_bytes() + b"\n" +
+                                    (linux / "roomview-bridge.js").read_bytes() + b"\n" +
+                                    roomview_system_ui((root / system_ui).read_bytes()))
     shutil.copyfile(linux / "store-browser-bridge.js", quest / "store-browser-bridge.js")
     shutil.copyfile(linux / "prepare-store-browser.sh", quest / "prepare-store-browser.sh")
     shutil.copyfile(linux / "prepare-steam-client.sh", quest / "prepare-steam-client.sh")
@@ -345,6 +365,7 @@ def main():
     source_files = [fetch(spec, downloads) for spec in LOCK["sources"].values()]
     source_files.append(fetch(LOCK["mesa"], downloads))
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fonts"].values())
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["audio"].values())
     (assets / "quest-dependencies.json").write_text(json.dumps(LOCK, indent=2) + "\n")
     source_bundle = output.parent / (output.name + "-sources.zip")
     with zipfile.ZipFile(source_bundle, "w", compression=zipfile.ZIP_STORED) as bundle:

@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <time.h>
 #include "roomview_shaders.h"
+#include "pcvr_color_shader.h"
 #include "gpu_bridge.h"
 #include "quest_bridge.h"
 #include "video_image_layout.h"
@@ -279,7 +280,12 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdKHR(VkDevice device,const VkMemoryGe
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateSampler(VkDevice device,const VkSamplerCreateInfo* info,const VkAllocationCallbacks* allocator,VkSampler* value){VkResult result=D(vkCreateSampler)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateSampler: %d\n",result);return result;}
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device,const char* name);
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device,const VkShaderModuleCreateInfo* info,const VkAllocationCallbacks* callbacks,VkShaderModule* output){
- auto create=D(vkCreateShaderModule);VkResult result=create(device,info,callbacks,output);
+ auto create=D(vkCreateShaderModule);
+ auto linear=isCompositor()?quest::pcvrColorShader(info->pCode,info->codeSize/4):std::vector<uint32_t>{};
+ auto corrected=*info;
+ if(!linear.empty()){corrected.pCode=linear.data();corrected.codeSize=linear.size()*4;}
+ VkResult result=create(device,&corrected,callbacks,output);
+ if(result==VK_SUCCESS&&!linear.empty())fprintf(stderr,"QUEST_PCVR_LINEAR_COLOR_READY\n");
  if(!isCompositor()||result!=VK_SUCCESS)return result;
  auto code=quest::roomViewShader(info->pCode,info->codeSize/4);RoomShader shader;
  shader.background=quest::roomViewBackgroundShader(info->pCode,info->codeSize/4);

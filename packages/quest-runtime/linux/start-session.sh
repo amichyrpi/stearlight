@@ -47,6 +47,8 @@ export PULSE_LATENCY_MSEC=30
 pulseaudio -n --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
  --log-target=stderr --file=/opt/quest/audio.pa >/tmp/quest-audio.log 2>&1 &
 audio_pid=$!
+pipewire_pid=
+wireplumber_pid=
 mkdir -p /var/lib/xkb
 xkbcomp -version
 printf '%s\n' 'xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xkb_types { include "complete" }; xkb_compatibility { include "complete" }; xkb_symbols { include "pc+us+inet(evdev)" }; };' | xkbcomp -w 0 -xkm - /tmp/quest-keymap.xkm
@@ -56,12 +58,28 @@ Xvfb :0 -screen 0 3664x1920x24 -xkbdir /opt/frame-gamescope/share/X11/xkb -ac -n
 xvfb_pid=$!
 monitor_pid=
 store_watch_pid=
-trap 'kill ${monitor_pid:+"$monitor_pid"} ${store_watch_pid:+"$store_watch_pid"} "$audio_pid" "$bluetooth_pid" "$xvfb_pid" "$dbus_pid" "$system_bus_pid" 2>/dev/null || true' EXIT
+trap 'kill ${monitor_pid:+"$monitor_pid"} ${store_watch_pid:+"$store_watch_pid"} ${wireplumber_pid:+"$wireplumber_pid"} ${pipewire_pid:+"$pipewire_pid"} "$audio_pid" "$bluetooth_pid" "$xvfb_pid" "$dbus_pid" "$system_bus_pid" 2>/dev/null || true' EXIT
 for attempt in $(seq 1 50);do
  if pactl info >/dev/null 2>&1;then echo STEARLIGHT_QUEST_AUDIO_READY;break;fi
  if ! kill -0 "$audio_pid" 2>/dev/null;then cat /tmp/quest-audio.log >&2;break;fi
  sleep .1
 done
+# The spatial PCVR player uses native PipeWire streams, rather than PulseAudio.
+# Publish the same real speaker/microphone endpoints through Pulse tunnels.
+export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"
+export PIPEWIRE_MODULE_DIR=/usr/lib/aarch64-linux-gnu/pipewire-0.3
+export SPA_PLUGIN_DIR=/usr/lib/aarch64-linux-gnu/spa-0.2
+/lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu \
+ /usr/bin/pipewire -c /opt/quest/pipewire.conf >/tmp/quest-pipewire.log 2>&1 &
+pipewire_pid=$!
+for attempt in $(seq 1 100);do
+ if [ -S "$XDG_RUNTIME_DIR/pipewire-0" ];then break;fi
+ if ! kill -0 "$pipewire_pid" 2>/dev/null;then cat /tmp/quest-pipewire.log >&2;break;fi
+ sleep .05
+done
+/lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu \
+ /usr/bin/wireplumber >/tmp/quest-wireplumber.log 2>&1 &
+wireplumber_pid=$!
 for attempt in $(seq 1 100);do
  if xset q >/dev/null 2>&1;then break;fi
  if ! kill -0 "$xvfb_pid" 2>/dev/null;then cat /tmp/xvfb.log;exit 1;fi

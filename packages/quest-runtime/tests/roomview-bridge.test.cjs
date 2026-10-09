@@ -43,43 +43,17 @@ test('ordinary browser contexts require no VR bridge', () => {
   assert.doesNotThrow(() => runInNewContext(source, {}));
 });
 
-test('room view hides the native construct floor and restores the user preference', () => {
+test('room view retains native floor preferences across toggles', () => {
   let event;
-  const ConstructStore = { m_bShowFloor: true };
+  const ConstructStore = { m_bShowFloor: true, m_bShowFloorFar: false };
   const VRHTML = {
     VRSettings: { Set() {} },
     RegisterForRoomViewChangedEvents(callback) { event = callback; },
   };
   runInNewContext(source, { VRHTML, ConstructStore });
   VRHTML.RegisterForRoomViewChangedEvents(() => {});
-  event(true, true);
-  event(false, true);
-  assert.equal(ConstructStore.m_bShowFloor, false);
-  event(false, false);
-  assert.equal(ConstructStore.m_bShowFloor, true);
-  ConstructStore.m_bShowFloor = false;
-  event(true, true);
-  event(false, false);
-  assert.equal(ConstructStore.m_bShowFloor, false);
-});
-
-test('an early room-view event is applied when the native store finishes loading', () => {
-  let event, pending, cleared = false;
-  const context = {
-    VRHTML: {
-      VRSettings: { Set() {} },
-      RegisterForRoomViewChangedEvents(callback) { event = callback; },
-    },
-    setInterval(callback) { pending = callback; return 42; },
-    clearInterval(id) { assert.equal(id, 42); cleared = true; },
-  };
-  runInNewContext(source, context);
-  context.VRHTML.RegisterForRoomViewChangedEvents(() => {});
-  event(true, true);
-  pending();
-  assert.equal(cleared, false);
-  context.ConstructStore = { m_bShowFloor: true };
-  pending();
-  assert.equal(context.ConstructStore.m_bShowFloor, false);
-  assert.equal(cleared, true);
+  for (const args of [[true, true], [false, true], [false, false]]) {
+    event(...args);
+    assert.deepEqual(ConstructStore, { m_bShowFloor: true, m_bShowFloorFar: false });
+  }
 });

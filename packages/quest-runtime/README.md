@@ -51,6 +51,10 @@ dashboard, both docks, lasers, move/resize controls and passthrough also
 passed that reopen check. Other PCVR games remain unverified.
 The separate `vrlink` PCVR player uses the same decoder through its stateful
 V4L2 interface, including source-change events and epoll notifications.
+The Quest compositor adapter converts the shipped spatial-video final-pass
+shader's reconstructed RGB to linear light before its sRGB output. It matches
+that shader exactly and leaves packed depth, motion and tracking data intact;
+an unrecognized Valve shader is left unchanged.
 The decoder accepts packed VR video up to 8192 pixels along either axis,
 with the same 16-megapixel allocation limit used for flat streams.
 The Vulkan adapter corrects overlapping chroma planes and stale Qualcomm
@@ -132,6 +136,9 @@ Bluetooth pairing, GATT servers, or Bluetooth audio. Linux PulseAudio sends
 through AudioRecord as a 48 kHz mono source. Allow microphone access in the
 headset; denying it leaves speaker output available. Both streams stop when
 the app loses OpenXR or Android audio focus. No microphone recordings are saved.
+The native PCVR player uses PipeWire. Its speaker and microphone endpoints
+tunnel through the same PulseAudio bridge; WirePlumber links the streams on
+each launch without a host-side audio service.
 The VR Store browser starts on the Store's real origin to avoid CEF rejecting
 the first navigation from its empty data page. A guard for the verified CEF
 binary handles a failed udev monitor without dereferencing it. Android denies
@@ -244,7 +251,8 @@ Valve's event handlers and UI.
 The dashboard, docks, controller graphics, and lasers stay over the real room.
 The Turnip adapter recognizes Frame's final-pass system-layer composition for
 room view, omits SteamVR's virtual sky, and preserves the layer's alpha. The
-native construct floor is hidden during room view and restored afterward.
+native construct observes room-view state to hide its regular, distant and
+theater floors without changing the user's saved floor preferences.
 The shipped star mesh is excluded using its exact shader, depth state and draw
 range; controller, laser and panel draws are preserved.
 Normal VR uses the original SteamVR pipelines.
