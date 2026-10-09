@@ -13,42 +13,79 @@
   } while (0)
 // Reproduce SteamVR's opaque-fd GL/Vulkan sharing contract on a real GPU.
 // Keep FRAMEBUFFER_SRGB disabled: linear views must retain the imported image.
-int main(void) {
-  void *x = dlopen("/usr/lib/aarch64-linux-gnu/libX11.so.6",
-                   RTLD_NOW | RTLD_GLOBAL),
-       *g = dlopen("/usr/lib/aarch64-linux-gnu/libGL.so.1",
-                   RTLD_NOW | RTLD_GLOBAL);
-  if (!x || !g) {
-    puts(dlerror());
-    return 1;
+int main(int argc, char** argv) {
+  int useEgl = argc == 2 && !strcmp(argv[1], "--egl");
+  int count = 0;
+  void *(*proc)(const unsigned char *) = NULL;
+  if (useEgl) {
+    void *g = dlopen("/usr/lib/aarch64-linux-gnu/libEGL.so.1",
+                     RTLD_NOW | RTLD_GLOBAL);
+    if (!g) {
+      puts(dlerror());
+      return 1;
+    }
+    void *(*display)(void *) = dlsym(g, "eglGetDisplay");
+    unsigned (*init)(void *, int *, int *) = dlsym(g, "eglInitialize");
+    unsigned (*bind)(unsigned) = dlsym(g, "eglBindAPI");
+    unsigned (*choose)(void *, const int *, void **, int, int *) =
+        dlsym(g, "eglChooseConfig");
+    void *(*context)(void *, void *, void *, const int *) =
+        dlsym(g, "eglCreateContext");
+    void *(*surface)(void *, void *, const int *) =
+        dlsym(g, "eglCreatePbufferSurface");
+    unsigned (*current)(void *, void *, void *, void *) =
+        dlsym(g, "eglMakeCurrent");
+    proc = dlsym(g, "eglGetProcAddress");
+    void *d = display(NULL), *config = NULL;
+    int major = 0, minor = 0;
+    int attrs[] = {0x3033, 1, 0x3040, 8, 0x3024, 8, 0x3023, 8,
+                   0x3022, 8, 0x3021, 8, 0x3038};
+    if (!init(d, &major, &minor) || !bind(0x30a2) ||
+        !choose(d, attrs, &config, 1, &count) || !count)
+      return 2;
+    int contextAttrs[] = {0x3098, 3, 0x30fb, 3, 0x3038};
+    int surfaceAttrs[] = {0x3057, 1, 0x3056, 1, 0x3038};
+    void *c = context(d, config, NULL, contextAttrs);
+    void *b = surface(d, config, surfaceAttrs);
+    if (!c || !b || !current(d, b, b, c))
+      return 3;
+  } else {
+    void *x = dlopen("/usr/lib/aarch64-linux-gnu/libX11.so.6",
+                     RTLD_NOW | RTLD_GLOBAL),
+         *g = dlopen("/usr/lib/aarch64-linux-gnu/libGL.so.1",
+                     RTLD_NOW | RTLD_GLOBAL);
+    if (!x || !g) {
+      puts(dlerror());
+      return 1;
+    }
+    void *(*open)(const char *) = dlsym(x, "XOpenDisplay");
+    void *d = open(":0");
+    if (!d)
+      return 2;
+    void **(*choose)(void *, int, const int *, int *) =
+        dlsym(g, "glXChooseFBConfig");
+    int attr[] = {0x8010, 4, 0x8011, 1, 0};
+    void **configs = choose(d, 0, attr, &count);
+    if (!count)
+      return 3;
+    void *(*create)(void *, void *, int, void *, int) =
+        dlsym(g, "glXCreateNewContext");
+    void *c = create(d, configs[0], 0x8014, 0, 1);
+    if (!c)
+      return 4;
+    unsigned long (*buffer)(void *, void *, const int *) =
+        dlsym(g, "glXCreatePbuffer");
+    int a[] = {0x8041, 1, 0x8040, 1, 0};
+    unsigned long b = buffer(d, configs[0], a);
+    int (*make)(void *, unsigned long, unsigned long, void *) =
+        dlsym(g, "glXMakeContextCurrent");
+    if (!make(d, b, b, c))
+      return 5;
+    proc = dlsym(g, "glXGetProcAddress");
   }
-  void *(*open)(const char *) = dlsym(x, "XOpenDisplay");
-  void *d = open(":0");
-  if (!d)
-    return 2;
-  void **(*choose)(void *, int, const int *, int *) =
-      dlsym(g, "glXChooseFBConfig");
-  int attr[] = {0x8010, 4, 0x8011, 1, 0}, count = 0;
-  void **configs = choose(d, 0, attr, &count);
-  if (!count)
-    return 3;
-  void *(*create)(void *, void *, int, void *, int) =
-      dlsym(g, "glXCreateNewContext");
-  void *c = create(d, configs[0], 0x8014, 0, 1);
-  if (!c)
-    return 4;
-  unsigned long (*buffer)(void *, void *, const int *) =
-      dlsym(g, "glXCreatePbuffer");
-  int a[] = {0x8041, 1, 0x8040, 1, 0};
-  unsigned long b = buffer(d, configs[0], a);
-  int (*make)(void *, unsigned long, unsigned long, void *) =
-      dlsym(g, "glXMakeContextCurrent");
-  if (!make(d, b, b, c))
-    return 5;
-  void *(*proc)(const unsigned char *) = dlsym(g, "glXGetProcAddress");
   const unsigned char *(*string)(unsigned) = proc((void *)"glGetString");
   const char *renderer = (const char *)string(0x1F01);
-  printf("GLX_RENDERER=%s\n", renderer);
+  printf("%s_RENDERER=%s\n", useEgl ? "EGL" : "GLX", renderer);
   void (*integer)(unsigned, int *) = proc((void *)"glGetIntegerv");
   const unsigned char *(*stringi)(unsigned, unsigned) =
       proc((void *)"glGetStringi");

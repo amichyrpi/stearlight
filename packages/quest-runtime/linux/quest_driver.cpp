@@ -37,9 +37,11 @@ public:
 };
 class Headset final:public Device,public vr::IVRDisplayComponent {
  vr::VRInputComponentHandle_t proximity=0;std::chrono::steady_clock::time_point lastBattery{};
+ bool haveProximity=false,lastProximity=false,haveEyes=false;float lastRate=0,lastIpd=-1;vr::HmdMatrix34_t lastEyes[2]{};
 public:
  vr::EVRInitError Activate(uint32_t id)override{
-  base(id,"STEARLIGHT-QUEST2-HMD","Quest 2");auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,"stearlight-quest/quest2");p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);frame();return vr::VRInitError_None;
+  haveProximity=haveEyes=false;lastRate=0;lastIpd=-1;lastBattery={};
+  base(id,"STEARLIGHT-QUEST2-HMD","Oculus Quest2");auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,"stearlight-quest/quest2");p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);frame();return vr::VRInitError_None;
  }
  void* GetComponent(const char* version)override{return version&&!strcmp(version,vr::IVRDisplayComponent_Version)?static_cast<vr::IVRDisplayComponent*>(this):nullptr;}
  void GetWindowBounds(int32_t* x,int32_t* y,uint32_t* w,uint32_t* h)override{*x=*y=0;*w=state.width*2;*h=state.height;}
@@ -51,33 +53,80 @@ public:
  bool ComputeInverseDistortion(vr::HmdVector2_t* out,vr::EVREye,uint32_t,float u,float v)override{if(!out)return false;out->v[0]=u;out->v[1]=v;return true;}
  vr::DriverPose_t GetPose()override{auto p=trackedPose(state.headset);p.deviceIsConnected=true;return p;}
  void frame()override{
-  if(index==vr::k_unTrackedDeviceIndexInvalid)return;vr::VRDriverInput()->UpdateBooleanComponent(proximity,state.session_focused,0);vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,GetPose(),sizeof(vr::DriverPose_t));if((state.headset.flags&3)==3){auto left=eyeToHead(0),right=eyeToHead(1);vr::VRServerDriverHost()->SetDisplayEyeToHead(index,left,right);float dx=right.m[0][3]-left.m[0][3];vr::VRProperties()->SetFloatProperty(properties,vr::Prop_UserIpdMeters_Float,std::fabs(dx));}
-  vr::VRProperties()->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);
+  if(index==vr::k_unTrackedDeviceIndexInvalid)return;
+  bool focused=state.session_focused!=0;
+  if(!haveProximity||focused!=lastProximity){vr::VRDriverInput()->UpdateBooleanComponent(proximity,focused,0);lastProximity=focused;haveProximity=true;}
+  vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,GetPose(),sizeof(vr::DriverPose_t));
+  if((state.headset.flags&3)==3){
+   vr::HmdMatrix34_t eyes[]={eyeToHead(0),eyeToHead(1)};bool changed=!haveEyes;
+   for(int eye=0;eye<2;eye++)for(int row=0;row<3;row++)for(int column=0;column<4;column++)changed=changed||std::fabs(eyes[eye].m[row][column]-lastEyes[eye].m[row][column])>1e-5f;
+   if(changed){vr::VRServerDriverHost()->SetDisplayEyeToHead(index,eyes[0],eyes[1]);memcpy(lastEyes,eyes,sizeof(eyes));haveEyes=true;}
+   float ipd=std::fabs(eyes[1].m[0][3]-eyes[0].m[0][3]);
+   if(std::fabs(ipd-lastIpd)>1e-5f){vr::VRProperties()->SetFloatProperty(properties,vr::Prop_UserIpdMeters_Float,ipd);lastIpd=ipd;}
+  }
+  if(state.refresh_hz>0&&state.refresh_hz!=lastRate){
+   auto* p=vr::VRProperties();p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);
+   // vrlink requires a nonempty frequency list before activating the remote
+   // HMD. Advertise the actual active OpenXR rate; runtime switching is not
+   // exposed by this driver yet.
+   p->SetProperty(properties,vr::Prop_DisplayAvailableFrameRates_Float_Array,&state.refresh_hz,sizeof(state.refresh_hz),vr::k_unFloatPropertyTag);
+   p->SetBoolProperty(properties,vr::Prop_DisplaySupportsMultipleFramerates_Bool,false);
+   p->SetBoolProperty(properties,vr::Prop_DisplaySupportsRuntimeFramerateChange_Bool,false);lastRate=state.refresh_hz;
+  }
   auto now=std::chrono::steady_clock::now();if(now-lastBattery<std::chrono::seconds(1))return;lastBattery=now;std::ifstream file("/run/stearlight/quest/device.json");std::string json((std::istreambuf_iterator<char>(file)),{});auto key=json.find("\"battery_percent\":");if(key!=std::string::npos){int value=std::atoi(json.c_str()+key+18);vr::VRProperties()->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,value>=0);if(value>=0)vr::VRProperties()->SetFloatProperty(properties,vr::Prop_DeviceBatteryPercentage_Float,value/100.f);}key=json.find("\"charging\":");if(key!=std::string::npos)vr::VRProperties()->SetBoolProperty(properties,vr::Prop_DeviceIsCharging_Bool,json.compare(key+11,4,"true")==0);
  }
 };
 class Controller final:public Device {
  int hand;std::array<vr::VRInputComponentHandle_t,7> clicks{};vr::VRInputComponentHandle_t trigger=0,squeeze=0,x=0,y=0,touch=0,haptic=0;
+ bool haveInputs=false;std::array<bool,8> previousClicks{};std::array<float,4> previousScalars{};
 public:
  explicit Controller(int value):hand(value){}
  const char* serial(){return hand?"STEARLIGHT-QUEST2-RIGHT":"STEARLIGHT-QUEST2-LEFT";}
  bool acceptsHaptic(const vr::VREvent_HapticVibration_t& event)const{return haptic&&event.componentHandle==haptic&&event.containerHandle==properties;}
  vr::EVRInitError Activate(uint32_t id)override{
+  haveInputs=false;
   base(id,serial(),hand?"Oculus Quest2 (Right Controller)":"Oculus Quest2 (Left Controller)");auto* p=vr::VRProperties();p->SetStringProperty(properties,vr::Prop_RenderModelName_String,hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"frame_controller");p->SetStringProperty(properties,vr::Prop_InputProfilePath_String,"{frame_controller}/input/frame_controller_profile.json");p->SetStringProperty(properties,vr::Prop_ControllerType_String,"frame_controller");p->SetInt32Property(properties,vr::Prop_ControllerRoleHint_Int32,hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);p->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,false);
   const char* paths[]={"/input/a/click","/input/b/click","/input/x/click","/input/y/click","/input/thumbstick/click","/input/system/click","/input/trigger/click"};for(int i=0;i<7;i++)vr::VRDriverInput()->CreateBooleanComponent(properties,paths[i],&clicks[i]);vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/trigger/touch",&touch);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/trigger/value",&trigger,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/grip/value",&squeeze,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/x",&x,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/y",&y,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateHapticComponent(properties,"/output/haptic",&haptic);return vr::VRInitError_None;
  }
  vr::DriverPose_t GetPose()override{return trackedPose(quest::controllerModelPose(state.grip[hand],hand));}
- void frame()override{if(index==vr::k_unTrackedDeviceIndexInvalid)return;vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,GetPose(),sizeof(vr::DriverPose_t));for(int i=0;i<6;i++)vr::VRDriverInput()->UpdateBooleanComponent(clicks[i],(state.buttons[hand]&(1u<<i))!=0,0);vr::VRDriverInput()->UpdateBooleanComponent(clicks[6],state.trigger[hand]>.75f,0);vr::VRDriverInput()->UpdateBooleanComponent(touch,state.touches[hand]!=0,0);vr::VRDriverInput()->UpdateScalarComponent(trigger,state.trigger[hand],0);vr::VRDriverInput()->UpdateScalarComponent(squeeze,state.squeeze[hand],0);vr::VRDriverInput()->UpdateScalarComponent(x,state.thumbstick[hand][0],0);vr::VRDriverInput()->UpdateScalarComponent(y,state.thumbstick[hand][1],0);}
+ void frame()override{
+  if(index==vr::k_unTrackedDeviceIndexInvalid)return;
+  vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,GetPose(),sizeof(vr::DriverPose_t));
+  std::array<bool,8> buttons{};for(int i=0;i<6;i++)buttons[i]=(state.buttons[hand]&(1u<<i))!=0;
+  buttons[6]=state.trigger[hand]>.75f;buttons[7]=state.touches[hand]!=0;
+  for(int i=0;i<8;i++)if(!haveInputs||buttons[i]!=previousClicks[i])vr::VRDriverInput()->UpdateBooleanComponent(i<7?clicks[i]:touch,buttons[i],0);
+  std::array<float,4> scalars={state.trigger[hand],state.squeeze[hand],state.thumbstick[hand][0],state.thumbstick[hand][1]};
+  vr::VRInputComponentHandle_t handles[]={trigger,squeeze,x,y};
+  for(int i=0;i<4;i++)if(!haveInputs||scalars[i]!=previousScalars[i])vr::VRDriverInput()->UpdateScalarComponent(handles[i],scalars[i],0);
+  previousClicks=buttons;previousScalars=scalars;haveInputs=true;
+ }
 };
 class Provider final:public vr::IServerTrackedDeviceProvider {
  Headset head;Controller left{0},right{1};
  int hapticSocket=-1;
+ uint32_t measuredSequence=0,measuredCalls=0,measuredSamples=0;
+ bool havePublished=false;uint32_t publishedSequence=0;
+ std::chrono::steady_clock::time_point measuredSince=std::chrono::steady_clock::now();
 public:
  vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;if(!vr::VRServerDriverHost()->TrackedDeviceAdded("STEARLIGHT-QUEST2-HMD",vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
  void Cleanup()override{head.Deactivate();left.Deactivate();right.Deactivate();if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
  const char* const* GetInterfaceVersions()override{return vr::k_InterfaceVersions;}
  void RunFrame()override{
-  if(readTracking()){head.frame();left.frame();right.frame();}
+  ++measuredCalls;
+  if(readTracking()){
+   if(state.sequence!=measuredSequence){measuredSequence=state.sequence;++measuredSamples;}
+   // OpenXR writes at the headset rate. Re-reading a sample must not repeat
+   // SteamVR property/input work, but haptics below are polled on every call.
+   if(!havePublished||publishedSequence!=state.sequence){
+    // Android owns presentation. Forward each observed OpenXR display tick
+    // so Frame's renderer does not wait for an unavailable Linux display IRQ.
+    if(state.session_visible&&state.predicted_monotonic_ns&&state.refresh_hz>0)
+     vr::VRServerDriverHost()->VsyncEvent(0);
+    head.frame();left.frame();right.frame();publishedSequence=state.sequence;havePublished=true;
+   }
+  }
+  auto measuredNow=std::chrono::steady_clock::now();double measuredSeconds=std::chrono::duration<double>(measuredNow-measuredSince).count();
+  if(measuredSeconds>=10){char message[160];snprintf(message,sizeof(message),"Quest tracking: %.1f calls/s, %.1f new samples/s",measuredCalls/measuredSeconds,measuredSamples/measuredSeconds);vr::VRDriverLog()->Log(message);measuredCalls=measuredSamples=0;measuredSince=measuredNow;}
   vr::VREvent_t event;
   while(vr::VRServerDriverHost()->PollNextEvent(&event,sizeof(event))){
    if(event.eventType!=vr::VREvent_Input_HapticVibration)continue;

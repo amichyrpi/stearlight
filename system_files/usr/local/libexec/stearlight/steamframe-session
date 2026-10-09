@@ -21,6 +21,12 @@ steam_log="$HOME/.local/share/Steam/logs/steam_output.log"
 steam_trace_log=/tmp/stearlight-steam-xtrace.log
 mkdir -p "$HOME/.local/share/Steam/logs" "$HOME/.cache" "$XDG_RUNTIME_DIR"
 : >"$steam_log"
+prepare_steam_client() {
+  if [ "${STEARLIGHT_QUEST_RUNTIME:-0}" = 1 ];then
+    /bin/sh /opt/quest/prepare-steam-client.sh
+  fi
+}
+prepare_steam_client
 printf 'STEARLIGHT ARM64 SESSION HOME=%s UID=' "$HOME"
 id -u
 printf 'STEARLIGHT ARM64 SESSION STEAM ROOT=%s\n' "$steam_root"
@@ -241,6 +247,7 @@ while [ "$attempt" -lt "$steam_wait_attempts" ]; do
           "$steam_launcher_restarts"
       fi
       cd "$steam_root"
+      prepare_steam_client
       if [ "${STEARLIGHT_CAPTURE_SCREENSHOT:-0}" = 1 ]; then
         VK_ICD_FILENAMES=$steam_vk_icd bash -x "$steam_root/RUNSTEAM.sh" \
           >>"$steam_log" 2>"$steam_trace_log" &
@@ -489,6 +496,7 @@ while [ "$attempt" -lt "$dashboard_wait_attempts" ]; do
            [ "$steam_launcher_restarts" -lt 2 ]; then
           steam_launcher_restarts=$((steam_launcher_restarts + 1))
           printf 'STEARLIGHT ARM64 STEAM RESTART AFTER READY (%s)\n' "$steam_launcher_restarts"
+          prepare_steam_client
           VK_ICD_FILENAMES=$steam_vk_icd bash "$steam_root/RUNSTEAM.sh" >>"$steam_log" 2>&1 &
           steam_launcher_pid=$!
           sleep 1

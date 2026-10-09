@@ -10,9 +10,15 @@ between Linux processes. Steam's browser also initializes ANGLE with the real
 Turnip Vulkan renderer. SteamVR's separate OpenGL context uses the matching
 Mesa 26.1.6 Zink loader over Turnip. A GPU probe verifies opaque-fd image
 sharing by rendering in OpenGL and reading every pixel back through Vulkan.
-The eye buffers
-are 1832 × 1920 each. The app requests
-120 Hz; the connected headset has so far reported 72 Hz.
+The eye buffers are 1374 x 1440 each: 75% of the Quest 2's native dimensions,
+reducing scene pixels by 43.75%. The Vulkan display modes and startup GPU
+probe use the actual OpenXR buffer size. The app requests 120 Hz; the
+connected headset reports 72 Hz. Scene rendering still falls below 72 FPS
+under load; the display refresh rate is not the scene update rate.
+
+Noto fonts are bundled for broad script coverage, including CJK and emoji.
+Japanese and Korean choose the matching regional CJK faces. Fonts work
+offline; their cache is rebuilt only when the bundled fonts change.
 
 Launch **Stearlight OS** from the Quest app library after installing the APK.
 It installs the bundled rootfs and starts Linux, SteamVR, and Steam itself.
@@ -30,6 +36,33 @@ Steam's browser ownership checks and shared GPU textures.
 
 Steam's native sign-in panel, separate left dock, bottom dock, and Touch lasers
 are supplied by Valve's runtime.
+The streaming player uses the matching Mesa 26.1.6 EGL vendor with a
+surfaceless display. EGL/Vulkan pixel sharing is checked on the Quest;
+the older rootfs EGL driver produces black shared images. Its V4L2 decoder
+interface is adapted to Android MediaCodec for
+H.264 and HEVC; Android owns the codec hardware. The adapter is loaded only
+by the streaming player. A private headless allocator supplies shared video
+buffers to Steam's CPU texture-upload fallback; it does not replace system
+libdrm or take over display output. Pixel and timestamp checks pass for both codecs at
+1280 x 720. Non-VR game streaming has been verified on Quest 2 with both
+video and audio. VRChat's menus/world have been confirmed in clear stereo
+with a connected stream after reopening the full standalone APK. The
+dashboard, both docks, lasers, move/resize controls and passthrough also
+passed that reopen check. Other PCVR games remain unverified.
+The separate `vrlink` PCVR player uses the same decoder through its stateful
+V4L2 interface, including source-change events and epoll notifications.
+The Quest compositor adapter converts the shipped spatial-video final-pass
+shader's reconstructed RGB to linear light before its sRGB output. It matches
+that shader exactly and leaves packed depth, motion and tracking data intact;
+an unrecognized Valve shader is left unchanged.
+The decoder accepts packed VR video up to 8192 pixels along either axis,
+with the same 16-megapixel allocation limit used for flat streams.
+The Vulkan adapter corrects overlapping chroma planes and stale Qualcomm
+compressed modifiers in the VR player and compositor when the decoder
+supplies linear NV12. Frame's facet renderer and final-pass system-layer
+composition are enabled for spatially encoded PCVR video.
+The Quest driver publishes its active OpenXR refresh rate in the display-rate
+list required by the host's wireless HMD handshake.
 CPU-painted move and resize controls use Valve's explicit atlas bounds on Quest;
 embedded scanline coordinates otherwise display gray blocks or unrelated text.
 The adapter checks the matching UI code and preserves unknown runtime versions.
@@ -43,6 +76,31 @@ color and depth attachments, preventing stale right-eye trails on Turnip.
 Each image carries the input eye poses sampled when Linux acquires it, and held
 images keep those poses. These samples approximate SteamVR's final asynchronous
 rendering pose; full motion stability remains under validation.
+
+Display events follow OpenXR's refresh timing instead of spinning SteamVR's
+vblank thread. The Frame compositor also receives a VsyncEvent for each new
+visible OpenXR tracking sample, avoiding its one-second display-IRQ timeout.
+Tracking publishes each new sample once; unchanged button and
+display properties are not resent. PRoot caches process lookups and passes
+Adreno GPU ioctls, futex wakeups, and waits with an expected owner TID of
+0, 1 or 2 directly to the kernel. Potentially guest-owned robust-mutex waits
+retain their owner-death handling. OpenXR reprojects previously released eye
+images between Linux updates, with the same image poses. GPU ownership
+transfers and completion waits remain explicit.
+A shared Android graphics context copies incoming frames and acknowledges
+Linux independently of OpenXR's frame wait. Three history slots separate the
+image being sampled by both eyes, the newest pending image, and an ongoing
+copy. Copy completion precedes publication and acknowledgement. Unused pending
+images can be replaced; the displayed image stays protected until both eye
+draws have completed. Image copies, color conversion and stereo completion
+waits retain the original rendering path.
+
+`adb logcat -s StearlightGPU` reports `Scene updates`, the rate of new Linux
+frames adopted for display, and `Linux handoffs`, the copy thread's input rate.
+Handoffs can include pending frames replaced before display.
+The headset's OpenXR submission rate also includes repeated images and should
+not be used as the scene frame rate. Linux's compositor log separately reports
+command recording, GPU completion, and display handoff times.
 
 Dashboard readiness lasts for the VR session, including page changes that
 temporarily replace browser textures. These changes do not replay startup.
@@ -59,6 +117,16 @@ Steam's CEF owner query reads those socket inodes and the actual process
 descriptors directly, avoiding repeated shell forks under PRoot. Other `lsof`
 queries retain the original GNU implementation.
 
+Steam's native **Settings > System > System Update Channel** selector offers
+Stable and Beta. These select Valve's ARM64 Steam client feeds, respectively
+`steamdeck_stable` and `publicbeta`. Quit Stearlight from the Quest menu and
+reopen it after changing the channel. A channel change forces one native
+update check, including when returning to an older Stable build. The choice
+persists across launches; the client updater downloads and installs its own
+packages. Startup and the update watcher restore the Quest browser and
+streaming adapters after Valve replaces those files. The Stearlight OS/rootfs
+itself is updated by installing a newer APK; SteamOS image updates do not apply.
+
 Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. A BlueZ LE advertising
 bridge passes Steam's original nearby-login advertisement to Android's actual
@@ -68,6 +136,9 @@ Bluetooth pairing, GATT servers, or Bluetooth audio. Linux PulseAudio sends
 through AudioRecord as a 48 kHz mono source. Allow microphone access in the
 headset; denying it leaves speaker output available. Both streams stop when
 the app loses OpenXR or Android audio focus. No microphone recordings are saved.
+The native PCVR player uses PipeWire. Its speaker and microphone endpoints
+tunnel through the same PulseAudio bridge; WirePlumber links the streams on
+each launch without a host-side audio service.
 The VR Store browser starts on the Store's real origin to avoid CEF rejecting
 the first navigation from its empty data page. A guard for the verified CEF
 binary handles a failed udev monitor without dereferencing it. Android denies
@@ -84,7 +155,7 @@ are unknown and are not invented.
 Use a mounted **clean** Stearlight ARM64 image as the input. On Ubuntu 24.04,
 install Python 3.12, the ARM64 GCC/G++ cross compilers, Ninja, pkg-config,
 Bison, Flex, glslangValidator, zlib headers, dpkg-deb, patchelf, FFmpeg (including
-ffprobe), and libdbus-1 development headers. Create a
+ffprobe), and libdbus-1 and libdrm development headers. Create a
 Python environment with `build_files/quest/requirements.txt`. Mesa's code
 generators also need those Python modules visible to the Python interpreter
 selected by Meson. Install the Linux Android NDK as well; it compiles the
@@ -178,9 +249,10 @@ platform adapter forwards that action to Quest's camera layer while preserving
 Valve's event handlers and UI.
 
 The dashboard, docks, controller graphics, and lasers stay over the real room.
-The Turnip adapter selects a separate system-layer composition pipeline for
+The Turnip adapter recognizes Frame's final-pass system-layer composition for
 room view, omits SteamVR's virtual sky, and preserves the layer's alpha. The
-native construct floor is hidden during room view and restored afterward.
+native construct observes room-view state to hide its regular, distant and
+theater floors without changing the user's saved floor preferences.
 The shipped star mesh is excluded using its exact shader, depth state and draw
 range; controller, laser and panel draws are preserved.
 Normal VR uses the original SteamVR pipelines.

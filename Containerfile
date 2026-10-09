@@ -79,7 +79,7 @@ FROM --platform=$TARGETPLATFORM alpine:edge AS rootfs
 # BusyBox's lsof applet cannot supply that protocol and causes HTTP 403.
 RUN apk add --no-cache alpine-base bash coreutils dbus dbus-x11 e2fsprogs \
     eudev eudev-openrc udev-init-scripts-openrc \
-    font-dejavu grim linux-firmware-none linux-lts bluez bluez-openrc linux-tools-usbip \
+    font-dejavu font-noto-all font-noto-cjk font-noto-emoji grim linux-firmware-none linux-lts bluez bluez-openrc linux-tools-usbip \
     lsof mesa-dri-gallium mesa-egl mesa-vulkan-virtio \
     mesa-vulkan-swrast mpv networkmanager networkmanager-cli networkmanager-openrc \
     pulseaudio pulseaudio-utils seatd util-linux-misc vulkan-loader xorg-server \
@@ -127,8 +127,11 @@ RUN mkdir -p /home/stearlight/.steam \
 COPY system_files/usr/share/gamescope-session-plus/ /usr/share/gamescope-session-plus/
 COPY system_files/etc/gamescope/scripts/ /etc/gamescope/scripts/
 COPY system_files/etc/NetworkManager/ /etc/NetworkManager/
+COPY system_files/etc/fonts/ /etc/fonts/
 COPY system_files/etc/udev/rules.d/ /etc/udev/rules.d/
 COPY system_files/usr/bin/gamescope-session-plus /usr/bin/gamescope-session-plus
+COPY --chmod=0755 system_files/usr/bin/steamos-select-branch system_files/usr/bin/steamos-update /usr/bin/
+COPY --chmod=0755 system_files/usr/bin/steamos-polkit-helpers/steamos-select-branch system_files/usr/bin/steamos-polkit-helpers/steamos-update /usr/bin/steamos-polkit-helpers/
 COPY --from=fake-tracking /out/libstearlight-vulkan-wsi-shim.so /opt/steamvr/lib/linuxarm64/libstearlight-vulkan-wsi-shim.so
 COPY --from=fake-tracking /out/vrcompositor-wsi-launcher /opt/steamvr/bin/linuxarm64/vrcompositor.stearlight-launcher
 COPY --from=fake-tracking /out/libstearlight-xcb-shm-present.so /opt/steamvr/lib/linuxarm64/libstearlight-xcb-shm-present.so

@@ -89,6 +89,18 @@ def stage_glx_dependencies(root, library_dir):
         pending.extend(line.split()[0] for line in requirements.splitlines() if line.strip())
 
 
+def build_streaming_allocator(linux, quest, work):
+    # libdrm's public headers are architecture neutral; libc remains the
+    # cross compiler's ARM64 sysroot. Never add all of /usr/include to it.
+    headers = work / "streaming-drm-headers"
+    headers.mkdir(exist_ok=True)
+    for name in ("xf86drm.h", "xf86drmMode.h"):
+        shutil.copyfile(Path("/usr/include") / name, headers / name)
+    run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
+        f"-I{headers}", "-I/usr/include/libdrm", linux / "streaming-drm.cpp",
+        "-pthread", "-o", quest / "libquest_streaming_drm.so")
+
+
 def build_mesa(root, work, downloads):
     source_archive = fetch(LOCK["mesa"], downloads)
     sources = work / "mesa"
@@ -130,13 +142,14 @@ needs_exe_wrapper = true
         setup += ["--reconfigure"]
     run(*setup, build, mesa, "--cross-file", cross, "--buildtype=release", "--wrap-mode=nofallback",
         "-Dvulkan-drivers=freedreno", "-Dfreedreno-kmds=kgsl", "-Dgallium-drivers=zink", "-Dplatforms=x11",
-        "-Dopengl=true", "-Degl=disabled", "-Dgbm=disabled", "-Dglx=dri", "-Dglvnd=enabled", "-Dllvm=disabled",
+        "-Dopengl=true", "-Degl=enabled", "-Dgbm=disabled", "-Dglx=dri", "-Dglvnd=enabled", "-Dllvm=disabled",
         "-Dvideo-codecs=", "-Dbuild-tests=false", "-Dtools=", "-Dvalgrind=disabled", "-Dlibunwind=disabled",
         "-Ddisplay-info=disabled", "-Dzstd=disabled", "-Dandroid-libbacktrace=disabled", "-Dzlib=enabled",
         "-Dexpat=disabled", "-Dxmlconfig=disabled", "-Dspirv-tools=disabled", "-Dshader-cache=disabled")
     run("ninja", "-C", build, "-j", min(os.cpu_count() or 2, 8),
         "src/freedreno/vulkan/libvulkan_freedreno.so",
-        "src/gallium/targets/dri/libgallium-26.1.6.so", "src/glx/libGLX_mesa.so.0.0.0")
+        "src/gallium/targets/dri/libgallium-26.1.6.so", "src/glx/libGLX_mesa.so.0.0.0",
+        "src/egl/libEGL_mesa.so.0.0.0")
     return build
 
 
@@ -157,6 +170,41 @@ def overlay_archive(overlay, target):
                         archive.addfile(info, source)
                 else:
                     archive.addfile(info)
+
+
+def stage_fonts(overlay, downloads):
+    for spec in LOCK["fonts"].values():
+        run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
+    quest = overlay / "opt/quest"
+    quest.mkdir(parents=True, exist_ok=True)
+    version = hashlib.sha256(json.dumps(LOCK["fonts"], sort_keys=True).encode()).hexdigest()
+    (quest / "fonts.version").write_text(version + "\n")
+    config = Path("etc/fonts/conf.d/66-stearlight-cjk.conf")
+    (overlay / config).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(REPO / "system_files" / config, overlay / config)
+
+
+def stage_update_helpers(overlay):
+    for name in ["steamos-select-branch", "steamos-update",
+                 "steamos-polkit-helpers/steamos-select-branch", "steamos-polkit-helpers/steamos-update"]:
+        relative = Path("usr/bin") / name
+        target = overlay / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / "system_files" / relative, target)
+        target.chmod(0o755)
+
+
+def roomview_system_ui(native):
+    # The hidden-floor branch still draws a reflective floor in theater mode.
+    # Observe native room-view state without mutating saved floor preferences.
+    floors = [b'o&&ne.JJ.isTheaterMode&&r.createElement(s.B4o',
+              b'o&&c.H.m_bShowFloor&&(l||ne.JJ.isTheaterMode)&&r.createElement(s.B4o',
+              b'o&&c.H.m_bShowFloorFar&&!ne.JJ.isTheaterMode&&!l&&r.createElement(s.B4o']
+    if any(native.count(condition) != 1 for condition in floors):
+        raise RuntimeError("Quest room-view adapter does not match this SteamVR construct")
+    for condition in floors:
+        native = native.replace(condition, b'!(globalThis.RoomViewStore?.roomViewShowing||globalThis.RoomViewStore?.roomViewEnabled)&&' + condition)
+    return native
 
 
 def main():
@@ -184,6 +232,10 @@ def main():
         "--root", root, "--assets", assets)
     overlay = work / "quest-overlay"
     overlay.mkdir(exist_ok=True)
+    stage_fonts(overlay, downloads)
+    stage_update_helpers(overlay)
+    for spec in LOCK["audio"].values():
+        run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
     for spec in LOCK["linux"].values():
         with tarfile.open(fetch(spec, downloads), "r:gz") as archive:
             archive.extractall(overlay, members=[m for m in archive
@@ -195,11 +247,22 @@ def main():
     run("aarch64-linux-gnu-strip", quest / "libvulkan_freedreno.so")
     gl_libraries = overlay / "usr/lib/aarch64-linux-gnu"
     gl_libraries.mkdir(parents=True, exist_ok=True)
-    for source in ["src/gallium/targets/dri/libgallium-26.1.6.so", "src/glx/libGLX_mesa.so.0.0.0"]:
+    # EGL and GLX must share the matching Mesa driver for opaque-fd textures.
+    # The older rootfs EGL driver can render locally while Vulkan sees black.
+    egl_vendors = overlay / "usr/share/glvnd/egl_vendor.d"
+    egl_vendors.mkdir(parents=True, exist_ok=True)
+    (egl_vendors / "50_mesa.json").write_text(json.dumps({
+        "file_format_version": "1.0.0",
+        "ICD": {"library_path": "/usr/lib/aarch64-linux-gnu/libEGL_mesa.so.0"}}))
+    for source in ["src/gallium/targets/dri/libgallium-26.1.6.so", "src/glx/libGLX_mesa.so.0.0.0",
+                   "src/egl/libEGL_mesa.so.0.0.0"]:
         destination = gl_libraries / Path(source).name
         shutil.copyfile(mesa_build / source, destination)
         run("aarch64-linux-gnu-strip", "--strip-unneeded", destination)
         run("patchelf", "--set-rpath", "$ORIGIN", destination)
+    egl_alias = gl_libraries / "libEGL_mesa.so.0"
+    egl_alias.unlink(missing_ok=True)
+    egl_alias.symlink_to("libEGL_mesa.so.0.0.0")
     includes = REPO / "packages/quest-runtime/app/src/main/cpp"
     linux = REPO / "packages/quest-runtime/linux"
     driver = quest / "stearlight-quest"
@@ -214,6 +277,13 @@ def main():
         run("aarch64-linux-gnu-gcc", "-O2", linux / f"{name}.c", *libs, "-o", quest / name)
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "socket-report.c", "-ldl", "-o", quest / "libquest_socket.so")
+    run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
+        f"-I{includes}", linux / "video-bridge.cpp", "-ldl", "-pthread",
+        "-o", quest / "libquest_video.so")
+    build_streaming_allocator(linux, quest, work)
+    run("aarch64-linux-gnu-gcc", "-O2", linux / "streaming-client-launcher.c",
+        "-o", quest / "streaming-client-launcher")
+    shutil.copyfile(linux / "prepare-streaming-client.sh", quest / "prepare-streaming-client.sh")
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
@@ -239,6 +309,10 @@ def main():
     (quest / "start-session.sh").write_text((linux / "start-session.sh").read_text())
     shutil.copyfile(linux / "system-bus.conf", quest / "system-bus.conf")
     shutil.copyfile(linux / "audio.pa", quest / "audio.pa")
+    shutil.copyfile(linux / "pipewire.conf", quest / "pipewire.conf")
+    wireplumber_config = overlay / "etc/wireplumber/wireplumber.conf.d/20-quest.conf"
+    wireplumber_config.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(linux / "wireplumber-quest.conf", wireplumber_config)
     webhelper = overlay / "usr/local/bin/stearlight-frame-vrwebhelper"
     webhelper.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(linux / "webhelper-launcher.sh", webhelper)
@@ -246,10 +320,13 @@ def main():
     # Observe Valve's native room-view action without replacing its UI.
     system_ui = Path("opt/steamvr/resources/webinterface/dashboard/systemui.js")
     (overlay / system_ui).parent.mkdir(parents=True, exist_ok=True)
-    (overlay / system_ui).write_bytes((linux / "roomview-bridge.js").read_bytes() + b"\n" +
-                                    (root / system_ui).read_bytes())
+    (overlay / system_ui).write_bytes((linux / "systemui-overlay-bridge.js").read_bytes() + b"\n" +
+                                    (linux / "roomview-bridge.js").read_bytes() + b"\n" +
+                                    roomview_system_ui((root / system_ui).read_bytes()))
     shutil.copyfile(linux / "store-browser-bridge.js", quest / "store-browser-bridge.js")
     shutil.copyfile(linux / "prepare-store-browser.sh", quest / "prepare-store-browser.sh")
+    shutil.copyfile(linux / "prepare-steam-client.sh", quest / "prepare-steam-client.sh")
+    shutil.copyfile(linux / "steam-channel-args.sh", quest / "steam-channel-args.sh")
     shutil.copyfile(linux / "prepare-cef.sh", quest / "prepare-cef.sh")
     shutil.copyfile(linux / "prepare-frame-controls.sh", quest / "prepare-frame-controls.sh")
     shutil.copyfile(linux / "steamwebhelper-launcher.sh", quest / "steamwebhelper-launcher.sh")
@@ -287,6 +364,8 @@ def main():
         shutil.copyfile(fetch(spec, downloads), headers / name)
     source_files = [fetch(spec, downloads) for spec in LOCK["sources"].values()]
     source_files.append(fetch(LOCK["mesa"], downloads))
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["fonts"].values())
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["audio"].values())
     (assets / "quest-dependencies.json").write_text(json.dumps(LOCK, indent=2) + "\n")
     source_bundle = output.parent / (output.name + "-sources.zip")
     with zipfile.ZipFile(source_bundle, "w", compression=zipfile.ZIP_STORED) as bundle:
@@ -305,8 +384,13 @@ def main():
             for source in (REPO / directory).rglob("*"):
                 if source.is_file():
                     bundle.write(source, source.relative_to(REPO))
-        bundle.write(REPO / "system_files/usr/local/libexec/stearlight/frame-steam-ipc",
-                     "system_files/usr/local/libexec/stearlight/frame-steam-ipc")
+        for name in ["system_files/usr/local/libexec/stearlight/frame-steam-ipc",
+                     "system_files/usr/local/libexec/stearlight/steamframe-session",
+                     "system_files/usr/bin/steamos-select-branch", "system_files/usr/bin/steamos-update",
+                     "system_files/usr/bin/steamos-polkit-helpers/steamos-select-branch",
+                     "system_files/usr/bin/steamos-polkit-helpers/steamos-update",
+                     "system_files/etc/fonts/conf.d/66-stearlight-cjk.conf"]:
+            bundle.write(REPO / name, name)
     archive = args.rootfs_archive
     if archive is None:
         archive = work / "rootfs.tar.gz"

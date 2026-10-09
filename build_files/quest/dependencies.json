@@ -35,6 +35,20 @@
       "sha256": "bb00353d1a9123ade62fe7779c6efaeb6606650d5cfd005532ef06478e445acd"
     }
   },
+  "fonts": {
+    "noto-core": {
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-noto/fonts-noto-core_20201225-2_all.deb",
+      "sha256": "4fee136cb12fc197703a340e010478f780a41044339fcefbd78ed9aa96c8b617"
+    },
+    "noto-cjk": {
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-noto-cjk/fonts-noto-cjk_20230817+repack1-3_all.deb",
+      "sha256": "7d64b985f6fe128c99eae5610d5c047338e572bdcfb2bb09736be01b824a7f6c"
+    },
+    "noto-emoji": {
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/fonts-noto-color-emoji/fonts-noto-color-emoji_2.047-0ubuntu0.24.04.1_all.deb",
+      "sha256": "b102b62ce6a7313315223cff5e052bdf8fc0ad162c9e961ce0dc2202bc139ce2"
+    }
+  },
   "openxr": {
     "openxr.h": {
       "url": "https://raw.githubusercontent.com/KhronosGroup/OpenXR-SDK/release-1.0.34/include/openxr/openxr.h",
@@ -61,6 +75,44 @@
     "shmem": {
       "url": "https://github.com/termux/libandroid-shmem/archive/refs/tags/v0.7.tar.gz",
       "sha256": "1e5ff8459bc0a8c229dd8a94b27d119987e09ef3414331c2b5ebfff20b98e867"
+    }
+  },
+  "audio": {
+    "liblua5.4-0": {
+      "url": "https://deb.debian.org/debian/pool/main/l/lua5.4/liblua5.4-0_5.4.7-1+b2_arm64.deb",
+      "sha256": "56c90caee447f0c9bc9390f822cb1d8ffd37e44041c736e2d8d86040c23547d8"
+    },
+    "libpipewire-0.3-0t64": {
+      "url": "https://deb.debian.org/debian/pool/main/p/pipewire/libpipewire-0.3-0t64_1.4.2-1_arm64.deb",
+      "sha256": "f25ab475f09ab5ec952f13a2d6b7a870dd5eb8c7806664baf8be9bdee3ae995b"
+    },
+    "libpipewire-0.3-common": {
+      "url": "https://deb.debian.org/debian/pool/main/p/pipewire/libpipewire-0.3-common_1.4.2-1_all.deb",
+      "sha256": "d8c9e3d1b462d591bc71e6369079b9eb14a14a45cb3212cb5d70d8016e722b7c"
+    },
+    "libpipewire-0.3-modules": {
+      "url": "https://deb.debian.org/debian/pool/main/p/pipewire/libpipewire-0.3-modules_1.4.2-1_arm64.deb",
+      "sha256": "d9cbca11fa44fded83f941124cba92ecd1771eaa45f5c4815f4f398d62e523e8"
+    },
+    "libspa-0.2-modules": {
+      "url": "https://deb.debian.org/debian/pool/main/p/pipewire/libspa-0.2-modules_1.4.2-1_arm64.deb",
+      "sha256": "b13c1955882ea689f9135bf45c020a364d3cba2d2ed69251827b5c6abd41d4b7"
+    },
+    "pipewire": {
+      "url": "https://deb.debian.org/debian/pool/main/p/pipewire/pipewire_1.4.2-1_arm64.deb",
+      "sha256": "5a79fe7a8ebaec93ea2acaaf638e67bce55daca23ea0296056bc02d68bbad4d7"
+    },
+    "pipewire-bin": {
+      "url": "https://deb.debian.org/debian/pool/main/p/pipewire/pipewire-bin_1.4.2-1_arm64.deb",
+      "sha256": "e4516c5af7ee95390cc1b42feae844f69ed487e39b98962f13dc79b75175933e"
+    },
+    "libwireplumber-0.5-0": {
+      "url": "https://deb.debian.org/debian/pool/main/w/wireplumber/libwireplumber-0.5-0_0.5.8-2_arm64.deb",
+      "sha256": "708fc6cc892f44ca723969908ab90b174ef1850e1b09713a8892e2f4e3b5cbdc"
+    },
+    "wireplumber": {
+      "url": "https://deb.debian.org/debian/pool/main/w/wireplumber/wireplumber_0.5.8-2_arm64.deb",
+      "sha256": "7a53f5b2f7fdec9ad92f1b3e2e15a3b7e508ba7de015d68f294c2bafeeeab6d0"
     }
   }
 }

@@ -1,5 +1,38 @@
 #!/bin/sh
-# There are no SteamOS image branches on this appliance.  The Steam client
-# branch is selected by package/beta during bootstrap and remains user-owned.
-printf '%s\n' 'SteamOS image branches are not applicable.' >&2
-exit 0
+set -eu
+# Steam's native channel selector calls -l, -c, and the polkit helper. Only
+# client feeds are selectable here; the Stearlight OS image belongs to the APK.
+root=${STEARLIGHT_STEAM_ROOT:-/opt/steam}
+case "${1:-}" in
+ -l|--list) printf '%s\n' rel beta; exit 0 ;;
+ -c|--current)
+  if [ -r "$root/package/stearlight-channel" ];then
+   cat "$root/package/stearlight-channel";exit 0
+  fi
+  if [ -s "$root/package/beta" ];then printf '%s\n' beta;else printf '%s\n' rel;fi
+  exit 0 ;;
+ rel|stable) branch=rel ;;
+ beta|publicbeta) branch=beta ;;
+ *) printf '%s\n' 'Supported Steam client channels: rel (Stable), beta (Public Beta).' >&2;exit 2 ;;
+esac
+[ "$#" -eq 1 ] || exit 2
+mkdir -p "$root/package"
+previous=$(cat "$root/package/stearlight-channel" 2>/dev/null || true)
+umask 077
+temporary="$root/package/stearlight-channel.next-$$"
+trap 'rm -f "$temporary"' EXIT
+printf '%s\n' "$branch" >"$temporary"
+mv "$temporary" "$root/package/stearlight-channel"
+if [ "$branch" = rel ];then
+ rm -f "$root/package/beta"
+else
+ temporary="$root/package/beta.channel-$$"
+ trap 'rm -f "$temporary"' EXIT
+ printf '%s\n' publicbeta >"$temporary"
+ mv "$temporary" "$root/package/beta"
+fi
+# A channel change can be a downgrade. Force one native update check rather
+# than allowing the previous feed's cache/version to suppress the switch.
+if [ "$previous" != "$branch" ];then
+ printf '%s\n' "$branch" >"$root/package/stearlight-channel-update"
+fi
