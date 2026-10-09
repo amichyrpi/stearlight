@@ -44,6 +44,29 @@ Each image carries the input eye poses sampled when Linux acquires it, and held
 images keep those poses. These samples approximate SteamVR's final asynchronous
 rendering pose; full motion stability remains under validation.
 
+Display events follow OpenXR's refresh timing instead of spinning SteamVR's
+vblank thread. Tracking publishes each new sample once; unchanged button and
+display properties are not resent. PRoot caches process lookups and passes
+Adreno GPU ioctls, futex wakeups, and waits with an expected owner TID of
+0, 1 or 2 directly to the kernel. Potentially guest-owned robust-mutex waits
+retain their owner-death handling. OpenXR reprojects previously released eye
+images between Linux updates, with the same image poses. GPU ownership
+transfers and completion waits remain explicit.
+A shared Android graphics context copies incoming frames and acknowledges
+Linux independently of OpenXR's frame wait. Three history slots separate the
+image being sampled by both eyes, the newest pending image, and an ongoing
+copy. Copy completion precedes publication and acknowledgement. Unused pending
+images can be replaced; the displayed image stays protected until both eye
+draws have completed. Image copies, color conversion and stereo completion
+waits retain the original rendering path.
+
+`adb logcat -s StearlightGPU` reports `Scene updates`, the rate of new Linux
+frames adopted for display, and `Linux handoffs`, the copy thread's input rate.
+Handoffs can include pending frames replaced before display.
+The headset's OpenXR submission rate also includes repeated images and should
+not be used as the scene frame rate. Linux's compositor log separately reports
+command recording, GPU completion, and display handoff times.
+
 Dashboard readiness lasts for the VR session, including page changes that
 temporarily replace browser textures. These changes do not replay startup.
 Linux buffers are acknowledged even when OpenXR skips drawing or stops its

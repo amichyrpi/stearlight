@@ -7,5 +7,6 @@ add_library(stearlight_quest SHARED quest_main.cpp gpu_bridge.cpp socket_registr
 target_include_directories(stearlight_quest PRIVATE "${QUEST_PAYLOAD}/include")
 target_compile_definitions(stearlight_quest PRIVATE XR_USE_PLATFORM_ANDROID XR_USE_GRAPHICS_API_OPENGL_ES)
 target_compile_features(stearlight_quest PRIVATE cxx_std_17)
+target_compile_options(stearlight_quest PRIVATE -O2)
 target_link_options(stearlight_quest PRIVATE "-uANativeActivity_onCreate")
 target_link_libraries(stearlight_quest PRIVATE native_app_glue OpenXR::openxr_loader android log EGL GLESv3 jnigraphics)
