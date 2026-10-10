@@ -31,6 +31,9 @@ final class RootfsArchive {
   while(offset<payload.length){int space=offset;while(space<payload.length&&payload[space]!=' ')space++;if(space==payload.length)throw new IOException("Invalid PAX record");int length=Integer.parseInt(new String(payload,offset,space-offset,StandardCharsets.US_ASCII));if(length<=space-offset+1||offset+length>payload.length)throw new IOException("Invalid PAX length");String value=new String(payload,space+1,offset+length-space-2,StandardCharsets.UTF_8);int equals=value.indexOf('=');if(equals>0)result.put(value.substring(0,equals),value.substring(equals+1));offset+=length;}return result;
  }
  static void extract(InputStream source,File root) throws Exception {
+  extract(source,root,false);
+ }
+ static void extract(InputStream source,File root,boolean preserveUpdatedRuntime) throws Exception {
   if(!root.mkdirs()&&!root.isDirectory())throw new IOException("Cannot create rootfs");
   Map<String,String> attributes=new HashMap<>();List<String[]> links=new ArrayList<>();
   try(InputStream in=new BufferedInputStream(new GZIPInputStream(source,131072),131072)){
@@ -42,12 +45,16 @@ final class RootfsArchive {
     if(type=='x'||type=='g') {if(size>1048576)throw new IOException("PAX header too large");byte[] data=new byte[(int)size];readFully(in,data);attributes.putAll(pax(data));}
     else {
      name=attributes.getOrDefault("path",name);link=attributes.getOrDefault("linkpath",link);if(attributes.containsKey("size"))size=Long.parseLong(attributes.get("size"));attributes.clear();
+     name=safeName(name);
+     if(preserveUpdatedRuntime&&(name.equals("opt/steamvr")||name.startsWith("opt/steamvr/"))){copy(in,null,size);}
+     else {
      File target=destination(root,name);File parent=target.getParentFile();if(parent!=null&&!parent.mkdirs()&&!parent.isDirectory())throw new IOException("Cannot create rootfs directory");
      if(type=='5'){if(!target.mkdirs()&&!target.isDirectory())throw new IOException("Cannot create rootfs directory");Os.chmod(target.toString(),mode|0700);copy(in,null,size);}
      else if(type=='2'){if(link.startsWith("/"))throw new IOException("Rootfs symlinks must be normalized");File resolved=new File(target.getParentFile(),link);String base=root.getCanonicalPath(),real=resolved.getCanonicalPath();if(!real.equals(base)&&!real.startsWith(base+"/"))throw new IOException("Symlink escapes rootfs");if(java.nio.file.Files.exists(target.toPath(),java.nio.file.LinkOption.NOFOLLOW_LINKS))java.nio.file.Files.delete(target.toPath());Os.symlink(link,target.toString());copy(in,null,size);}
      else if(type=='1'){links.add(new String[]{name,safeName(link)});copy(in,null,size);}
      else if(type==0||type=='0'){try(OutputStream out=new BufferedOutputStream(new FileOutputStream(target),131072)){copy(in,out,size);}Os.chmod(target.toString(),mode);}
      else {copy(in,null,size);}
+     }
     }
     copy(in,null,(512-(size%512))%512);
    }

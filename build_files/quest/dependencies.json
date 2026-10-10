@@ -114,5 +114,71 @@
       "url": "https://deb.debian.org/debian/pool/main/w/wireplumber/wireplumber_0.5.8-2_arm64.deb",
       "sha256": "7a53f5b2f7fdec9ad92f1b3e2e15a3b7e508ba7de015d68f294c2bafeeeab6d0"
     }
+  },
+  "gaming": {
+    "bash": {
+      "url": "https://deb.debian.org/debian/pool/main/b/bash/bash_5.2.37-2+b10_arm64.deb",
+      "sha256": "9e2d2b3646b250f53be79b6128d9cff5e99cc5ff4a8c84e58efab59ad9bb0ddc"
+    },
+    "libpython3-stdlib": {
+      "url": "https://deb.debian.org/debian/pool/main/p/python3-defaults/libpython3-stdlib_3.13.5-1_arm64.deb",
+      "sha256": "0e5b09b3c90f34399a357c32e1be08a3f31b39d3c615464f00354b309f82e732"
+    },
+    "python3": {
+      "url": "https://deb.debian.org/debian/pool/main/p/python3-defaults/python3_3.13.5-1_arm64.deb",
+      "sha256": "8d5be256bf3bb4f07afce1aa86f0595c6939e1a6c2ea939bdcb7b36351cbe021"
+    },
+    "python3-minimal": {
+      "url": "https://deb.debian.org/debian/pool/main/p/python3-defaults/python3-minimal_3.13.5-1_arm64.deb",
+      "sha256": "b1dff61d3e68c83c747b03399356ba707d491bcaf6e495b575d46be3143cdec8"
+    },
+    "libpython3.13-minimal": {
+      "url": "https://deb.debian.org/debian/pool/main/p/python3.13/libpython3.13-minimal_3.13.5-2+deb13u5_arm64.deb",
+      "sha256": "3655ef258b19142cf6fe38ef89731d5c630b2cf3309632494a720b28c1cfcd85"
+    },
+    "libpython3.13-stdlib": {
+      "url": "https://deb.debian.org/debian/pool/main/p/python3.13/libpython3.13-stdlib_3.13.5-2+deb13u5_arm64.deb",
+      "sha256": "d1178d24e4d143cc6c577d9dc0f26dd982efccc2e600d25ce86361f168a22be0"
+    },
+    "python3.13": {
+      "url": "https://deb.debian.org/debian/pool/main/p/python3.13/python3.13_3.13.5-2+deb13u5_arm64.deb",
+      "sha256": "3d027394c6afd08a2663c3da588824aa9ee0c54e3c2b4382bb9f644584bc99a1"
+    },
+    "python3.13-minimal": {
+      "url": "https://deb.debian.org/debian/pool/main/p/python3.13/python3.13-minimal_3.13.5-2+deb13u5_arm64.deb",
+      "sha256": "95237a3ad99bf9366308e16f7c79449c9371c4cff9c883772fb7c254652467eb"
+    }
+  },
+  "fex_libraries": {
+    "libgcc-s1": {
+      "url": "https://deb.debian.org/debian/pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_amd64.deb",
+      "sha256": "3016e62cb4b7cd8038822870601f5ed131befe942774d0f745622cc77d8a88f7"
+    },
+    "libstdc++6": {
+      "url": "https://deb.debian.org/debian/pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_amd64.deb",
+      "sha256": "5cd3171216d4ab0fc911cfe9c35509bf2dd8f47761c43b7f6a4296701551a24d"
+    },
+    "libc6": {
+      "url": "https://deb.debian.org/debian/pool/main/g/glibc/libc6_2.36-9+deb12u14_amd64.deb",
+      "sha256": "ba4f88f73dbc3ae9055f3c20f4523bfdbaf1ad13ff95e258924f77d20b4fbedf"
+    }
+  },
+  "updates": {
+    "btrfs-progs": {
+      "url": "https://deb.debian.org/debian/pool/main/b/btrfs-progs/btrfs-progs_6.14-1_arm64.deb",
+      "sha256": "aaf42d86c34a6a8885bc9cf8078ef50b9d64c043b238f64a52c59c244f286f95"
+    },
+    "squashfs-tools": {
+      "url": "https://deb.debian.org/debian/pool/main/s/squashfs-tools/squashfs-tools_4.6.1-1+b1_arm64.deb",
+      "sha256": "c074f409b735b80ca5dbbf415436aef49a162e2daf148de007ffceabf0332304"
+    },
+    "openssl": {
+      "url": "https://deb.debian.org/debian/pool/main/o/openssl/openssl_3.0.20-1~deb12u2_arm64.deb",
+      "sha256": "e7ba824de1e659c12e81f885bc0757a50c4d7a9f71de02687ad63d5a9e936e00"
+    },
+    "liblzo2": {
+      "url": "https://deb.debian.org/debian/pool/main/l/lzo2/liblzo2-2_2.10-3+b2_arm64.deb",
+      "sha256": "3da35028991e5e6408d65d55e9e8468abd03932f335d2e7f3d45c7f8f7d90c65"
+    }
   }
 }

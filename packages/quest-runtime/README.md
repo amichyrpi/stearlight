@@ -118,14 +118,39 @@ descriptors directly, avoiding repeated shell forks under PRoot. Other `lsof`
 queries retain the original GNU implementation.
 
 Steam's native **Settings > System > System Update Channel** selector offers
-Stable and Beta. These select Valve's ARM64 Steam client feeds, respectively
-`steamdeck_stable` and `publicbeta`. Quit Stearlight from the Quest menu and
+Stable and Beta. Stable selects Valve's ARM64 `steamdeck_stable` client feed.
+Beta uses the Frame Beta branch supplied by the installed Valve runtime,
+or `publicbeta` on runtimes without a Frame branch. Quit Stearlight from the Quest menu and
 reopen it after changing the channel. A channel change forces one native
 update check, including when returning to an older Stable build. The choice
 persists across launches; the client updater downloads and installs its own
 packages. Startup and the update watcher restore the Quest browser and
-streaming adapters after Valve replaces those files. The Stearlight OS/rootfs
-itself is updated by installing a newer APK; SteamOS image updates do not apply.
+streaming adapters after Valve replaces those files.
+
+The same selector chooses Valve's Stable or Beta ARM64 Frame OS image feed.
+Steam's OS updater verifies the RAUC signature against Valve's pinned signing
+certificate and verifies every downloaded chunk and the complete root image.
+It extracts SteamVR into a staging directory, reapplies the Quest adapters,
+and activates the runtime on the next launch. The previous runtime is restored
+if the new dashboard fails to start. APK upgrades preserve an installed OS
+runtime update. An initial OS download needs at least 12 GiB of free storage;
+interrupted downloads resume. Stable and Beta may publish the same OS image,
+and the OS feed may lag SteamVR's separately distributed Beta releases.
+The updater does not flash Quest partitions or update Android firmware.
+
+Local x86 Linux games use Valve's FEX tool and the installed Steam Linux
+Runtime. The Quest launcher restores the runtime's content-addressed files and
+aliases without using privileged pressure-vessel namespaces. Bundled x86 glibc
+and C++ libraries meet FEX's GPU bridge requirements even for older soldier
+games. Turnip renders game graphics; a dedicated Gamescope compositor presents
+each local game as a SteamVR panel and selects it when its window first paints.
+Single-application focus prevents helper windows from selecting an empty panel.
+The pinned Gamescope adapter refreshes reused shared-memory buffers on each
+commit, preventing old intro frames from flashing during local games.
+Mesa's X11 shared-memory presentation connects
+the emulated game to Gamescope's Xwayland display. FNA games default to Vulkan and SDL audio
+uses PulseAudio. Explicit game overrides are preserved. Shader pre-caching
+uses one replay worker to stay within Android's child-process limit.
 
 Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. A BlueZ LE advertising

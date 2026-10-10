@@ -50,6 +50,10 @@ class SteamChannelTest(unittest.TestCase):
             self.assertEqual(arguments(), "[-deckard]")
             (root / "package/stearlight-channel").write_text("beta\n")
             self.assertEqual(arguments(), "[-deckard][-clientbeta][publicbeta]")
+            (root / "package/beta").write_text("linux_arm64_beta_test\n")
+            self.assertEqual(arguments(), "[-deckard][-clientbeta][linux_arm64_beta_test]")
+            (root / "package/beta").write_text("publicbeta\n")
+            self.assertEqual(arguments(), "[-deckard][-clientbeta][linux_arm64_beta_test]")
             (root / "package/stearlight-channel").write_text("rel\n")
             self.assertEqual(arguments(), "[-deckard][-clientbeta][steamdeck_stable]")
             pending = root / "package/stearlight-channel-update"

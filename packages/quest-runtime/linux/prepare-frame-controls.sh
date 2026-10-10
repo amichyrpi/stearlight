@@ -7,6 +7,13 @@ binding='const F=this.props.overlay_key,f=(0,h.w5)();'
 embedded='y.properties["embedded-uv-index"]=this.m_nEmbeddedIndex'
 bound='const F=this.props.overlay_key,f=document.title==="systemui"?"system.systemui":(0,h.w5)();'
 explicit='y.properties["embedded-uv-index"]=document.title==="systemui"?void 0:this.m_nEmbeddedIndex'
+# Frame OS 0.4.5 keeps the same atlas contract with renamed minified locals.
+if [ -f "$panel" ] && grep -qF 'const f=this.props.overlay_key,F=(0,h.w5)();' "$panel";then
+    binding='const f=this.props.overlay_key,F=(0,h.w5)();'
+    bound='const f=this.props.overlay_key,F=document.title==="systemui"?"system.systemui":(0,h.w5)();'
+elif [ -f "$panel" ] && grep -qF 'const f=this.props.overlay_key,F=document.title==="systemui"?' "$panel";then
+    bound='const f=this.props.overlay_key,F=document.title==="systemui"?"system.systemui":(0,h.w5)();'
+fi
 if [ -f "$panel" ] && grep -qF "$bound" "$panel" && grep -qF "$explicit" "$panel"; then exit 0; fi
 if [ ! -f "$panel" ] ||
    [ "$(grep -oF "$binding" "$panel" | wc -l)" -ne 1 ] ||
@@ -23,6 +30,7 @@ temporary=$panel.quest-controls
 trap 'rm -f "$temporary"' EXIT
 LC_ALL=C sed \
     -e 's/const F=this\.props\.overlay_key,f=(0,h\.w5)();/const F=this.props.overlay_key,f=document.title==="systemui"?"system.systemui":(0,h.w5)();/' \
+    -e 's/const f=this\.props\.overlay_key,F=(0,h\.w5)();/const f=this.props.overlay_key,F=document.title==="systemui"?"system.systemui":(0,h.w5)();/' \
     -e 's/y\.properties\["embedded-uv-index"\]=this\.m_nEmbeddedIndex/y.properties["embedded-uv-index"]=document.title==="systemui"?void 0:this.m_nEmbeddedIndex/' \
     "$panel" > "$temporary"
 grep -qF "$bound" "$temporary"

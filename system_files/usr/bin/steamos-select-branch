@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 # Steam's native channel selector calls -l, -c, and the polkit helper. Only
-# client feeds are selectable here; the Stearlight OS image belongs to the APK.
+# Stable/Beta select both Steam's client feed and the Frame OS image feed.
 root=${STEARLIGHT_STEAM_ROOT:-/opt/steam}
 case "${1:-}" in
  -l|--list) printf '%s\n' rel beta; exit 0 ;;
@@ -17,6 +17,10 @@ case "${1:-}" in
 esac
 [ "$#" -eq 1 ] || exit 2
 mkdir -p "$root/package"
+native_beta=$(cat "$root/package/beta" 2>/dev/null || true)
+case "$native_beta" in
+ linux_arm64_beta_*) printf '%s\n' "$native_beta" >"$root/package/stearlight-frame-beta" ;;
+esac
 previous=$(cat "$root/package/stearlight-channel" 2>/dev/null || true)
 umask 077
 temporary="$root/package/stearlight-channel.next-$$"
