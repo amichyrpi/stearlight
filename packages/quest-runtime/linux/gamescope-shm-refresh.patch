@@ -1,0 +1,34 @@
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -1844,16 +1844,18 @@
+ 		commit->fifo = false;
+ 	}
+ 
+-	if ( gamescope::OwningRc<CVulkanTexture> pTexture = s_BufferMemos.LookupVulkanTexture( buf ) )
++	struct wlr_dmabuf_attributes dmabuf = {0};
++	const bool isDmabuf = wlr_buffer_get_dmabuf( buf, &dmabuf );
++	// Only DMA-BUF imports stay live when a client reuses its buffer.
++	if ( auto pTexture = isDmabuf ? s_BufferMemos.LookupVulkanTexture( buf ) : nullptr )
+ 	{
+ 		// Going from OwningRc -> Rc now.
+ 		commit->vulkanTex = pTexture;
+ 		return commit;
+ 	}
+ 
+-	struct wlr_dmabuf_attributes dmabuf = {0};
+ 	gamescope::OwningRc<gamescope::IBackendFb> pBackendFb;
+-	if ( wlr_buffer_get_dmabuf( buf, &dmabuf ) )
++	if ( isDmabuf )
+ 	{
+ 		pBackendFb = GetBackend()->ImportDmabufToBackend( &dmabuf );
+ 	}
+@@ -1867,7 +1869,8 @@
+ 
+ 	commit->vulkanTex = pOwnedTexture;
+ 
+-	s_BufferMemos.MemoizeBuffer( buf, std::move( pOwnedTexture ) );
++	if ( isDmabuf )
++		s_BufferMemos.MemoizeBuffer( buf, std::move( pOwnedTexture ) );
+ 
+ 	return commit;
+ }

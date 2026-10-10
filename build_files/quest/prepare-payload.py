@@ -184,7 +184,19 @@ def stage_fonts(overlay, downloads):
     shutil.copyfile(REPO / "system_files" / config, overlay / config)
 
 
-def stage_update_helpers(overlay):
+def stage_update_helpers(overlay, downloads):
+    for spec in LOCK["updates"].values():
+        run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
+    quest = overlay / "opt/quest"
+    tools = quest / "update-tools"
+    tools.mkdir(parents=True, exist_ok=True)
+    for name in ("openssl", "btrfs", "unsquashfs"):
+        shutil.copy2(overlay / "usr/bin" / name, tools / name)
+        # Only our loader boundary should run these glibc tools.
+        (overlay / "usr/bin" / name).unlink()
+    for name in ("steam-os-update.py", "prepare-os-runtime.py", "activate-os-update.py",
+                 "steamdeck-images.pem", "systemui-overlay-bridge.js", "roomview-bridge.js"):
+        shutil.copy2(REPO / "packages/quest-runtime/linux" / name, quest / name)
     for name in ["steamos-select-branch", "steamos-update",
                  "steamos-polkit-helpers/steamos-select-branch", "steamos-polkit-helpers/steamos-update"]:
         relative = Path("usr/bin") / name
@@ -200,6 +212,10 @@ def roomview_system_ui(native):
     floors = [b'o&&ne.JJ.isTheaterMode&&r.createElement(s.B4o',
               b'o&&c.H.m_bShowFloor&&(l||ne.JJ.isTheaterMode)&&r.createElement(s.B4o',
               b'o&&c.H.m_bShowFloorFar&&!ne.JJ.isTheaterMode&&!l&&r.createElement(s.B4o']
+    if floors[0] not in native:
+        floors = [b'r&&de.JJ.isTheaterMode&&n.createElement(s.B4o',
+                  b'r&&c.H.m_bShowFloor&&(l||de.JJ.isTheaterMode)&&n.createElement(s.B4o',
+                  b'r&&c.H.m_bShowFloorFar&&!de.JJ.isTheaterMode&&!l&&n.createElement(s.B4o']
     if any(native.count(condition) != 1 for condition in floors):
         raise RuntimeError("Quest room-view adapter does not match this SteamVR construct")
     for condition in floors:
@@ -233,9 +249,21 @@ def main():
     overlay = work / "quest-overlay"
     overlay.mkdir(exist_ok=True)
     stage_fonts(overlay, downloads)
-    stage_update_helpers(overlay)
+    stage_update_helpers(overlay, downloads)
+    run(sys.executable, REPO / "build_files/quest/patch-gamescope.py",
+        root / "opt/frame-gamescope/bin/gamescope", overlay / "opt/frame-gamescope/bin/gamescope")
     for spec in LOCK["audio"].values():
         run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
+    for spec in LOCK["gaming"].values():
+        run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
+    for spec in LOCK["fex_libraries"].values():
+        run("dpkg-deb", "-x", fetch(spec, downloads), overlay / "opt/quest/fex-runtime")
+    # Steam starts game launch commands through /bin/sh with its glibc
+    # overlay preloads. Alpine's musl shell rejects those before FEX runs.
+    shell = overlay / "bin/sh"
+    shell.parent.mkdir(parents=True, exist_ok=True)
+    shell.unlink(missing_ok=True)
+    shell.symlink_to("../usr/bin/bash")
     for spec in LOCK["linux"].values():
         with tarfile.open(fetch(spec, downloads), "r:gz") as archive:
             archive.extractall(overlay, members=[m for m in archive
@@ -284,6 +312,15 @@ def main():
     run("aarch64-linux-gnu-gcc", "-O2", linux / "streaming-client-launcher.c",
         "-o", quest / "streaming-client-launcher")
     shutil.copyfile(linux / "prepare-streaming-client.sh", quest / "prepare-streaming-client.sh")
+    run("aarch64-linux-gnu-gcc", "-O2", linux / "shader-replay-launcher.c",
+        "-o", quest / "shader-replay-launcher")
+    run("aarch64-linux-gnu-gcc", "-O2", linux / "gamescopereaper.c",
+        "-o", quest / "gamescopereaper")
+    gamescope_scripts = overlay / "etc/gamescope/scripts"
+    gamescope_scripts.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(linux / "gamescope-local-games.lua", gamescope_scripts / "90-quest-local-games.lua")
+    shutil.copyfile(linux / "prepare-game-runtime.sh", quest / "prepare-game-runtime.sh")
+    shutil.copyfile(linux / "fex-game-launcher.py", quest / "fex-game-launcher.py")
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
@@ -324,6 +361,7 @@ def main():
                                     (linux / "roomview-bridge.js").read_bytes() + b"\n" +
                                     roomview_system_ui((root / system_ui).read_bytes()))
     shutil.copyfile(linux / "store-browser-bridge.js", quest / "store-browser-bridge.js")
+    shutil.copyfile(linux / "steam-update-bridge.js", quest / "steam-update-bridge.js")
     shutil.copyfile(linux / "prepare-store-browser.sh", quest / "prepare-store-browser.sh")
     shutil.copyfile(linux / "prepare-steam-client.sh", quest / "prepare-steam-client.sh")
     shutil.copyfile(linux / "steam-channel-args.sh", quest / "steam-channel-args.sh")
@@ -366,6 +404,8 @@ def main():
     source_files.append(fetch(LOCK["mesa"], downloads))
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fonts"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["audio"].values())
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["gaming"].values())
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["fex_libraries"].values())
     (assets / "quest-dependencies.json").write_text(json.dumps(LOCK, indent=2) + "\n")
     source_bundle = output.parent / (output.name + "-sources.zip")
     with zipfile.ZipFile(source_bundle, "w", compression=zipfile.ZIP_STORED) as bundle:

@@ -13,7 +13,7 @@ export GALLIUM_DRIVER=zink MESA_LOADER_DRIVER_OVERRIDE=zink
 export LIBGL_KOPPER_DISABLE=true LIBGL_KOPPER_DRI2=1
 # SDL's OpenVR streaming player uses EGL without an Android/X11 window.
 export EGL_PLATFORM=surfaceless
-mkdir -p "$HOME" "$HOME/.config" "$HOME/.cache" "$XDG_RUNTIME_DIR" /tmp/.X11-unix /run/dbus
+mkdir -p "$HOME" "$HOME/.config" "$HOME/.cache" "$HOME/.local/share/Steam/logs" "$XDG_RUNTIME_DIR" /tmp/.X11-unix /run/dbus
 rm -f /run/stearlight/quest/dashboard.ready /tmp/.X0-lock /tmp/.X11-unix/X0
 printf '%s' 'Starting Linux GPU and IPC services' >/run/stearlight/quest/linux-status
 chmod 700 "$XDG_RUNTIME_DIR"
@@ -36,8 +36,7 @@ if ! /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu /opt/q
  exit 78
 fi
 dbus-uuidgen --ensure=/etc/machine-id
-dbus_pid=$(dbus-daemon --session --fork --print-pid --address=unix:path="$XDG_RUNTIME_DIR/bus")
-system_bus_pid=$(dbus-daemon --config-file=/opt/quest/system-bus.conf --fork --print-pid)
+dbus_pid=$(dbus-daemon --config-file=/opt/quest/system-bus.conf --fork --print-pid)
 /opt/quest/bluetooth-bridge >/tmp/quest-bluetooth.log 2>&1 &
 bluetooth_pid=$!
 export DBUS_SESSION_BUS_ADDRESS=unix:path="$XDG_RUNTIME_DIR/bus"
@@ -56,9 +55,7 @@ printf '%s\n' 'xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xk
 # the Quest Vulkan bridge supplies the GPU swapchain, independently of Xvfb.
 Xvfb :0 -screen 0 3664x1920x24 -xkbdir /opt/frame-gamescope/share/X11/xkb -ac -nolisten tcp -noreset > /tmp/xvfb.log 2>&1 &
 xvfb_pid=$!
-monitor_pid=
-store_watch_pid=
-trap 'kill ${monitor_pid:+"$monitor_pid"} ${store_watch_pid:+"$store_watch_pid"} ${wireplumber_pid:+"$wireplumber_pid"} ${pipewire_pid:+"$pipewire_pid"} "$audio_pid" "$bluetooth_pid" "$xvfb_pid" "$dbus_pid" "$system_bus_pid" 2>/dev/null || true' EXIT
+trap 'kill ${wireplumber_pid:+"$wireplumber_pid"} ${pipewire_pid:+"$pipewire_pid"} "$audio_pid" "$bluetooth_pid" "$xvfb_pid" "$dbus_pid" 2>/dev/null || true' EXIT
 for attempt in $(seq 1 50);do
  if pactl info >/dev/null 2>&1;then echo STEARLIGHT_QUEST_AUDIO_READY;break;fi
  if ! kill -0 "$audio_pid" 2>/dev/null;then cat /tmp/quest-audio.log >&2;break;fi
@@ -94,6 +91,7 @@ VK_ICD_FILENAMES=/opt/quest/turnip_icd.json /opt/quest/glx-probe --egl
 export VR_PATHREG_OVERRIDE="$HOME/.config/openvr/openvrpaths.vrpath"
 export VR_CONFIG_PATH="$HOME/.steam/steam/config"
 mkdir -p "$HOME/.config/openvr" "$VR_CONFIG_PATH"
+/usr/bin/python3 /opt/quest/activate-os-update.py
 /bin/sh /opt/quest/prepare-vrclient.sh || true
 /usr/local/bin/stearlight-steamvr-native prepare
 /bin/sh /opt/quest/prepare-frame-controls.sh || true
@@ -112,6 +110,16 @@ fi
 # Existing installations also need Frame's final-pass composition. The old
 # precomposition path asserts when a spatially encoded PCVR frame arrives.
 sed -i 's/"useFacetRenderer"[[:space:]]*:[[:space:]]*false/"useFacetRenderer":true/g;s/"renderSystemLayerInDistortPass"[[:space:]]*:[[:space:]]*false/"renderSystemLayerInDistortPass":true/g' "$VR_CONFIG_PATH/steamvr.vrsettings"
+# Frame's computer-vision driver requires its physical cameras. Quest tracking
+# and passthrough come from OpenXR through stearlight-quest instead.
+/usr/bin/python3 - <<'PY'
+import json
+from pathlib import Path
+path = Path('/home/stearlight/.steam/steam/config/steamvr.vrsettings')
+settings = json.loads(path.read_text())
+settings.setdefault('driver_cv', {})['enable'] = False
+path.write_text(json.dumps(settings) + '\n')
+PY
 export STEARLIGHT_STEAM_VULKAN_ICD=/opt/quest/quest_icd.json
 export STEARLIGHT_STEAMVR_VULKAN_ICD=/opt/quest/turnip_icd.json
 export STEARLIGHT_GAMESCOPE_VK_ICD=/opt/quest/turnip_icd.json
@@ -121,24 +129,13 @@ export VK_ICD_FILENAMES=/opt/quest/turnip_icd.json
 # Adapt the installed UI rather than copying a library from another version.
 /bin/sh /opt/quest/prepare-steam-client.sh
 /bin/sh /opt/quest/prepare-streaming-client.sh
-/opt/quest/store-browser-watch >/tmp/quest-store-browser.log 2>&1 &
-store_watch_pid=$!
 # The APK verifies its rootfs payload. Steam's optional repair pass would undo
 # the VR Store-origin adapter before its browser starts.
 export STEAM_EXTRA_ARGS="${STEAM_EXTRA_ARGS:-} -cef-use-vulkan -noverifyfiles"
 export STEARLIGHT_FAKE_TRACKING=0
 export STEARLIGHT_QUEST_RUNTIME=1
 printf '%s' 'Starting SteamVR and Steam' >/run/stearlight/quest/linux-status
-(
- for attempt in $(seq 1 120);do
-  if pidof vrcompositor >/dev/null 2>&1;then
-   exec /opt/quest/runtime-monitor
-  fi
-  sleep .25
- done
- echo 'Quest runtime monitor: compositor did not start' >&2
- exit 1
-) >/tmp/quest-runtime-monitor.log 2>&1 &
-monitor_pid=$!
 export LD_PRELOAD=/opt/quest/libquest_socket.so
-/opt/quest/frame-session
+# PRoot's --kill-on-exit owns service cleanup. Avoid keeping another shell
+# alive while games add their FEX processes to Android's child-process limit.
+exec /opt/quest/runtime-monitor --launch-session >/tmp/quest-runtime-monitor.log 2>&1

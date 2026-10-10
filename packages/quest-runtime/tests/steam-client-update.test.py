@@ -7,9 +7,9 @@ class ClientUpdateTest(unittest.TestCase):
   with tempfile.TemporaryDirectory() as folder:
    root=Path(folder)/'steam';quest=Path(folder)/'quest'
    (root/'steamrtarm64').mkdir(parents=True);(root/'steamui').mkdir();quest.mkdir()
-   for name in ['prepare-store-browser.sh','store-browser-bridge.js','steamwebhelper-launcher.sh','steam-channel-args.sh']:
+   for name in ['prepare-store-browser.sh','store-browser-bridge.js','steam-update-bridge.js','steamwebhelper-launcher.sh','steam-channel-args.sh']:
     shutil.copyfile(LINUX/name,quest/name)
-   for name in ['prepare-cef.sh','frame-steam-ipc','prepare-streaming-client.sh']:(quest/name).write_text('exit 0\n')
+   for name in ['prepare-cef.sh','frame-steam-ipc','prepare-streaming-client.sh','prepare-game-runtime.sh']:(quest/name).write_text('exit 0\n')
    launcher=root/'steamrtarm64/steamwebhelper.sh';runner=root/'RUNSTEAM.sh';library=root/'steamui/library.js'
    source='export LD_LIBRARY_PATH="${STEAMROOT}/${STEAM_RT_ARM64}"\nSTEAM_COMMAND=(\n true\n)\n'
    env=dict(os.environ,STEARLIGHT_STEAM_ROOT=str(root),STEARLIGHT_QUEST_ROOT=str(quest))
@@ -23,4 +23,10 @@ class ClientUpdateTest(unittest.TestCase):
     timestamps=[p.stat().st_mtime_ns for p in [launcher,runner,library]]
     prepare()
     self.assertEqual(timestamps,[p.stat().st_mtime_ns for p in [launcher,runner,library]])
+   legacy='// STEARLIGHT_QUEST_UPDATE_CAPABILITIES\n(() => {\nconst old = true;\n})();\n'
+   library.write_text(legacy+'Valve UI preserved')
+   prepare()
+   self.assertTrue(library.read_text().endswith('Valve UI preserved\n'))
+   self.assertNotIn('const old = true',library.read_text())
+   self.assertEqual(library.read_text().count('// STEARLIGHT_QUEST_UPDATE_CAPABILITIES_V3'),1)
 if __name__=='__main__':unittest.main()

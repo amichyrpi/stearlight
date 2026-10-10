@@ -126,7 +126,9 @@ public final class QuestActivity extends NativeActivity {
    String installed=overlayMarker.exists()?new String(java.nio.file.Files.readAllBytes(overlayMarker.toPath()),StandardCharsets.US_ASCII):"";
    if(!installed.equals(overlayVersion)){
     status("Preparing Stearlight runtime");
-    try(InputStream in=getAssets().open("quest-overlay.bin")){RootfsArchive.extract(in,root);}
+    boolean preserveRuntime=new File(root,"home/stearlight/.cache/stearlight/os-update/installed.json").isFile()
+       ||new File(root,"home/stearlight/.cache/stearlight/os-update/activated.json").isFile();
+    try(InputStream in=getAssets().open("quest-overlay.bin")){RootfsArchive.extract(in,root,preserveRuntime);}
     java.nio.file.Files.write(overlayMarker.toPath(),overlayVersion.getBytes(StandardCharsets.US_ASCII));
    }
    File tmp=new File(getFilesDir(),"tmp"),shm=new File(getFilesDir(),"shm");

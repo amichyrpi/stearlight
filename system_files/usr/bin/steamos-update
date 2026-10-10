@@ -1,5 +1,8 @@
 #!/bin/sh
-# OS updates are delivered by the stearlight image updater, not Steam's
-# mutable SteamOS updater.  Steam interprets status 7 as "not applicable".
-printf '%s\n' 'stearlight image updates are managed outside Steam.' >&2
+# Quest keeps Android's system partitions intact and installs the Frame
+# runtime from Valve's signed SteamOS image into its own Linux rootfs.
+if [ -f /opt/quest/steam-os-update.py ]; then
+    exec /usr/bin/python3 /opt/quest/steam-os-update.py "$@"
+fi
+printf '%s\n' 'This VM receives OS updates as Stearlight images.' >&2
 exit 7
