@@ -152,11 +152,38 @@ the emulated game to Gamescope's Xwayland display. FNA games default to Vulkan a
 uses PulseAudio. Explicit game overrides are preserved. Shader pre-caching
 uses one replay worker to stay within Android's child-process limit.
 
+Local Frame Android games are not supported yet. Steam launches VRChat's
+ARM64 APK through Lepton. Its Android container needs private namespaces and
+Binder services unavailable to the Quest app's unprivileged PRoot session.
+The unchanged, signed VRChat APK was also tested directly on Quest 2:
+its OpenXR loader rejects Horizon OS's APK-contained runtime library path
+with `XR_ERROR_RUNTIME_UNAVAILABLE`, and Steam API initialization cannot find
+Lepton's Steam client library. A newer loader reached OpenXR instance creation,
+but repackaging the APK triggered VRChat's `Tampering Detected by App` shutdown.
+That test is not shipped as a game-launch fix. Supporting the original Frame
+edition requires a compatible Android container and Steam/OpenXR integration;
+replacing the APK's loader alone is insufficient.
+
+Local Windows VRChat is also not supported yet. Proton 11 ARM64 can reach
+Unity initialization, and the full x86 Proton stack runs through FEX, but both
+protected launches stop with `Failed to initialize Wine helper buffer`.
+The x86 launcher requests buffers at `0x700100000000` and higher; Wine detects
+this Quest's host address limit as `0x7fffff0000`. A direct allocation at the
+requested address fails with `ENOMEM`. Installing Proton's official EAC runtime
+and completing the game's EAC setup did not resolve the address-range mismatch.
+The diagnostic launcher is not shipped. PCVR streaming remains the verified
+VRChat path; local Linux games such as Celeste use the separate launcher above.
+
 Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
-charging, and Bluetooth availability come from Android. A BlueZ LE advertising
-bridge passes Steam's original nearby-login advertisement to Android's actual
-radio and reports success only after its callback. It does not implement
-Bluetooth pairing, GATT servers, or Bluetooth audio. Linux PulseAudio sends
+charging, and Bluetooth availability come from Android. The BlueZ bridge
+exposes real Classic and connectable BLE discoveries and remembered bonds in
+Steam's Bluetooth Settings. Pairing, cancellation, forgetting, and profile
+connection requests go to Android; device operations wait for the actual
+bond or connection state. Steam's nearby-login advertisement still uses the
+same radio and reports success only after its callback. Device enumeration
+has been verified through Steam's native API; physical pairing has not been
+verified. Linux gamepad input forwarding is not implemented. Android owns Bluetooth profiles; no
+GATT server or Linux Bluetooth audio stack is provided. Linux PulseAudio sends
 48 kHz stereo PCM to Android's AudioTrack and receives the Quest microphone
 through AudioRecord as a 48 kHz mono source. Allow microphone access in the
 headset; denying it leaves speaker output available. Both streams stop when

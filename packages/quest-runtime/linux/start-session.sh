@@ -77,6 +77,7 @@ done
 /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu \
  /usr/bin/wireplumber >/tmp/quest-wireplumber.log 2>&1 &
 wireplumber_pid=$!
+export QUEST_PIPEWIRE_PID="$pipewire_pid" QUEST_WIREPLUMBER_PID="$wireplumber_pid"
 for attempt in $(seq 1 100);do
  if xset q >/dev/null 2>&1;then break;fi
  if ! kill -0 "$xvfb_pid" 2>/dev/null;then cat /tmp/xvfb.log;exit 1;fi

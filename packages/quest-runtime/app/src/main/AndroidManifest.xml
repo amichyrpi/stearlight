@@ -1,4 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ <queries><intent><action android:name="android.settings.BLUETOOTH_SETTINGS"/></intent></queries>
  <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true"/>
  <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
  <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false"/>

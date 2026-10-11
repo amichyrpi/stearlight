@@ -305,6 +305,8 @@ def main():
         run("aarch64-linux-gnu-gcc", "-O2", linux / f"{name}.c", *libs, "-o", quest / name)
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "socket-report.c", "-ldl", "-o", quest / "libquest_socket.so")
+    run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
+        linux / "wine-pe-memory.c", "-ldl", "-o", quest / "libquest_wine_pe.so")
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
         f"-I{includes}", linux / "video-bridge.cpp", "-ldl", "-pthread",
         "-o", quest / "libquest_video.so")
@@ -321,6 +323,8 @@ def main():
     shutil.copyfile(linux / "gamescope-local-games.lua", gamescope_scripts / "90-quest-local-games.lua")
     shutil.copyfile(linux / "prepare-game-runtime.sh", quest / "prepare-game-runtime.sh")
     shutil.copyfile(linux / "fex-game-launcher.py", quest / "fex-game-launcher.py")
+    for name in ("proton-game-launcher.py", "proton-runtime-entry.sh", "audio-namespace-launcher.sh"):
+        shutil.copyfile(linux / name, quest / name)
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
