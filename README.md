@@ -22,14 +22,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/amichyrpi/stearlight">
+  <a href="https://github.com/amichyrpi/stearlight" style="display: inline-flex; align-items: center; gap: 40px;">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="assets/steamos_powered_white.svg">
-      <img src="assets/steamos_powered_black.svg" alt="Steam OS">
+      <source media="(prefers-color-scheme: dark)" srcset="assets/steamos_powered_white.png">
+      <img src="assets/steamos_powered_black.png" alt="Steam OS" height="120">
     </picture>
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="assets/steamvr_white.svg">
-      <img src="assets/steamvr_black.svg" alt="Steam VR">
+      <source media="(prefers-color-scheme: dark)" srcset="assets/steamvr_white.png">
+      <img src="assets/steamvr_black.png" alt="Steam VR" height="120">
     </picture>
   </a>
 </p>
