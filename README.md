@@ -51,7 +51,6 @@ It includes:
 
 - [ ] Blue dots appearing in the right eye when the headset is in use.
 - [ ] Slowdown when both controllers are tracked.
-- [ ] Issues with hand textures appearing.
 
 ## Development
 

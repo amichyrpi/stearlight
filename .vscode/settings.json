@@ -1,0 +1,6 @@
+{
+    "editor.formatOnSave": true,
+    "[c]": { "editor.defaultFormatter": "xaver.clang-format" },
+    "[cpp]": { "editor.defaultFormatter": "xaver.clang-format" },
+    "cmake.sourceDirectory": "C:/Users/jfran/.t3/worktrees/H.265-SVRT/t3code-70883554/packages/openvr"
+}
