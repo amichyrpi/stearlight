@@ -68,6 +68,13 @@ embedded scanline coordinates otherwise display gray blocks or unrelated text.
 The adapter checks the matching UI code and preserves unknown runtime versions.
 The Quest 2 render models use Valve's `openxr_grip` component transform to
 convert tracked grip poses to the model origin for both hands.
+The driver supplies floor and seated origins from OpenXR's STAGE space,
+including its reported play-area rectangle. SteamVR's recenter action can
+update the seated origin; Horizon keeps its Guardian boundaries. Without this
+calibration, seated games such as VTOL VR receive invalid headset poses.
+VTOL VR has passed a local launch from Steam with the full standalone APK:
+its room tracks in the world, both controllers appear, and both triggers select
+menu buttons. Flight gameplay and sustained performance remain unverified.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
 layer, until the main panel and bottom dock are ready. Display buffers use
 explicit Vulkan ownership transfers before Android reads them. A memory

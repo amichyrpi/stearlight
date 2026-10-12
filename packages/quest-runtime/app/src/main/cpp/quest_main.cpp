@@ -19,7 +19,9 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <ctime>
 #include "quest_bridge.h"
+#include "play_space.h"
 #include "gpu_bridge.h"
 #include "video_bridge.h"
 #include "passthrough.h"
@@ -46,6 +48,7 @@ struct Runtime {
  QuestTracking* tracking=nullptr;GLuint framebuffer=0;GpuBridge gpu;VideoBridge video;
  XrView frameViews[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};bool haveFrameViews=false;
  bool eyesDirty=true,lastLoading=true,lastPassthrough=false;
+ bool haveStage=false,playSpacePublished=false;
  std::chrono::steady_clock::time_point eyeReport{};double eyeMs=0;unsigned eyeFrames=0;
  PFN_xrConvertTimeToTimespecTimeKHR timeToMonotonic=nullptr;
  PFN_xrGetDisplayRefreshRateFB getRate=nullptr;PFN_xrRequestDisplayRefreshRateFB requestRate=nullptr;
@@ -70,6 +73,7 @@ struct Runtime {
   int fd=open((directory+"/tracking").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);if(fd<0||ftruncate(fd,sizeof(QuestTracking)))throw std::runtime_error("tracking file");
   tracking=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));close(fd);if(tracking==MAP_FAILED)throw std::runtime_error("tracking mmap");
   unlink((directory+"/dashboard.ready").c_str());
+  unlink((directory+"/play-space.vrchap").c_str());
   memset(tracking,0,sizeof(*tracking));tracking->magic=QUEST_BRIDGE_MAGIC;tracking->version=QUEST_BRIDGE_VERSION;for(float& b:tracking->battery)b=-1;
   auto loader=function<PFN_xrInitializeLoaderKHR>(XR_NULL_HANDLE,"xrInitializeLoaderKHR");XrLoaderInitInfoAndroidKHR loaderInfo{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};loaderInfo.applicationVM=app->activity->vm;loaderInfo.applicationContext=app->activity->clazz;XR(loader(reinterpret_cast<XrLoaderInitInfoBaseHeaderKHR*>(&loaderInfo)));
   uint32_t n=0;XR(xrEnumerateInstanceExtensionProperties(nullptr,0,&n,nullptr));std::vector<XrExtensionProperties> extensions(n,{XR_TYPE_EXTENSION_PROPERTIES});XR(xrEnumerateInstanceExtensionProperties(nullptr,n,&n,extensions.data()));
@@ -95,7 +99,8 @@ struct Runtime {
   if(bind(hapticSocket,reinterpret_cast<sockaddr*>(&hapticAddress),sizeof(hapticAddress)))throw std::runtime_error("Quest haptic bind");
   chmod(hapticPath.c_str(),0600);
   uint32_t spacesCount=0;XR(xrEnumerateReferenceSpaces(session,0,&spacesCount,nullptr));std::vector<XrReferenceSpaceType> spaces(spacesCount);XR(xrEnumerateReferenceSpaces(session,spacesCount,&spacesCount,spaces.data()));
-  XrReferenceSpaceCreateInfo reference{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};reference.poseInReferenceSpace=identity();reference.referenceSpaceType=std::find(spaces.begin(),spaces.end(),XR_REFERENCE_SPACE_TYPE_STAGE)!=spaces.end()?XR_REFERENCE_SPACE_TYPE_STAGE:XR_REFERENCE_SPACE_TYPE_LOCAL;XR(xrCreateReferenceSpace(session,&reference,&stage));reference.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;XR(xrCreateReferenceSpace(session,&reference,&head));
+  haveStage=std::find(spaces.begin(),spaces.end(),XR_REFERENCE_SPACE_TYPE_STAGE)!=spaces.end();
+  XrReferenceSpaceCreateInfo reference{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};reference.poseInReferenceSpace=identity();reference.referenceSpaceType=haveStage?XR_REFERENCE_SPACE_TYPE_STAGE:XR_REFERENCE_SPACE_TYPE_LOCAL;XR(xrCreateReferenceSpace(session,&reference,&stage));reference.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;XR(xrCreateReferenceSpace(session,&reference,&head));
   actionsSetup();
   uint32_t viewsCount=0;XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,0,&viewsCount,nullptr));if(viewsCount!=2)throw std::runtime_error("Expected stereo view configuration");
   std::vector<XrViewConfigurationView> views(viewsCount,{XR_TYPE_VIEW_CONFIGURATION_VIEW});XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,viewsCount,&viewsCount,views.data()));
@@ -170,6 +175,21 @@ struct Runtime {
  }
  void updateStatus(XrTime time){if(statusUpdated&&time-statusUpdated<16000000)return;statusUpdated=time;JNIEnv* env;app->activity->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6);jclass type=env->GetObjectClass(app->activity->clazz);jmethodID method=env->GetMethodID(type,"getBootBitmap","()Landroid/graphics/Bitmap;");jobject bitmap=env->CallObjectMethod(app->activity->clazz,method);if(env->ExceptionCheck()){env->ExceptionDescribe();env->ExceptionClear();env->DeleteLocalRef(type);return;}AndroidBitmapInfo info{};void* pixels=nullptr;if(AndroidBitmap_getInfo(env,bitmap,&info)==ANDROID_BITMAP_RESULT_SUCCESS&&AndroidBitmap_lockPixels(env,bitmap,&pixels)==ANDROID_BITMAP_RESULT_SUCCESS){uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(statusEye.chain,&acquire,&index));XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};wait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(statusEye.chain,&wait));glBindTexture(GL_TEXTURE_2D,statusEye.images[index].image);glPixelStorei(GL_UNPACK_ROW_LENGTH,info.stride/4);glTexSubImage2D(GL_TEXTURE_2D,0,0,0,info.width,info.height,GL_RGBA,GL_UNSIGNED_BYTE,pixels);glPixelStorei(GL_UNPACK_ROW_LENGTH,0);AndroidBitmap_unlockPixels(env,bitmap);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(statusEye.chain,&release));}env->DeleteLocalRef(bitmap);env->DeleteLocalRef(type);}
  bool bootComplete(){JNIEnv* env;app->activity->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6);jclass type=env->GetObjectClass(app->activity->clazz);jmethodID method=env->GetMethodID(type,"bootComplete","()Z");bool complete=env->CallBooleanMethod(app->activity->clazz,method);if(env->ExceptionCheck()){env->ExceptionDescribe();env->ExceptionClear();complete=false;}env->DeleteLocalRef(type);return complete;}
+ void publishPlaySpace(){
+  if(playSpacePublished||!haveStage)return;
+  XrExtent2Df bounds{};
+  if(xrGetReferenceSpaceBoundsRect(session,XR_REFERENCE_SPACE_TYPE_STAGE,&bounds)!=XR_SUCCESS)bounds={};
+  std::time_t now=std::time(nullptr);std::tm utc{};gmtime_r(&now,&utc);
+  char timestamp[32];std::strftime(timestamp,sizeof(timestamp),"%Y-%m-%dT%H:%M:%SZ",&utc);
+  auto json=questPlaySpace(tracking->headset,bounds.width,bounds.height,timestamp);
+  if(json.empty())return;
+  auto target=directory+"/play-space.vrchap",temporary=target+".next";
+  FILE* file=fopen(temporary.c_str(),"w");if(!file)return;
+  bool written=fwrite(json.data(),1,json.size(),file)==json.size();
+  if(fclose(file)||!written){unlink(temporary.c_str());return;}
+  if(rename(temporary.c_str(),target.c_str())){unlink(temporary.c_str());return;}
+  playSpacePublished=true;LOG("Quest seated/standing tracking origins published; stage rectangle %.2fx%.2f",bounds.width,bounds.height);
+ }
  void frame(){
   XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};XrFrameState state{XR_TYPE_FRAME_STATE};XR(xrWaitFrame(session,&wait,&state));XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO};XR(xrBeginFrame(session,&begin));
   XrActiveActionSet active{actions,XR_NULL_PATH};XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;XrResult syncResult=xrSyncActions(session,&sync);if(syncResult!=XR_SESSION_NOT_FOCUSED)check(syncResult,"xrSyncActions");
@@ -182,6 +202,7 @@ struct Runtime {
    tracking->trigger[i]=value(triggerAction,i);if(!tracking->trigger[i]&&button(selectAction,i))tracking->trigger[i]=1;tracking->squeeze[i]=value(squeezeAction,i);tracking->buttons[i]=0;for(int b=0;b<6;b++)if(button(buttonActions[b],i))tracking->buttons[i]|=1u<<b;tracking->touches[i]=button(touchAction,i)?1:0;
    XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));tracking->thumbstick[i][0]=stick.isActive?stick.currentState.x:0;tracking->thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
   }__atomic_add_fetch(&tracking->sequence,1,__ATOMIC_RELEASE);
+  publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootComplete();
   bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;

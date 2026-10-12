@@ -86,6 +86,42 @@ class ProtonRuntimeTest(unittest.TestCase):
             launcher.prepare_vtol_prefix(compat)
             self.assertEqual(settings.read_text(), "user choices")
 
+    def test_vtol_maps_real_quest_inputs_without_replacing_vendor_bindings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = Path(folder)
+            root = game / "VTOLVR_Data/StreamingAssets/SteamVR"
+            root.mkdir(parents=True)
+            controller = {"controller_type": "oculus_touch", "bindings": {"/actions/default": {
+                "sources": [{"path": "/user/hand/left/input/joystick", "mode": "joystick"},
+                            {"path": "/user/hand/right/input/grip", "mode": "button",
+                             "parameters": {"force_input": "force", "click_activate_threshold": "0.8"}}]}}}
+            headset = {"controller_type": "rift", "bindings": {"/actions/default": {
+                "sources": [{"path": "/user/head/proximity", "mode": "button",
+                             "inputs": {"click": {"output": "/actions/default/in/headsetonhead"}}}]}}}
+            for name, content in (("touch.json", controller), ("head.json", headset)):
+                (root / name).write_text(json.dumps(content))
+            defaults = [{"controller_type": "oculus_touch", "binding_url": "touch.json"},
+                        {"controller_type": "rift", "binding_url": "head.json"}]
+            manifest = root / "actions.json"
+            manifest.write_text(json.dumps({"default_bindings": defaults, "actions": ["original actions"]}))
+            original = manifest.read_bytes()
+            launcher.prepare_vtol_bindings(game)
+            actual = json.loads(manifest.read_text())
+            self.assertEqual(actual["default_bindings"][:2], defaults)
+            self.assertEqual(actual["actions"], ["original actions"])
+            self.assertEqual((root / "actions.json.quest-original").read_bytes(), original)
+            self.assertEqual(json.loads((root / "touch.json").read_text()), controller)
+            mapped = json.loads((root / "bindings_stearlight_quest.json").read_text())
+            sources = mapped["bindings"]["/actions/default"]["sources"]
+            self.assertEqual(sources[0]["path"], "/user/hand/left/input/thumbstick")
+            self.assertNotIn("force_input", sources[1]["parameters"])
+            head = json.loads((root / "binding_stearlight_quest_hmd.json").read_text())
+            self.assertEqual(head["controller_type"], "stearlight-quest_hmd")
+            self.assertEqual(head["bindings"], headset["bindings"])
+            stamp = manifest.stat().st_mtime_ns
+            launcher.prepare_vtol_bindings(game)
+            self.assertEqual(manifest.stat().st_mtime_ns, stamp)
+
     @unittest.skipIf(os.name == "nt", "Needs a POSIX shell")
     def test_adapters_keep_vendor_backups_and_refresh_after_steam_updates(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -67,21 +67,22 @@ def prepare_platform(platform):
 
 
 def prepare_vtol_textures(game):
-    # Unity 2020's textureQuality setting omits the largest mip at load time.
+    # Unity 2020's textureQuality setting omits the two largest mips at load time.
     # This changes graphics configuration, not game code or stereo geometry.
     asset = game / "VTOLVR_Data/globalgamemanagers"
     original = "141f912ee5e463e962fe81e96009d93b41d3bbead220e4249b814f8644253709"
-    adjusted = "a8eef375dff3597024700f89a56cec91ed916c31e2cdfbcf4a12db711083e3e3"
+    previous = "a8eef375dff3597024700f89a56cec91ed916c31e2cdfbcf4a12db711083e3e3"
+    adjusted = "437b512ae393213790f787961ae2d827e40da6934ef891aa6798f37534ef41a8"
     data = asset.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
     if digest == adjusted:
         return
-    if digest != original:
+    if digest not in (original, previous):
         raise ValueError("VTOL graphics profile does not match this game build")
     backup = asset.with_name(asset.name + ".quest-original")
-    if not backup.exists():
+    if digest == original and not backup.exists():
         backup.write_bytes(data)
-    updated = data[:259448] + b"\x01\x00\x00\x00" + data[259452:]
+    updated = data[:259448] + b"\x02\x00\x00\x00" + data[259452:]
     if hashlib.sha256(updated).hexdigest() != adjusted:
         raise ValueError("VTOL graphics profile verification failed")
     temporary = asset.with_name(asset.name + ".quest-next")
@@ -118,6 +119,52 @@ def prepare_vtol_prefix(compat):
     stamp.write_text(json.dumps({"version": 1}))
 
 
+def prepare_vtol_bindings(game):
+    root = game / "VTOLVR_Data/StreamingAssets/SteamVR"
+    manifest = root / "actions.json"
+    data = json.loads(manifest.read_text())
+    defaults = data.get("default_bindings", [])
+    added = False
+    for source, target, filename in (
+        ("oculus_touch", "frame_controller", "bindings_stearlight_quest.json"),
+        ("rift", "stearlight-quest_hmd", "binding_stearlight_quest_hmd.json"),
+    ):
+        if any(entry.get("controller_type") == target for entry in defaults):
+            continue
+        entry = next((entry for entry in defaults if entry.get("controller_type") == source), None)
+        if not entry:
+            raise ValueError("VTOL is missing its " + source + " input binding")
+        relative = Path(entry["binding_url"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("Invalid VTOL input binding path")
+        binding = json.loads((root / relative).read_text())
+        binding["controller_type"] = target
+        binding["name"] = "Stearlight Quest " + source
+        for actions in binding.get("bindings", {}).values():
+            for input_source in actions.get("sources", []):
+                path = input_source.get("path", "")
+                if path.endswith("/input/joystick"):
+                    input_source["path"] = path.removesuffix("joystick") + "thumbstick"
+                if path.endswith("/input/grip"):
+                    # Quest's driver supplies a real grip click from the
+                    # analog squeeze; the Frame profile has no force sensor.
+                    input_source.get("parameters", {}).pop("force_input", None)
+        destination = root / filename
+        temporary = destination.with_suffix(".quest-next")
+        temporary.write_text(json.dumps(binding) + "\n")
+        temporary.replace(destination)
+        defaults.append({"controller_type": target, "binding_url": filename})
+        added = True
+    if added:
+        backup = manifest.with_name(manifest.name + ".quest-original")
+        if not backup.exists():
+            backup.write_bytes(manifest.read_bytes())
+        data["default_bindings"] = defaults
+        temporary = manifest.with_suffix(".quest-next")
+        temporary.write_text(json.dumps(data) + "\n")
+        temporary.replace(manifest)
+
+
 def launch_environment(files, environment):
     env = dict(environment)
     env["PATH"] = "/usr/bin:/bin"
@@ -126,6 +173,9 @@ def launch_environment(files, environment):
     env["GLIBC_TUNABLES"] = "glibc.pthread.rseq=0"
     env["PROTON_USE_XALIA"] = "0"
     env["PROTON_NO_ESYNC"] = env["PROTON_NO_FSYNC"] = "1"
+    # Mono creates many handled exceptions during startup. Wine's default
+    # Proton trace writes tens of megabytes for these under PRoot.
+    env.setdefault("WINEDEBUG", "-all")
     env.setdefault("PROTON_LOG", "-fex")
     env.setdefault("PROTON_LOG_DIR", "/tmp")
     env["GALLIUM_DRIVER"] = env["MESA_LOADER_DRIVER_OVERRIDE"] = "zink"
@@ -176,7 +226,9 @@ def main():
     files = prepare_platform(platforms[-1].parent)
     env = launch_environment(files, os.environ)
     if appid == "667970" and env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
-        prepare_vtol_textures(Path(env["STEAM_COMPAT_INSTALL_PATH"]))
+        game = Path(env["STEAM_COMPAT_INSTALL_PATH"])
+        prepare_vtol_bindings(game)
+        prepare_vtol_textures(game)
         prepare_vtol_prefix(Path(env["STEAM_COMPAT_DATA_PATH"]))
         release_streaming_audio()
         overrides = "winebus.sys=d;wineusb.sys=d;winebth.sys=d;winemenubuilder.exe=d;tabtip.exe=d;UnityCrashHandler64.exe=d"

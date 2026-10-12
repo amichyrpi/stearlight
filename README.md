@@ -51,14 +51,20 @@ It includes:
 
 - [ ] Blue dots appearing in the right eye when the headset is in use.
 - [ ] Slowdown when both controllers are tracked.
-- [ ] Issues with standalone gaming.
 - [ ] Issues with hand textures appearing.
 
-### Development
+## Development
 
 This project bundles a VM version of the OS and a Quest version of the OS.
 The VM version is not maintained anymore, so the Quest
 version is the only one maintained.
+
+### Standalone gaming
+
+Every game is different and therefore has different issues. In this
+project, we have added patches for standalone gaming, but they are not perfect,
+and some games still don't run. If you want to run a game and you have patched
+the project for your game, your changes will be merged.
 
 ## Build for VM
 
