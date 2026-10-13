@@ -73,6 +73,11 @@ project, we have added patches for standalone gaming, but they are not perfect,
 and some games still don't run. If you want to run a game and you have patched
 the project for your game, your changes will be merged.
 
+### Next update
+
+- [ ] Controller support via Bluetooth
+- [ ] Desktop mode
+
 ## Build for VM
 
 On Linux, install Docker/Buildx, Python 3, pax-utils, btrfs-progs, zstd,
