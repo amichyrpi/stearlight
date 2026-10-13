@@ -22,6 +22,14 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/amichyrpi/stearlight">
+    <picture>
+      <img src="assets/celeste-passthrough-2026-10-13.png" alt="Celeste standalone">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
   <a href="https://github.com/amichyrpi/stearlight" style="display: inline-flex; align-items: center; gap: 40px;">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="assets/steamos_powered_white.png">

@@ -31,6 +31,7 @@ public final class QuestActivity extends NativeActivity {
  private boolean charging;
  private BluetoothBridge bluetoothBridge;
  private AudioBridge audioBridge;
+ private NetworkBridge networkBridge;
  private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));int status=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=status==BatteryManager.BATTERY_STATUS_CHARGING||status==BatteryManager.BATTERY_STATUS_FULL;}};
  @Override public void onCreate(Bundle state){
   new File(getStateDirectory(),"dashboard.ready").delete();
@@ -42,6 +43,8 @@ public final class QuestActivity extends NativeActivity {
   List<String> missing=new ArrayList<>();for(String p:new String[]{Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_ADVERTISE,Manifest.permission.RECORD_AUDIO})if(checkSelfPermission(p)!=PackageManager.PERMISSION_GRANTED)missing.add(p);
   if(!missing.isEmpty())requestPermissions(missing.toArray(new String[0]),7);
   workers.scheduleWithFixedDelay(this::writeDeviceState,0,1,TimeUnit.SECONDS);
+  networkBridge=new NetworkBridge(this,new File(getStateDirectory()));
+  workers.scheduleWithFixedDelay(networkBridge::poll,0,1,TimeUnit.SECONDS);
   bluetoothBridge=new BluetoothBridge(this,new File(getStateDirectory()));
   workers.scheduleWithFixedDelay(bluetoothBridge::poll,0,25,TimeUnit.MILLISECONDS);
   requestLinux();

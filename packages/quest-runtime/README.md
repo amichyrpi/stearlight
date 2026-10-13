@@ -181,6 +181,13 @@ and completing the game's EAC setup did not resolve the address-range mismatch.
 The diagnostic launcher is not shipped. PCVR streaming remains the verified
 VRChat path; local Linux games such as Celeste use the separate launcher above.
 
+Steam's Wi-Fi page uses Android's actual network name, signal strength,
+connection state, and cached scan results through a NetworkManager D-Bus adapter.
+Scanning asks for Android's location permission when needed. Wi-Fi switching and
+connection changes open Horizon's Wi-Fi settings; Android owns network credentials
+and Steam follows its observed connection. The adapter shares the Bluetooth
+bridge process and does not add a background Linux service.
+
 Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. The BlueZ bridge
 exposes real Classic and connectable BLE discoveries and remembered bonds in

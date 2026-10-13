@@ -510,6 +510,7 @@ static DBusMessage *handle(DBusConnection *bus, DBusMessage *request) {
                 "This Bluetooth operation is not supported by Android");
   return reply;
 }
+#include "network-bridge.h"
 int main() {
   std::signal(SIGINT, stop);
   std::signal(SIGTERM, stop);
@@ -526,6 +527,9 @@ int main() {
   if (dbus_bus_request_name(bus, "org.bluez", DBUS_NAME_FLAG_DO_NOT_QUEUE,
                             &error) != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER)
     return 1;
+  if (dbus_bus_request_name(bus, "org.freedesktop.NetworkManager", DBUS_NAME_FLAG_DO_NOT_QUEUE,
+                            &error) != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER)
+    return 1;
   dbus_bus_add_match(bus,
                      "type='signal',interface='org.freedesktop.DBus',member='"
                      "NameOwnerChanged'",
@@ -533,6 +537,7 @@ int main() {
   std::puts("QUEST_BLUETOOTH_BRIDGE_READY");
   while (!stopping && dbus_connection_read_write(bus, 100)) {
     synchronize(bus);
+    questNetwork::synchronize(bus);
     auto request = dbus_connection_pop_message(bus);
     if (!request)
       continue;
@@ -551,7 +556,7 @@ int main() {
       }
     } else if (dbus_message_get_type(request) ==
                DBUS_MESSAGE_TYPE_METHOD_CALL) {
-      auto reply = handle(bus, request);
+      auto reply = questNetwork::owns(request) ? questNetwork::handle(request) : handle(bus, request);
       if (reply) { dbus_connection_send(bus, reply, nullptr); dbus_message_unref(reply); }
     }
     dbus_message_unref(request);
