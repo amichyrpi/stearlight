@@ -12,8 +12,8 @@ Mesa 26.1.6 Zink loader over Turnip. A GPU probe verifies opaque-fd image
 sharing by rendering in OpenGL and reading every pixel back through Vulkan.
 The eye buffers are 1374 x 1440 each: 75% of the Quest 2's native dimensions,
 reducing scene pixels by 43.75%. The Vulkan display modes and startup GPU
-probe use the actual OpenXR buffer size. The app requests 120 Hz; the
-connected headset reports 72 Hz. Scene rendering still falls below 72 FPS
+probe use the actual OpenXR buffer size. The app requests 72 Hz when supported,
+and otherwise keeps the runtime's active refresh rate. Scene rendering still falls below 72 FPS
 under load; the display refresh rate is not the scene update rate.
 
 Noto fonts are bundled for broad script coverage, including CJK and emoji.
@@ -75,6 +75,33 @@ calibration, seated games such as VTOL VR receive invalid headset poses.
 VTOL VR has passed a local launch from Steam with the full standalone APK:
 its room tracks in the world, both controllers appear, and both triggers select
 menu buttons. Flight gameplay and sustained performance remain unverified.
+After the performance changes, the user confirmed that looking around its
+room/menu and moving both controllers felt smoother. Runtime platform aliases
+use relative links so Steam updates can move the platform without leaving
+PRoot hard-link aliases pointing at a removed version.
+Local Linux game panels use 960x540 at the game's 60 Hz, matching the 75%
+Quest profile and reducing shared-memory frame copies by 44% from 1280x720.
+The headset's display remains at 72 Hz. `STEARLIGHT_QUEST_GAME_PROFILE=0`
+restores the original panel size as well as Celeste's original renderer.
+Mesa's compiled shader cache is enabled for repeat game launches. Its default
+disk limit is 128 MB; local game launchers replace Steam's 5 GB override with
+that limit (`STEARLIGHT_SHADER_CACHE_MAX_SIZE` can change it).
+Steam's offline shader preprocessing is disabled by default on Quest because
+it competes with the dashboard during game launch. Mesa still compiles and
+caches shaders as needed; `STEARLIGHT_SHADER_PRECACHE=1` opts into Valve's
+single-worker preprocessing path.
+Celeste's recognized FNA3D library uses a bundled, SDL 2.0.14-compatible
+FNA3D 21.06 build with free-region merging and empty-pool reclamation.
+The Quest build also searches completed dynamic-buffer slots from the
+beginning; the old forward-only search continually allocates buffers during
+Celeste's idle menu even when earlier slots have finished rendering.
+Its original library is saved; `STEARLIGHT_QUEST_GAME_PROFILE=0` restores it.
+Unknown game updates keep their own renderer. A 9.6-minute idle title-screen
+measurement kept total game GPU allocation constant at 1,072,533,504 bytes,
+with eight dynamic slots and no game swap use. Gameplay and longer sessions
+still need separate checks.
+The Mesa build also releases its owned DMA-heap/ION allocation descriptors
+after import, so freeing an exported GPU buffer can reclaim its memory.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
 layer, until the main panel and bottom dock are ready. Display buffers use
 explicit Vulkan ownership transfers before Android reads them. A memory
@@ -87,7 +114,9 @@ rendering pose; full motion stability remains under validation.
 Display events follow OpenXR's refresh timing instead of spinning SteamVR's
 vblank thread. The Frame compositor also receives a VsyncEvent for each new
 visible OpenXR tracking sample, avoiding its one-second display-IRQ timeout.
-Tracking publishes each new sample once; unchanged button and
+OpenXR collects tracking into a local sample before briefly publishing it;
+controller queries do not hold the Linux readers' sequence lock. Only active
+controller bindings are queried. Tracking publishes each new sample once; unchanged button and
 display properties are not resent. PRoot caches process lookups and passes
 Adreno GPU ioctls, futex wakeups, and waits with an expected owner TID of
 0, 1 or 2 directly to the kernel. Potentially guest-owned robust-mutex waits
@@ -219,7 +248,8 @@ are unknown and are not invented.
 ## Build
 
 Use a mounted **clean** Stearlight ARM64 image as the input. On Ubuntu 24.04,
-install Python 3.12, the ARM64 GCC/G++ cross compilers, Ninja, pkg-config,
+install Python 3.12, the ARM64 GCC/G++ cross compilers, x86-64 GCC, CMake,
+Ninja, pkg-config,
 Bison, Flex, glslangValidator, zlib headers, dpkg-deb, patchelf, FFmpeg (including
 ffprobe), and libdbus-1 and libdrm development headers. Create a
 Python environment with `build_files/quest/requirements.txt`. Mesa's code

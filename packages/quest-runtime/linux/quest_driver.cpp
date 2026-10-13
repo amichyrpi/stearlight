@@ -103,8 +103,13 @@ public:
   bool nextGrip=state.squeeze[hand]>(gripped?.7f:.8f);if(!haveInputs||nextGrip!=gripped)vr::VRDriverInput()->UpdateBooleanComponent(gripClick,nextGrip,0);gripped=nextGrip;
   std::array<float,4> scalars={state.trigger[hand],state.squeeze[hand],state.thumbstick[hand][0],state.thumbstick[hand][1]};
   vr::VRInputComponentHandle_t handles[]={trigger,squeeze,x,y};
-  for(int i=0;i<4;i++)if(!haveInputs||scalars[i]!=previousScalars[i])vr::VRDriverInput()->UpdateScalarComponent(handles[i],scalars[i],0);
-  previousClicks=buttons;previousScalars=scalars;haveInputs=true;
+  // Compare with the last value actually sent. Ignore sub-per-mille sensor
+  // noise without losing slow accumulated motion or exact release/endpoints.
+  for(int i=0;i<4;i++)if(!haveInputs||std::fabs(scalars[i]-previousScalars[i])>=.001f||
+      (scalars[i]!=previousScalars[i]&&(scalars[i]==0||std::fabs(scalars[i])==1))){
+   vr::VRDriverInput()->UpdateScalarComponent(handles[i],scalars[i],0);previousScalars[i]=scalars[i];
+  }
+  previousClicks=buttons;haveInputs=true;
  }
 };
 class Provider final:public vr::IServerTrackedDeviceProvider {

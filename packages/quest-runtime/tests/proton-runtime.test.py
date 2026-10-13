@@ -15,6 +15,24 @@ spec.loader.exec_module(launcher)
 
 
 class ProtonRuntimeTest(unittest.TestCase):
+    def test_migrated_proot_alias_retargets_current_canonical_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            platform = Path(folder)
+            files = platform / "files"
+            (files / "bin").mkdir(parents=True)
+            (files / "current").write_text("current runtime")
+            alias = files / "bin/command"
+            alias.symlink_to(platform / "removed-platform/old")
+            with gzip.open(platform / "usr-mtree.txt.gz", "wt") as manifest:
+                manifest.write("./bin type=dir\n./bin/command type=file contents=./current\n")
+            # PRoot presents its hard-link aliases as regular files to lstat.
+            with patch.object(Path, "is_symlink", return_value=False):
+                launcher.prepare_platform(platform)
+            self.assertEqual(alias.read_text(), "current runtime")
+            self.assertTrue(alias.samefile(files / "current"))
+            launcher.prepare_platform(platform)
+            self.assertEqual(alias.read_text(), "current runtime")
+
     def test_runtime_aliases_refresh_after_a_steam_update(self):
         with tempfile.TemporaryDirectory() as folder:
             platform = Path(folder)

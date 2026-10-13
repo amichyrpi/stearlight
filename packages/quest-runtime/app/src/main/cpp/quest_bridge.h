@@ -1,5 +1,7 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
+#include <string.h>
 
 enum { QUEST_BRIDGE_MAGIC=0x53515231, QUEST_BRIDGE_VERSION=2 };
 enum QuestButtons { QUEST_A=1,QUEST_B=2,QUEST_X=4,QUEST_Y=8,QUEST_THUMBSTICK=16,QUEST_MENU=32 };
@@ -23,3 +25,12 @@ struct QuestTracking {
  uint32_t charging,connected,wifi,bluetooth;
  uint64_t predicted_monotonic_ns;
 };
+
+// Sample OpenXR before calling this: Linux readers must not wait behind
+// runtime/controller queries while the shared sequence is marked busy.
+inline void questPublishTracking(QuestTracking* shared, const QuestTracking& sample) {
+ __atomic_add_fetch(&shared->sequence,1,__ATOMIC_ACQ_REL);
+ constexpr size_t offset=offsetof(QuestTracking,width);
+ memcpy(reinterpret_cast<char*>(shared)+offset,reinterpret_cast<const char*>(&sample)+offset,sizeof(sample)-offset);
+ __atomic_add_fetch(&shared->sequence,1,__ATOMIC_RELEASE);
+}

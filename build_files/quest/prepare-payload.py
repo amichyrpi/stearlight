@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -145,7 +146,8 @@ needs_exe_wrapper = true
         "-Dopengl=true", "-Degl=enabled", "-Dgbm=disabled", "-Dglx=dri", "-Dglvnd=enabled", "-Dllvm=disabled",
         "-Dvideo-codecs=", "-Dbuild-tests=false", "-Dtools=", "-Dvalgrind=disabled", "-Dlibunwind=disabled",
         "-Ddisplay-info=disabled", "-Dzstd=disabled", "-Dandroid-libbacktrace=disabled", "-Dzlib=enabled",
-        "-Dexpat=disabled", "-Dxmlconfig=disabled", "-Dspirv-tools=disabled", "-Dshader-cache=disabled")
+        "-Dexpat=disabled", "-Dxmlconfig=disabled", "-Dspirv-tools=disabled", "-Dshader-cache=enabled",
+        "-Dshader-cache-max-size=128M")
     run("ninja", "-C", build, "-j", min(os.cpu_count() or 2, 8),
         "src/freedreno/vulkan/libvulkan_freedreno.so",
         "src/gallium/targets/dri/libgallium-26.1.6.so", "src/glx/libGLX_mesa.so.0.0.0",
@@ -177,6 +179,10 @@ def stage_fonts(overlay, downloads):
         run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
     quest = overlay / "opt/quest"
     quest.mkdir(parents=True, exist_ok=True)
+    fna_spec = importlib.util.spec_from_file_location("fna_build", Path(__file__).with_name("build-fna3d.py"))
+    fna_build = importlib.util.module_from_spec(fna_spec)
+    fna_spec.loader.exec_module(fna_build)
+    fna_build.build(work, quest / "fna3d", {name: fetch(spec, downloads) for name, spec in LOCK["fna3d"].items()})
     version = hashlib.sha256(json.dumps(LOCK["fonts"], sort_keys=True).encode()).hexdigest()
     (quest / "fonts.version").write_text(version + "\n")
     config = Path("etc/fonts/conf.d/66-stearlight-cjk.conf")
@@ -406,6 +412,7 @@ def main():
         shutil.copyfile(fetch(spec, downloads), headers / name)
     source_files = [fetch(spec, downloads) for spec in LOCK["sources"].values()]
     source_files.append(fetch(LOCK["mesa"], downloads))
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["fna3d"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fonts"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["audio"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["gaming"].values())
@@ -426,7 +433,7 @@ def main():
                 bundle.write(source, "packages/quest-runtime/proot/" + source.name)
         for directory in ["packages/quest-runtime/app/src", "packages/quest-runtime/tests"]:
             for source in (REPO / directory).rglob("*"):
-                if source.is_file():
+                if source.is_file() and "__pycache__" not in source.parts:
                     bundle.write(source, source.relative_to(REPO))
         for name in ["system_files/usr/local/libexec/stearlight/frame-steam-ipc",
                      "system_files/usr/local/libexec/stearlight/steamframe-session",

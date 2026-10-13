@@ -53,6 +53,8 @@ struct Runtime {
  PFN_xrConvertTimeToTimespecTimeKHR timeToMonotonic=nullptr;
  PFN_xrGetDisplayRefreshRateFB getRate=nullptr;PFN_xrRequestDisplayRefreshRateFB requestRate=nullptr;
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
+ float requestedRate=72;
+ bool bootFinished=false;
  int hapticSocket=-1;
  Passthrough camera;
  bool has(const std::vector<XrExtensionProperties>& e,const char* name){for(const auto& p:e)if(!strcmp(p.extensionName,name))return true;return false;}
@@ -117,7 +119,7 @@ struct Runtime {
   gpu.initialize(display,directory,eyes[0].width*2,eyes[0].height);
   video.initialize(directory);
   if(has(extensions,XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)){
-   getRate=function<PFN_xrGetDisplayRefreshRateFB>(instance,"xrGetDisplayRefreshRateFB");requestRate=function<PFN_xrRequestDisplayRefreshRateFB>(instance,"xrRequestDisplayRefreshRateFB");auto enumerate=function<PFN_xrEnumerateDisplayRefreshRatesFB>(instance,"xrEnumerateDisplayRefreshRatesFB");uint32_t count=0;XR(enumerate(session,0,&count,nullptr));std::vector<float> rates(count);XR(enumerate(session,count,&count,rates.data()));for(float rate:rates)LOG("Supported display refresh %.0f Hz",rate);if(std::find(rates.begin(),rates.end(),120.f)!=rates.end())XR(requestRate(session,120));XR(getRate(session,&tracking->refresh_hz));LOG("Current display refresh %.0f Hz",tracking->refresh_hz);
+   getRate=function<PFN_xrGetDisplayRefreshRateFB>(instance,"xrGetDisplayRefreshRateFB");requestRate=function<PFN_xrRequestDisplayRefreshRateFB>(instance,"xrRequestDisplayRefreshRateFB");auto enumerate=function<PFN_xrEnumerateDisplayRefreshRatesFB>(instance,"xrEnumerateDisplayRefreshRatesFB");uint32_t count=0;XR(enumerate(session,0,&count,nullptr));std::vector<float> rates(count);XR(enumerate(session,count,&count,rates.data()));for(float rate:rates)LOG("Supported display refresh %.0f Hz",rate);XR(getRate(session,&tracking->refresh_hz));if(std::find(rates.begin(),rates.end(),requestedRate)==rates.end())requestedRate=tracking->refresh_hz;XR(requestRate(session,requestedRate));LOG("Current display refresh %.0f Hz; requested %.0f Hz",tracking->refresh_hz,requestedRate);
   }
   camera.initialize(instance,system,session,directory,has(extensions,XR_FB_PASSTHROUGH_EXTENSION_NAME));
   if(has(extensions,XR_FB_RENDER_MODEL_EXTENSION_NAME))saveModels();
@@ -150,8 +152,8 @@ struct Runtime {
  bool events(){
   XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};while(xrPollEvent(instance,&event)==XR_SUCCESS){if(event.type==XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED){auto& state=*reinterpret_cast<XrEventDataSessionStateChanged*>(&event);LOG("Session state %d",state.state);visible=state.state==XR_SESSION_STATE_VISIBLE||state.state==XR_SESSION_STATE_FOCUSED;focused=state.state==XR_SESSION_STATE_FOCUSED;
    audioFocus(focused);
-   if(state.state==XR_SESSION_STATE_READY&&!running){XrSessionBeginInfo begin{XR_TYPE_SESSION_BEGIN_INFO};begin.primaryViewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;XR(xrBeginSession(session,&begin));running=true;if(setPerformance){XR(setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));XR(setPerformance(session,XR_PERF_SETTINGS_DOMAIN_GPU_EXT,XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));}if(requestRate)XR(requestRate(session,120));}
-   if(state.state==XR_SESSION_STATE_FOCUSED&&requestRate){XR(requestRate(session,120));XR(getRate(session,&tracking->refresh_hz));LOG("Focused display refresh %.0f Hz",tracking->refresh_hz);}
+   if(state.state==XR_SESSION_STATE_READY&&!running){XrSessionBeginInfo begin{XR_TYPE_SESSION_BEGIN_INFO};begin.primaryViewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;XR(xrBeginSession(session,&begin));running=true;if(setPerformance){XR(setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));XR(setPerformance(session,XR_PERF_SETTINGS_DOMAIN_GPU_EXT,XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT));}if(requestRate)XR(requestRate(session,requestedRate));}
+   if(state.state==XR_SESSION_STATE_FOCUSED&&requestRate){XR(requestRate(session,requestedRate));XR(getRate(session,&tracking->refresh_hz));LOG("Focused display refresh %.0f Hz",tracking->refresh_hz);}
    if(state.state==XR_SESSION_STATE_STOPPING&&running){camera.suspend();XR(xrEndSession(session));running=false;}
    __atomic_add_fetch(&tracking->sequence,1,__ATOMIC_ACQ_REL);
    tracking->session_visible=visible;tracking->session_focused=focused;
@@ -170,7 +172,7 @@ struct Runtime {
    XrResult result;
    if(packet.duration_seconds<=0||packet.amplitude<=0)result=xrStopHapticFeedback(session,&info);
    else{XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};vibration.duration=static_cast<XrDuration>(std::min(packet.duration_seconds,5.f)*1000000000.0);vibration.frequency=std::max(packet.frequency,0.f);vibration.amplitude=std::min(packet.amplitude,1.f);result=xrApplyHapticFeedback(session,&info,reinterpret_cast<const XrHapticBaseHeader*>(&vibration));}
-   LOG("Controller %u haptic result=%d",packet.hand,result);
+   if(XR_FAILED(result))LOG("Controller %u haptic result=%d",packet.hand,result);
   }
  }
  void updateStatus(XrTime time){if(statusUpdated&&time-statusUpdated<16000000)return;statusUpdated=time;JNIEnv* env;app->activity->vm->GetEnv(reinterpret_cast<void**>(&env),JNI_VERSION_1_6);jclass type=env->GetObjectClass(app->activity->clazz);jmethodID method=env->GetMethodID(type,"getBootBitmap","()Landroid/graphics/Bitmap;");jobject bitmap=env->CallObjectMethod(app->activity->clazz,method);if(env->ExceptionCheck()){env->ExceptionDescribe();env->ExceptionClear();env->DeleteLocalRef(type);return;}AndroidBitmapInfo info{};void* pixels=nullptr;if(AndroidBitmap_getInfo(env,bitmap,&info)==ANDROID_BITMAP_RESULT_SUCCESS&&AndroidBitmap_lockPixels(env,bitmap,&pixels)==ANDROID_BITMAP_RESULT_SUCCESS){uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(statusEye.chain,&acquire,&index));XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};wait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(statusEye.chain,&wait));glBindTexture(GL_TEXTURE_2D,statusEye.images[index].image);glPixelStorei(GL_UNPACK_ROW_LENGTH,info.stride/4);glTexSubImage2D(GL_TEXTURE_2D,0,0,0,info.width,info.height,GL_RGBA,GL_UNSIGNED_BYTE,pixels);glPixelStorei(GL_UNPACK_ROW_LENGTH,0);AndroidBitmap_unlockPixels(env,bitmap);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(statusEye.chain,&release));}env->DeleteLocalRef(bitmap);env->DeleteLocalRef(type);}
@@ -195,16 +197,26 @@ struct Runtime {
   XrActiveActionSet active{actions,XR_NULL_PATH};XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;XrResult syncResult=xrSyncActions(session,&sync);if(syncResult!=XR_SESSION_NOT_FOCUSED)check(syncResult,"xrSyncActions");
   haptics();
   XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};locate.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;locate.displayTime=state.predictedDisplayTime;locate.space=stage;XrViewState viewState{XR_TYPE_VIEW_STATE};XrView views[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};uint32_t count;XR(xrLocateViews(session,&locate,&viewState,2,&count,views));
-  __atomic_add_fetch(&tracking->sequence,1,__ATOMIC_ACQ_REL);tracking->predicted_time_ns=state.predictedDisplayTime;if(timeToMonotonic){timespec predicted{};XR(timeToMonotonic(instance,state.predictedDisplayTime,&predicted));tracking->predicted_monotonic_ns=static_cast<uint64_t>(predicted.tv_sec)*1000000000+predicted.tv_nsec;}tracking->session_visible=visible;tracking->session_focused=focused;
-  XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};XR(xrLocateSpace(head,stage,state.predictedDisplayTime,&location));tracking->headset=pose(location.pose,location.locationFlags);
+  QuestTracking sample=*tracking;sample.predicted_time_ns=state.predictedDisplayTime;if(timeToMonotonic){timespec predicted{};XR(timeToMonotonic(instance,state.predictedDisplayTime,&predicted));sample.predicted_monotonic_ns=static_cast<uint64_t>(predicted.tv_sec)*1000000000+predicted.tv_nsec;}sample.session_visible=visible;sample.session_focused=focused;
+  XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};XR(xrLocateSpace(head,stage,state.predictedDisplayTime,&location));sample.headset=pose(location.pose,location.locationFlags);
   for(int i=0;i<2;i++){
-   XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));tracking->grip[i]=pose(location.pose,poseState.isActive?location.locationFlags:0);XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));tracking->aim[i]=pose(location.pose,location.locationFlags);tracking->eyes[i]=pose(views[i].pose,viewState.viewStateFlags);tracking->fov[i][0]=views[i].fov.angleLeft;tracking->fov[i][1]=views[i].fov.angleRight;tracking->fov[i][2]=views[i].fov.angleUp;tracking->fov[i][3]=views[i].fov.angleDown;
-   tracking->trigger[i]=value(triggerAction,i);if(!tracking->trigger[i]&&button(selectAction,i))tracking->trigger[i]=1;tracking->squeeze[i]=value(squeezeAction,i);tracking->buttons[i]=0;for(int b=0;b<6;b++)if(button(buttonActions[b],i))tracking->buttons[i]|=1u<<b;tracking->touches[i]=button(touchAction,i)?1:0;
-   XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));tracking->thumbstick[i][0]=stick.isActive?stick.currentState.x:0;tracking->thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
-  }__atomic_add_fetch(&tracking->sequence,1,__ATOMIC_RELEASE);
+   XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,poseState.isActive?location.locationFlags:0);XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);sample.eyes[i]=pose(views[i].pose,viewState.viewStateFlags);sample.fov[i][0]=views[i].fov.angleLeft;sample.fov[i][1]=views[i].fov.angleRight;sample.fov[i][2]=views[i].fov.angleUp;sample.fov[i][3]=views[i].fov.angleDown;
+   // Query only bindings present on this hand. Keep zero inputs for sleeping
+   // controllers, so wake/disconnect still publishes a complete new sample.
+   sample.trigger[i]=sample.squeeze[i]=0;sample.buttons[i]=sample.touches[i]=0;
+   sample.thumbstick[i][0]=sample.thumbstick[i][1]=0;
+   if(!poseState.isActive)continue;
+   sample.trigger[i]=value(triggerAction,i);if(!sample.trigger[i]&&button(selectAction,i))sample.trigger[i]=1;sample.squeeze[i]=value(squeezeAction,i);
+   for(int b=i?0:2;b<(i?2:4);b++)if(button(buttonActions[b],i))sample.buttons[i]|=1u<<b;
+   if(button(buttonActions[4],i))sample.buttons[i]|=QUEST_THUMBSTICK;
+   if(!i&&button(buttonActions[5],i))sample.buttons[i]|=QUEST_MENU;
+   sample.touches[i]=button(touchAction,i)?1:0;
+   XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));sample.thumbstick[i][0]=stick.isActive?stick.currentState.x:0;sample.thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
+  }questPublishTracking(tracking,sample);
   publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
-  bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootComplete();
+  if(!bootFinished)bootFinished=bootComplete();
+  bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootFinished;
   bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;
   if(!loading&&visible&&compositionReady)camera.update();else camera.suspend();
   bool passthroughActive=camera.active;

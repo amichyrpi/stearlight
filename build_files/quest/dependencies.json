@@ -1,4 +1,22 @@
 {
+  "fna3d": {
+    "renderer": {
+      "url": "https://codeload.github.com/FNA-XNA/FNA3D/tar.gz/refs/tags/21.06",
+      "sha256": "37f0879970952b2e10694ae3576fdfa5fa59531085da185c5f1a0dfecb3d817b"
+    },
+    "mojoshader": {
+      "url": "https://codeload.github.com/icculus/mojoshader/tar.gz/c9037d90fa2f59b6be65d1391ca11d345356bad1",
+      "sha256": "a9eda2d62ea0bbc4124109c60554578708614bbc4fe439b8a3da3fa18591b322"
+    },
+    "vulkan-headers": {
+      "url": "https://codeload.github.com/KhronosGroup/Vulkan-Headers/tar.gz/85470b32ad5d0d7d67fdf411b6e7b502c09c9c52",
+      "sha256": "a574cabbf572ed5534fd73550f054dc2546d095c36b73e7a30a59721cfea2194"
+    },
+    "sdl-headers": {
+      "url": "https://www.libsdl.org/release/SDL2-2.0.14.tar.gz",
+      "sha256": "d8215b571a581be1332d2106f8036fcb03d12a70bae01e20f424976d275432bc"
+    }
+  },
   "mesa": {
     "url": "https://deb.debian.org/debian/pool/main/m/mesa/mesa_26.1.6.orig.tar.xz",
     "sha256": "5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606"
