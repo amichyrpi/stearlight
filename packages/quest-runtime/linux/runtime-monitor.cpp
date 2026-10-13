@@ -8,6 +8,7 @@
 #include <unistd.h>
 #define QUEST_WATCH_EMBEDDED
 #include "store-browser-watch.c"
+#include "local-vr-audio.h"
 
 static volatile sig_atomic_t stopping = 0;
 static void stop(int) { stopping = 1; }
@@ -79,6 +80,7 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, stop);
     std::signal(SIGINT, stop);
     Session session(argc == 2 && !std::strcmp(argv[1], "--launch-session"));
+    LocalVRAudio audio(session.enabled);
     if (!session.startVR()) return 1;
     vr::EVRInitError error = vr::VRInitError_Unknown;
     vr::IVRSystem* system = nullptr;
@@ -109,6 +111,7 @@ int main(int argc, char** argv) {
     bool dashboardRequested = false, dashboardReady = false, steamRequested = false;
     bool failed = false;
     while (!stopping) {
+        audio.poll();
         if (!session.poll() || quest_watch_step() < 0) { failed = true; break; }
         vr::EVRSettingsError settingError;
         bool requested = settings->GetBool("stearlight_quest", "passthrough_enabled", &settingError);

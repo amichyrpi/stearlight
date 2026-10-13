@@ -1,36 +1,79 @@
-# Stearlight OS
+<p align="center">
+  <a href="https://github.com/amichyrpi/stearlight">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/stearlight_small_white.svg">
+      <img src="assets/stearlight_small_black.svg" alt="Stearlight">
+    </picture>
+  </a>
+</p>
 
-An alpha ARM64 Steam Frame test OS. Valve's Steam client, SteamVR and
-Gamescope provide the native dashboard, separate left dock, bottom dock,
-laser and sign-in. The maintained target is a Windows QEMU VM.
+<h1 align="center">Stearlight OS</h1>
 
-## Download and run
+<p align="center"><strong>Steam Frame OS Quest application</strong></p>
 
-1. Download `stearlight-frame-windows.zip` from the
-   [Continuous build](https://github.com/amichyrpi/stearlight/releases/tag/continuous).
-2. Extract the entire ZIP into a writable folder.
-3. Double-click `start-vm.cmd` and wait for the native sign-in screen.
+<p align="center">
+  Full Steam Frame OS port with Proton, FEX, streaming, and standalone capability all in one app.
+</p>
 
-The download includes QEMU. Running it needs no Docker or WSL. ARM64 CPU
-execution is emulated on x64; first startup can take 10-15 minutes on the
-tested host. See [VM instructions](post_process/README.md) for requirements,
-controls and account storage.
+<p align="center">
+  <a href="https://github.com/amichyrpi/stearlight/releases/tag/continuous"><strong>Install Stearlight OS</strong></a>
+  ·
+  <a href="https://github.com/amichyrpi/stearlight#known-issues">Known issues</a>
+</p>
 
-## Source layout
+<p align="center">
+  <a href="https://github.com/amichyrpi/stearlight">
+    <picture>
+      <img src="assets/celeste-passthrough-2026-10-13.png" alt="Celeste standalone">
+    </picture>
+  </a>
+</p>
 
-The layout follows [Armada](https://github.com/armada-os/armada).
+<p align="center">
+  <a href="https://github.com/amichyrpi/stearlight" style="display: inline-flex; align-items: center; gap: 40px;">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/steamos_powered_white.png">
+      <img src="assets/steamos_powered_black.png" alt="Steam OS" height="120">
+    </picture>
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/steamvr_white.png">
+      <img src="assets/steamvr_black.png" alt="Steam VR" height="120">
+    </picture>
+  </a>
+</p>
 
-| Path | Purpose |
-| --- | --- |
-| `Containerfile` | ARM64 OS assembly |
-| `build_files/` | Recovery extraction, image builder and checks |
-| `packages/` | Runtime sources, OpenVR SDK and Windows QEMU patches |
-| `system_files/` | Guest `/etc` and `/usr` files |
-| `disk_config/` | Root disk configuration |
-| `post_process/` | Windows packaging and launcher |
-| `tests/` | Focused source and runtime checks |
+## About
 
-## Build
+Stearlight is a Linux application for the Quest platform
+that brings the full Steam Frame OS to the Quest.
+
+It includes:
+
+- ARM64 SteamVR with FEX and Proton
+- Tracking support and passthrough
+- VR streaming for VR and non-VR games
+- Bluetooth support for sign-in
+- Standalone capability for VR and non-VR games
+
+## Known-issues
+
+- [ ] Blue dots appearing in the right eye when the headset is in use.
+- [ ] Slowdown when both controllers are tracked.
+
+## Development
+
+This project bundles a VM version of the OS and a Quest version of the OS.
+The VM version is not maintained anymore, so the Quest
+version is the only one maintained.
+
+### Standalone gaming
+
+Every game is different and therefore has different issues. In this
+project, we have added patches for standalone gaming, but they are not perfect,
+and some games still don't run. If you want to run a game and you have patched
+the project for your game, your changes will be merged.
+
+## Build for VM
 
 On Linux, install Docker/Buildx, Python 3, pax-utils, btrfs-progs, zstd,
 e2fsprogs and qemu-utils:
@@ -46,6 +89,10 @@ The Windows runtime needs MSYS2 UCRT64; its dependencies are in the workflow.
 Windows packaging requires `7z` on `PATH`. Source payloads are pinned in
 `packages/sources.lock.json`; outputs go in `dist/`.
 
-Successful main builds update the **Continuous build** release. Maintainers
-can also publish through the workflow's manual option. A `vm-*` tag produces
-a versioned release. See [validation instructions](tests/README.md).
+## Contribution
+
+Before contributing to this project, please look at the [`Contribution guidelines`](CONTRIBUTING.md).
+
+## License
+
+Stearlight code is licensed under the **FSL-1.1-ALv2** license. Valve assets and intellectual property are owned by Valve themselves.
