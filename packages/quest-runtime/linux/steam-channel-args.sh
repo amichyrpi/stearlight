@@ -1,4 +1,10 @@
 # Sourced by Valve's RUNSTEAM.sh after it assembles STEAM_ARGS.
+# Preprocessing desktop shader archives competes with the dashboard and local
+# games on Quest. Mesa compiles and caches the shaders actually used instead.
+# Keep the real single-worker replay path available for explicit opt-in.
+if [ "${STEARLIGHT_SHADER_PRECACHE:-0}" != 1 ];then
+ STEAM_ARGS+=( -noshaders )
+fi
 # Frame supplies its own ARM64 Beta branch. Its client build can differ from
 # the general Public Beta manifest; selecting that manifest repeatedly offers
 # the same package. Preserve Valve's runtime-provided Frame branch across UI

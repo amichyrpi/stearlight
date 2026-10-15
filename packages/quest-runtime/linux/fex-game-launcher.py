@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Run Steam's x86 games in its installed runtime without privileged containers."""
 import gzip
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ def prepare_rootfs(platform, destination):
     files = platform / "files"
     manifest = platform / "usr-mtree.txt.gz"
     stamp = destination / "manifest.json"
-    signature = [5, str(platform), manifest.stat().st_size, manifest.stat().st_mtime_ns]
+    signature = [6, str(platform), manifest.stat().st_size, manifest.stat().st_mtime_ns]
     if not stamp.exists() or json.loads(stamp.read_text()) != signature:
         records = []
         with gzip.open(manifest, "rt") as source:
@@ -55,7 +56,13 @@ def prepare_rootfs(platform, destination):
             directory.mkdir(exist_ok=True)
             for item in source.iterdir():
                 link = directory / item.name
-                if item.name != excluded and not os.path.lexists(link):
+                if item.name == excluded:
+                    continue
+                # A Steam runtime update moves its platform files. Refresh
+                # the private aliases rather than keeping deleted old paths.
+                if link.is_symlink() and os.readlink(link) != str(item):
+                    link.unlink()
+                if not os.path.lexists(link):
                     link.symlink_to(item)
         libraries = usr / "lib/x86_64-linux-gnu"
         libraries.mkdir(exist_ok=True)
@@ -135,6 +142,61 @@ def prepare_game_script(command):
         pass
 
 
+def prepare_celeste_memory(game, enabled=True, runtime=Path("/opt/quest/fna3d")):
+    # Only replace the tested game renderer. Preserve Steam updates and keep
+    # a verified original for the launch-option opt-out.
+    library = game / "lib64/libFNA3D.so.0"
+    original = "547990f643e09bf4ab68c755f89dad7548b8d07803a843c2e18c08ef2e9d3300"
+    capped = "9faec3d27262f11723a1dded814715a0fb70a7cc8fbba3a5732ec4b71dba6261"
+    try:
+        data = library.read_bytes()
+    except FileNotFoundError:
+        return
+    digest = hashlib.sha256(data).hexdigest()
+    backup = library.with_name(library.name + ".quest-original")
+    marker = library.with_name(library.name + ".quest-profile.json")
+    try:
+        installed_profile = json.loads(marker.read_text())
+        installed = (installed_profile.get("sha256"), installed_profile.get("previous_sha256"))
+    except (OSError, ValueError):
+        installed = ()
+    backup_valid = backup.exists() and hashlib.sha256(backup.read_bytes()).hexdigest() == original
+    managed = digest == capped or (backup_valid and digest in installed)
+    def replace(content):
+        temporary = library.with_name(library.name + ".quest-next")
+        temporary.write_bytes(content)
+        temporary.chmod(library.stat().st_mode & 0o777)
+        temporary.replace(library)
+    if not enabled:
+        if managed and backup_valid:
+            replace(backup.read_bytes())
+            marker.unlink(missing_ok=True)
+        return
+    try:
+        profile = json.loads((runtime / "profile.json").read_text())
+        updated = (runtime / "libFNA3D.so.0").read_bytes()
+    except (OSError, ValueError):
+        return
+    replacement = hashlib.sha256(updated).hexdigest()
+    if replacement != profile.get("sha256"):
+        raise ValueError("Celeste renderer checksum mismatch")
+    if digest != original and not managed and not (backup_valid and digest == replacement):
+        print("Stearlight: unrecognized Celeste FNA3D; keeping its allocator", file=sys.stderr)
+        return
+    if digest == original and not backup_valid:
+        backup.write_bytes(data)
+        backup_valid = True
+    if not backup_valid:
+        raise ValueError("Celeste renderer original is missing or damaged")
+    # Write ownership before replacing, so an interrupted install is
+    # recognized on the next launch. The original is already durable.
+    marker_next = marker.with_suffix(".next")
+    marker_next.write_text(json.dumps({"sha256": replacement, "previous_sha256": digest}))
+    marker_next.replace(marker)
+    if digest != replacement:
+        replace(updated)
+
+
 def main():
     if len(sys.argv) < 3 or sys.argv[1] not in ("run", "waitforexitandrun"):
         raise ValueError("Unsupported FEX launch command")
@@ -173,7 +235,10 @@ def main():
         "LIBGL_KOPPER_DISABLE": "true", "LIBGL_KOPPER_DRI2": "1",
     })
     command = unwrap(sys.argv[2:])
+    if environment.get("SteamAppId") == "504230" and environment.get("STEAM_COMPAT_INSTALL_PATH"):
+        prepare_celeste_memory(Path(environment["STEAM_COMPAT_INSTALL_PATH"]), environment.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0")
     prepare_game_script(command)
+    environment["MESA_SHADER_CACHE_MAX_SIZE"] = environment["MESA_GLSL_CACHE_MAX_SIZE"] = environment.get("STEARLIGHT_SHADER_CACHE_MAX_SIZE", "128M")
     environment.setdefault("FNA3D_FORCE_DRIVER", "Vulkan")
     environment.setdefault("SDL_AUDIODRIVER", "pulseaudio")
     if environment.get("STEARLIGHT_FEX_GAMESCOPE") != "1" and environment.get("SteamAppId"):
@@ -186,14 +251,20 @@ def main():
         loader = "/opt/frame-gamescope/lib/ld-linux-aarch64.so.1"
         libraries = "/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so.0"
         preload = ["--preload", libraries]
+        # Match the Quest scene's 75% profile. Celeste's 320x180 artwork still
+        # scales by a whole factor of three, with fewer readback/copy pixels.
+        width, height = (960, 540) if environment.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0" else (1280, 720)
         compositor = [loader, *preload, "--library-path", "/opt/frame-gamescope/lib:/usr/lib/aarch64-linux-gnu",
                       "/opt/frame-gamescope/bin/gamescope", "--backend", "openvr", "--expose-wayland",
-                      "--xwayland-count", "1", "-w", "1280", "-h", "720", "-W", "1280", "-H", "720", "-r", "60",
+                      "--xwayland-count", "1", "-w", str(width), "-h", str(height), "-W", str(width), "-H", str(height), "-r", "60",
                       "--steam", "--virtual-connector-strategy", "SingleApplication",
                       "--vr-overlay-key", "valve.steam.desktopgame." + app,
                       "--vr-app-overlay-key", "valve.steam.desktopgame",
                       "--vr-overlay-show-immediately", "--vr-overlay-enable-control-bar", "--vr-overlay-enable-control-bar-keyboard",
                       "--", str(tool / "fex-compat-tool"), "run", *command]
+        # Gamescope's shutdown must not signal Steam's inherited process group.
+        if os.getpgrp() != os.getpid():
+            os.setsid()
         os.execve(loader, compositor, environment)
         return
     print("Stearlight FEX: launching " + command[0], file=sys.stderr, flush=True)

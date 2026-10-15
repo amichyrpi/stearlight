@@ -27,12 +27,12 @@ public final class QuestActivity extends NativeActivity {
  private volatile java.lang.Process linux;
  private volatile boolean closing;
  private final AtomicBoolean starting=new AtomicBoolean();
- private int batteryPercent=-1;
- private boolean charging;
+ private volatile int batteryPercent=-1, batteryStatus=BatteryManager.BATTERY_STATUS_UNKNOWN, batteryPlugged, batteryVoltage, batteryTemperature;
+ private volatile boolean charging;
  private BluetoothBridge bluetoothBridge;
  private AudioBridge audioBridge;
  private NetworkBridge networkBridge;
- private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));int status=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=status==BatteryManager.BATTERY_STATUS_CHARGING||status==BatteryManager.BATTERY_STATUS_FULL;}};
+ private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));batteryStatus=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=batteryStatus==BatteryManager.BATTERY_STATUS_CHARGING||batteryStatus==BatteryManager.BATTERY_STATUS_FULL;batteryPlugged=intent.getIntExtra(BatteryManager.EXTRA_PLUGGED,0);batteryVoltage=intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE,0);batteryTemperature=intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,0);}};
  @Override public void onCreate(Bundle state){
   new File(getStateDirectory(),"dashboard.ready").delete();
   new File(getStateDirectory(),"gpu-capture.request").delete();
@@ -65,6 +65,8 @@ public final class QuestActivity extends NativeActivity {
   if(closing)return;
   try {
    JSONObject state=new JSONObject();state.put("battery_percent",batteryPercent);state.put("charging",charging);
+   state.put("battery_status",batteryStatus);state.put("battery_plugged",batteryPlugged);state.put("battery_voltage_mv",batteryVoltage);state.put("battery_temperature_tenths_c",batteryTemperature);
+   BatteryManager power=(BatteryManager)getSystemService(BATTERY_SERVICE);state.put("battery_charge_time_ms",power==null?-1:power.computeChargeTimeRemaining());
    ConnectivityManager cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);Network network=cm.getActiveNetwork();NetworkCapabilities caps=cm.getNetworkCapabilities(network);LinkProperties link=cm.getLinkProperties(network);
    state.put("connected",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET));state.put("validated",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));state.put("wifi",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI));
    JSONArray dns=new JSONArray(),addresses=new JSONArray();if(link!=null){for(java.net.InetAddress address:link.getDnsServers())dns.put(address.getHostAddress());for(LinkAddress address:link.getLinkAddresses())addresses.put(address.toString());}state.put("dns",dns);state.put("addresses",addresses);
@@ -147,7 +149,17 @@ public final class QuestActivity extends NativeActivity {
    // The shell records its pid and immediately execs PRoot, retaining that pid.
    args.addAll(0,Arrays.asList("/system/bin/sh","-c","printf '%s\\n' \"$$\" > \"$1\" || exit; shift; exec \"$@\"","stearlight-linux",pidFile.toString()));
    ProcessBuilder builder=new ProcessBuilder(args);Map<String,String> env=builder.environment();env.put("LD_LIBRARY_PATH",nativeDir);env.put("PROOT_LOADER",nativeDir+"/libproot_loader.so");env.put("PROOT_TMP_DIR",tmp.toString());env.remove("PROOT_NO_SECCOMP");env.put("PROOT_QUEST_ROBUST","1");env.put("TMPDIR","/tmp");env.put("HOME","/home/stearlight");env.put("USER","stearlight");env.put("LOGNAME","stearlight");env.put("PATH","/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");env.put("GLIBC_TUNABLES","glibc.pthread.rseq=0");
-   builder.redirectErrorStream(true);builder.redirectOutput(new File(logs,"linux.log"));status("Starting Stearlight OS");if(closing)return;linux=builder.start();int result=linux.waitFor();if(!closing)status(result==78?"Linux IPC verification failed":"Stearlight stopped ("+result+")");
+   builder.redirectErrorStream(true);builder.redirectOutput(new File(logs,"linux.log"));
+   while(!closing){
+    status("Starting Stearlight OS");if(closing)return;
+    linux=builder.start();int result=linux.waitFor();if(closing)return;
+    // Only the Remote Desktop return asks for a fresh Linux/SteamVR session.
+    // PRoot's kill-on-exit has already stopped its owned service processes.
+    if(result!=75){status(result==78?"Linux IPC verification failed":"Stearlight stopped ("+result+")");break;}
+    status("Returning to Steam");
+    removeTree(tmp,tmp);removeTree(shm,shm);tmp.mkdirs();shm.mkdirs();
+    startSocketRegistry(getStateDirectory());
+   }
   }catch(Exception|LinkageError e){if(closing)return;Log.e("StearlightQuest","Linux startup failed",e);try{status("Stearlight startup failed: "+e.getMessage());}catch(IOException ignored){}}
  }
  private InputStream rootfsStream()throws IOException {List<InputStream> parts=new ArrayList<>();try(BufferedReader list=new BufferedReader(new InputStreamReader(getAssets().open("rootfs.list"),StandardCharsets.US_ASCII))){String name;while((name=list.readLine())!=null){if(!name.matches("rootfs/part-[0-9]{3}\\.bin"))throw new IOException("Invalid rootfs part name");parts.add(getAssets().open(name));}}catch(IOException error){for(InputStream part:parts)part.close();throw error;}if(parts.isEmpty())throw new IOException("Empty rootfs payload");return new SequenceInputStream(Collections.enumeration(parts));}

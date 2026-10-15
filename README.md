@@ -58,7 +58,6 @@ It includes:
 ## Known-issues
 
 - [ ] Blue dots appearing in the right eye when the headset is in use.
-- [ ] Slowdown when both controllers are tracked.
 
 ## Development
 
@@ -72,6 +71,11 @@ Every game is different and therefore has different issues. In this
 project, we have added patches for standalone gaming, but they are not perfect,
 and some games still don't run. If you want to run a game and you have patched
 the project for your game, your changes will be merged.
+
+### Next update
+
+- [ ] Controller support via Bluetooth
+- [x] Desktop mode
 
 ## Build for VM
 

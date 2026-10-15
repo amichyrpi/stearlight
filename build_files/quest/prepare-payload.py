@@ -3,6 +3,7 @@
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -145,7 +146,8 @@ needs_exe_wrapper = true
         "-Dopengl=true", "-Degl=enabled", "-Dgbm=disabled", "-Dglx=dri", "-Dglvnd=enabled", "-Dllvm=disabled",
         "-Dvideo-codecs=", "-Dbuild-tests=false", "-Dtools=", "-Dvalgrind=disabled", "-Dlibunwind=disabled",
         "-Ddisplay-info=disabled", "-Dzstd=disabled", "-Dandroid-libbacktrace=disabled", "-Dzlib=enabled",
-        "-Dexpat=disabled", "-Dxmlconfig=disabled", "-Dspirv-tools=disabled", "-Dshader-cache=disabled")
+        "-Dexpat=disabled", "-Dxmlconfig=disabled", "-Dspirv-tools=disabled", "-Dshader-cache=enabled",
+        "-Dshader-cache-max-size=128M")
     run("ninja", "-C", build, "-j", min(os.cpu_count() or 2, 8),
         "src/freedreno/vulkan/libvulkan_freedreno.so",
         "src/gallium/targets/dri/libgallium-26.1.6.so", "src/glx/libGLX_mesa.so.0.0.0",
@@ -172,11 +174,15 @@ def overlay_archive(overlay, target):
                     archive.addfile(info)
 
 
-def stage_fonts(overlay, downloads):
+def stage_fonts(overlay, downloads, work):
     for spec in LOCK["fonts"].values():
         run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
     quest = overlay / "opt/quest"
     quest.mkdir(parents=True, exist_ok=True)
+    fna_spec = importlib.util.spec_from_file_location("fna_build", Path(__file__).with_name("build-fna3d.py"))
+    fna_build = importlib.util.module_from_spec(fna_spec)
+    fna_spec.loader.exec_module(fna_build)
+    fna_build.build(work, quest / "fna3d", {name: fetch(spec, downloads) for name, spec in LOCK["fna3d"].items()})
     version = hashlib.sha256(json.dumps(LOCK["fonts"], sort_keys=True).encode()).hexdigest()
     (quest / "fonts.version").write_text(version + "\n")
     config = Path("etc/fonts/conf.d/66-stearlight-cjk.conf")
@@ -230,6 +236,7 @@ def main():
     parser.add_argument("--work", type=Path, required=True, help="Linux build/cache directory")
     parser.add_argument("--output", type=Path, required=True, help="New Android payload directory")
     parser.add_argument("--rootfs-archive", type=Path, help="Reuse an existing clean rootfs.tar.gz")
+    parser.add_argument("--frame-desktop-root", type=Path, help="Read-only Steam Frame OS mount containing Plasma")
     parser.add_argument("--android-ndk", type=Path, required=True, help="Linux Android NDK for the standalone PRoot adapter")
     args = parser.parse_args()
     root, work, output = (path.resolve() for path in (args.root, args.work, args.output))
@@ -248,7 +255,7 @@ def main():
         "--root", root, "--assets", assets)
     overlay = work / "quest-overlay"
     overlay.mkdir(exist_ok=True)
-    stage_fonts(overlay, downloads)
+    stage_fonts(overlay, downloads, work)
     stage_update_helpers(overlay, downloads)
     run(sys.executable, REPO / "build_files/quest/patch-gamescope.py",
         root / "opt/frame-gamescope/bin/gamescope", overlay / "opt/frame-gamescope/bin/gamescope")
@@ -270,6 +277,29 @@ def main():
                 if not m.name.startswith(".")], filter="data")
     quest = overlay / "opt/quest"
     quest.mkdir(parents=True, exist_ok=True)
+    desktop = root / "opt/stearlight-desktop"
+    if args.frame_desktop_root:
+        run(sys.executable, REPO / "build_files/stage-frame-desktop.py",
+            "--root", args.frame_desktop_root, "--output", overlay / "opt/stearlight-desktop")
+    elif (desktop / "usr/bin/plasmashell").is_file():
+        shutil.copytree(desktop, overlay / "opt/stearlight-desktop", dirs_exist_ok=True)
+    else:
+        parser.error("Provide --frame-desktop-root, or stage Plasma in the clean rootfs first")
+    for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-launcher.sh", "desktop-manager.py",
+                 "desktop-ui-bridge.js", "plasma-core-session.sh", "prepare-desktop.sh",
+                 "prepare-desktop-ui.py", "prepare-desktop-kio.py", "desktop-shell.sh", "adb-command.py", "desktop-remote.sh", "desktop-fonts.conf"):
+        shutil.copyfile(REPO / "packages/quest-runtime/linux" / name, quest / name)
+        (quest / name).chmod(0o755)
+    pam_headers = work / "desktop-pam-headers"
+    pam_headers.mkdir(exist_ok=True)
+    shutil.copytree('/usr/include/security', pam_headers / 'security', dirs_exist_ok=True)
+    run("aarch64-linux-gnu-gcc", "-O2", "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
+        f"-I{pam_headers}", REPO / "packages/quest-runtime/linux/desktop-pam.c",
+        f"-L{overlay / 'opt/stearlight-desktop/usr/lib'}", "-l:libpam.so.0", "-l:libcrypt.so.2",
+        "-Wl,--disable-new-dtags,-rpath,/opt/stearlight-desktop/usr/lib", "-o", quest / "desktop-pam.so")
+    run("aarch64-linux-gnu-gcc", "-O2", "-shared", "-fPIC", "-Wall", "-Wextra", "-Werror",
+        REPO / "packages/quest-runtime/linux/desktop-access-runtime.c", "-ldl",
+        "-o", quest / "libdesktop_access.so")
     mesa_build = build_mesa(root, work, downloads)
     shutil.copy2(mesa_build / "src/freedreno/vulkan/libvulkan_freedreno.so", quest / "libvulkan_freedreno.so")
     run("aarch64-linux-gnu-strip", quest / "libvulkan_freedreno.so")
@@ -328,15 +358,15 @@ def main():
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
-    run("aarch64-linux-gnu-g++", "-O2", f"-I{REPO / 'packages/openvr/headers'}",
-        linux / "runtime-monitor.cpp", f"-L{root / 'opt/steamvr/bin/linuxarm64'}", "-lopenvr_api",
-        "-Wl,-rpath,/opt/steamvr/bin/linuxarm64", "-o", quest / "runtime-monitor")
     dbus_flags = subprocess.check_output(["pkg-config", "--cflags", "dbus-1"], text=True).split()
-    run("aarch64-linux-gnu-g++", "-O2", "-std=c++17", *dbus_flags,
-        linux / "bluetooth-bridge.cpp", f"-L{root / 'usr/lib/aarch64-linux-gnu'}",
+    run("aarch64-linux-gnu-g++", "-O2", "-std=c++17", "-pthread", "-DQUEST_SERVICES_EMBEDDED", *dbus_flags,
+        f"-I{REPO / 'packages/openvr/headers'}", linux / "runtime-monitor.cpp",
+        linux / "bluetooth-bridge.cpp", f"-L{root / 'opt/steamvr/bin/linuxarm64'}", "-lopenvr_api",
+        f"-L{root / 'usr/lib/aarch64-linux-gnu'}",
         f"-Wl,-rpath-link,{root / 'usr/lib/aarch64-linux-gnu'}",
         f"-Wl,-rpath-link,{root / 'lib/aarch64-linux-gnu'}",
-        "-l:libdbus-1.so.3", "-o", quest / "bluetooth-bridge")
+        "-l:libdbus-1.so.3", "-Wl,-rpath,/opt/steamvr/bin/linuxarm64", "-o", quest / "runtime-monitor")
+    (quest / "bluetooth-bridge").unlink(missing_ok=True)
     (driver / "driver.vrdrivermanifest").write_text(json.dumps(
         {"alwaysActivate": True, "name": "stearlight-quest", "directory": "", "resourceOnly": False}))
     shutil.copy2(root / "opt/steamvr/drivers/stearlight-fake/resources/frame_hmd_additional.vrsettings",
@@ -406,6 +436,7 @@ def main():
         shutil.copyfile(fetch(spec, downloads), headers / name)
     source_files = [fetch(spec, downloads) for spec in LOCK["sources"].values()]
     source_files.append(fetch(LOCK["mesa"], downloads))
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["fna3d"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fonts"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["audio"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["gaming"].values())
@@ -426,9 +457,11 @@ def main():
                 bundle.write(source, "packages/quest-runtime/proot/" + source.name)
         for directory in ["packages/quest-runtime/app/src", "packages/quest-runtime/tests"]:
             for source in (REPO / directory).rglob("*"):
-                if source.is_file():
+                if source.is_file() and "__pycache__" not in source.parts:
                     bundle.write(source, source.relative_to(REPO))
-        for name in ["system_files/usr/local/libexec/stearlight/frame-steam-ipc",
+        for name in ["build_files/stage-frame-desktop.py", "post_process/quest/shell.ps1",
+                     "post_process/quest/shell.sh", "packages/quest-runtime/README.md",
+                     "system_files/usr/local/libexec/stearlight/frame-steam-ipc",
                      "system_files/usr/local/libexec/stearlight/steamframe-session",
                      "system_files/usr/bin/steamos-select-branch", "system_files/usr/bin/steamos-update",
                      "system_files/usr/bin/steamos-polkit-helpers/steamos-select-branch",

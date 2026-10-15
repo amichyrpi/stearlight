@@ -12,8 +12,8 @@ Mesa 26.1.6 Zink loader over Turnip. A GPU probe verifies opaque-fd image
 sharing by rendering in OpenGL and reading every pixel back through Vulkan.
 The eye buffers are 1374 x 1440 each: 75% of the Quest 2's native dimensions,
 reducing scene pixels by 43.75%. The Vulkan display modes and startup GPU
-probe use the actual OpenXR buffer size. The app requests 120 Hz; the
-connected headset reports 72 Hz. Scene rendering still falls below 72 FPS
+probe use the actual OpenXR buffer size. The app requests 72 Hz when supported,
+and otherwise keeps the runtime's active refresh rate. Scene rendering still falls below 72 FPS
 under load; the display refresh rate is not the scene update rate.
 
 Noto fonts are bundled for broad script coverage, including CJK and emoji.
@@ -75,6 +75,33 @@ calibration, seated games such as VTOL VR receive invalid headset poses.
 VTOL VR has passed a local launch from Steam with the full standalone APK:
 its room tracks in the world, both controllers appear, and both triggers select
 menu buttons. Flight gameplay and sustained performance remain unverified.
+After the performance changes, the user confirmed that looking around its
+room/menu and moving both controllers felt smoother. Runtime platform aliases
+use relative links so Steam updates can move the platform without leaving
+PRoot hard-link aliases pointing at a removed version.
+Local Linux game panels use 960x540 at the game's 60 Hz, matching the 75%
+Quest profile and reducing shared-memory frame copies by 44% from 1280x720.
+The headset's display remains at 72 Hz. `STEARLIGHT_QUEST_GAME_PROFILE=0`
+restores the original panel size as well as Celeste's original renderer.
+Mesa's compiled shader cache is enabled for repeat game launches. Its default
+disk limit is 128 MB; local game launchers replace Steam's 5 GB override with
+that limit (`STEARLIGHT_SHADER_CACHE_MAX_SIZE` can change it).
+Steam's offline shader preprocessing is disabled by default on Quest because
+it competes with the dashboard during game launch. Mesa still compiles and
+caches shaders as needed; `STEARLIGHT_SHADER_PRECACHE=1` opts into Valve's
+single-worker preprocessing path.
+Celeste's recognized FNA3D library uses a bundled, SDL 2.0.14-compatible
+FNA3D 21.06 build with free-region merging and empty-pool reclamation.
+The Quest build also searches completed dynamic-buffer slots from the
+beginning; the old forward-only search continually allocates buffers during
+Celeste's idle menu even when earlier slots have finished rendering.
+Its original library is saved; `STEARLIGHT_QUEST_GAME_PROFILE=0` restores it.
+Unknown game updates keep their own renderer. A 9.6-minute idle title-screen
+measurement kept total game GPU allocation constant at 1,072,533,504 bytes,
+with eight dynamic slots and no game swap use. Gameplay and longer sessions
+still need separate checks.
+The Mesa build also releases its owned DMA-heap/ION allocation descriptors
+after import, so freeing an exported GPU buffer can reclaim its memory.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
 layer, until the main panel and bottom dock are ready. Display buffers use
 explicit Vulkan ownership transfers before Android reads them. A memory
@@ -87,7 +114,9 @@ rendering pose; full motion stability remains under validation.
 Display events follow OpenXR's refresh timing instead of spinning SteamVR's
 vblank thread. The Frame compositor also receives a VsyncEvent for each new
 visible OpenXR tracking sample, avoiding its one-second display-IRQ timeout.
-Tracking publishes each new sample once; unchanged button and
+OpenXR collects tracking into a local sample before briefly publishing it;
+controller queries do not hold the Linux readers' sequence lock. Only active
+controller bindings are queried. Tracking publishes each new sample once; unchanged button and
 display properties are not resent. PRoot caches process lookups and passes
 Adreno GPU ioctls, futex wakeups, and waits with an expected owner TID of
 0, 1 or 2 directly to the kernel. Potentially guest-owned robust-mutex waits
@@ -185,8 +214,14 @@ Steam's Wi-Fi page uses Android's actual network name, signal strength,
 connection state, and cached scan results through a NetworkManager D-Bus adapter.
 Scanning asks for Android's location permission when needed. Wi-Fi switching and
 connection changes open Horizon's Wi-Fi settings; Android owns network credentials
-and Steam follows its observed connection. The adapter shares the Bluetooth
-bridge process and does not add a background Linux service.
+and Steam follows its observed connection. The adapter shares the runtime
+monitor's device-services thread and does not add a background Linux process.
+
+Steam and Plasma receive the Quest's real battery percentage and charger state
+through the same thread's UPower adapter. Android also supplies battery voltage,
+temperature, and time to full charge when available. Changes are published over
+D-Bus once per second; Android continues to manage charging and low-battery
+shutdown. Unsupported battery-health and remaining-time estimates stay unknown.
 
 Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. The BlueZ bridge
@@ -213,15 +248,50 @@ entries during SteamVR's browser cleanup. Both guards require an exact binary
 checksum; unknown binaries remain unchanged. Touch input uses OpenXR.
 The Steam adapters are reapplied to the
 installed Steam files after updates, preserving Valve's matching UI chunks.
-NetworkManager and UPower services are still missing. Touch battery levels
-are unknown and are not invented.
+Touch battery levels are unknown and are not invented.
+
+## Desktop and developer access
+
+The bottom dock's **+ > Desktop** action opens Valve's KDE Plasma workspace in a
+headset window. **Return to Gaming Mode** on the desktop closes it and restores
+Steam. The workspace includes Dolphin, Konsole, System Settings, Discover, VLC,
+KDE utilities, and Valve's Vapor theme, taken from the Frame image. Its Chromium
+entry is Valve's browser-install shortcut. Tools requiring a full system service
+session are omitted. Flatpak installation, including Chromium's install shortcut,
+is currently blocked by Horizon OS's restricted Linux `/proc` access.
+A nested KWin compositor keeps windows and menus inside
+the headset panel. The desktop service owns its application processes directly
+to leave room within Android's unchanged child-process budget.
+Radio, network, and battery bridging share the runtime monitor, and headset KDE reuses the
+app's private D-Bus. A code-verified KIO adapter releases idle file workers after
+five seconds instead of retaining them for three minutes; active jobs are unchanged.
+
+Enable **Settings > System > Developer Mode**, then use **Set User Password**
+in Developer settings to enable authenticated remote access while Stearlight
+is open. Connect Windows Remote Desktop to `QUEST_IP:3389`, or use
+`ssh -p 2222 stearlight@QUEST_IP`. Both use the `stearlight` account and your
+desktop password; SSH also supports SFTP and `~/.ssh/authorized_keys`.
+The RDP server uses TLS and a certificate generated on first setup.
+Quest allows one active Plasma session. Return to Gaming Mode before connecting
+Remote Desktop; its listeners pause while the headset desktop is open to leave
+room for applications. SSH remains available. A Remote Desktop login releases
+the headset renderer. Disconnecting/logging out
+returns to Steam; XRDP allows up to a minute before ending a disconnected
+session, then the headset runtime starts again.
+
+USB ADB remains Horizon OS's normal ADB connection. To enter the bundled Linux
+environment, use `post_process/quest/shell.ps1 -Adb /path/to/adb.exe` on Windows,
+or `ADB=/path/to/adb sh post_process/quest/shell.sh` on Linux/macOS. An optional
+command argument runs a single Linux command. These scripts locate the installed
+APK's runtime automatically and require no paths from the build computer.
 
 ## Build
 
 Use a mounted **clean** Stearlight ARM64 image as the input. On Ubuntu 24.04,
-install Python 3.12, the ARM64 GCC/G++ cross compilers, Ninja, pkg-config,
+install Python 3.12, the ARM64 GCC/G++ cross compilers, x86-64 GCC, CMake,
+Ninja, pkg-config,
 Bison, Flex, glslangValidator, zlib headers, dpkg-deb, patchelf, FFmpeg (including
-ffprobe), and libdbus-1 and libdrm development headers. Create a
+ffprobe), and libdbus-1, libdrm, and libpam development headers. Create a
 Python environment with `build_files/quest/requirements.txt`. Mesa's code
 generators also need those Python modules visible to the Python interpreter
 selected by Meson. Install the Linux Android NDK as well; it compiles the
@@ -232,6 +302,7 @@ python3 -m venv --system-site-packages /path/to/quest-tools
 /path/to/quest-tools/bin/pip install -r build_files/quest/requirements.txt
 /path/to/quest-tools/bin/python build_files/quest/prepare-payload.py \
   --root /path/to/mounted-clean-rootfs \
+  --frame-desktop-root /path/to/read-only-steam-frame-recovery-root \
   --work /path/to/linux-build-cache \
   --android-ndk /path/to/android-ndk \
   --output /path/to/new-quest-payload
@@ -242,6 +313,10 @@ rejected to prevent old rootfs chunks from being included. Build output is
 recorded in `quest-payload-build.log` inside the work directory. The script
 also writes an adjacent dependency source archive; keep it with the APK.
 `--rootfs-archive` can reuse a previously generated clean rootfs archive.
+Plasma is extracted from the original ARM64 Frame OS mount, together with its
+matching Qt/KDE libraries, themes and licenses. The staging manifest records
+each file's checksum. If the clean rootfs already contains a staged
+`/opt/stearlight-desktop`, `--frame-desktop-root` can be omitted.
 
 The Linux build host also needs X11/OpenGL development headers for Zink's
 GLX loader. On Ubuntu 24.04:

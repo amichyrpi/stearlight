@@ -43,24 +43,25 @@ class SteamChannelTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             (root / "package").mkdir()
-            def arguments():
+            def arguments(precache="0"):
                 return subprocess.check_output(["bash", "-c",
-                    'STEAMROOT=$1; STEAM_ARGS=(-deckard); . "$2"; printf "[%s]" "${STEAM_ARGS[@]}"',
-                    "test", folder, str(args_script)], text=True)
-            self.assertEqual(arguments(), "[-deckard]")
+                    'STEAMROOT=$1; STEARLIGHT_SHADER_PRECACHE=$3; STEAM_ARGS=(-deckard); . "$2"; printf "[%s]" "${STEAM_ARGS[@]}"',
+                    "test", folder, str(args_script), precache], text=True)
+            self.assertEqual(arguments(), "[-deckard][-noshaders]")
+            self.assertEqual(arguments("1"), "[-deckard]")
             (root / "package/stearlight-channel").write_text("beta\n")
-            self.assertEqual(arguments(), "[-deckard][-clientbeta][publicbeta]")
+            self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][publicbeta]")
             (root / "package/beta").write_text("linux_arm64_beta_test\n")
-            self.assertEqual(arguments(), "[-deckard][-clientbeta][linux_arm64_beta_test]")
+            self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][linux_arm64_beta_test]")
             (root / "package/beta").write_text("publicbeta\n")
-            self.assertEqual(arguments(), "[-deckard][-clientbeta][linux_arm64_beta_test]")
+            self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][linux_arm64_beta_test]")
             (root / "package/stearlight-channel").write_text("rel\n")
-            self.assertEqual(arguments(), "[-deckard][-clientbeta][steamdeck_stable]")
+            self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][steamdeck_stable]")
             pending = root / "package/stearlight-channel-update"
             pending.write_text("rel\n")
-            self.assertEqual(arguments(), "[-deckard][-clientbeta][steamdeck_stable][-forcesteamupdate][-forcepackagedownload]")
+            self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][steamdeck_stable][-forcesteamupdate][-forcepackagedownload]")
             self.assertFalse(pending.exists())
-            self.assertEqual(arguments(), "[-deckard][-clientbeta][steamdeck_stable]")
+            self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][steamdeck_stable]")
 
 
 if __name__ == "__main__":

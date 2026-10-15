@@ -29,6 +29,25 @@ if '#include "mesa-shared-timeline.h"' not in source:
 shutil.copyfile(repo / "packages/quest-runtime/linux/mesa-shared-timeline.h",
                 target.parent / "mesa-shared-timeline.h")
 
+# Allocation helpers own the DMA-heap/ION fd. The importer duplicates it for
+# the BO, so retaining the original pins GPU memory after vkFreeMemory.
+source = target.read_text()
+for function, fd in (("bo_init_new_dmaheap", "alloc.fd"), ("bo_init_new_ion", "alloc.fd"),
+                     ("bo_init_new_ion_legacy", "share.fd")):
+    start = source.index(function + "(")
+    end = source.index("\nstatic ", start)
+    block = source[start:end]
+    before = f"return tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, {fd});"
+    after = (f"VkResult result = tu_bo_init_dmabuf(dev, out_bo, -1, TU_BO_ALLOC_NO_FLAGS, {fd});\n"
+             f"   close({fd});\n   return result;")
+    if before in block:
+        if block.count(before) != 1:
+            raise SystemExit(f"Unsupported Mesa allocation helper: {function}")
+        source = source[:start] + block.replace(before, after) + source[end:]
+    elif f"close({fd});" not in block or "return result;" not in block:
+        raise SystemExit(f"Unsupported Mesa allocation ownership: {function}")
+target.write_text(source)
+
 # An opaque GL memory fd carries no explicit DRM modifier. The state tracker
 # initializes winsys_handle to zero, which otherwise looks like linear tiling
 # and makes Zink reinterpret an optimal Vulkan image as a linear dma-buf.

@@ -2,6 +2,7 @@
 set -eu
 unset LD_LIBRARY_PATH LD_PRELOAD
 export HOME=/home/stearlight USER=stearlight LOGNAME=stearlight
+export STEARLIGHT_QUEST_RUNTIME=1
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export DISPLAY=:0 XDG_RUNTIME_DIR=/tmp/stearlight-runtime
 export GLIBC_TUNABLES=glibc.pthread.rseq=0
@@ -14,7 +15,7 @@ export LIBGL_KOPPER_DISABLE=true LIBGL_KOPPER_DRI2=1
 # SDL's OpenVR streaming player uses EGL without an Android/X11 window.
 export EGL_PLATFORM=surfaceless
 mkdir -p "$HOME" "$HOME/.config" "$HOME/.cache" "$HOME/.local/share/Steam/logs" "$XDG_RUNTIME_DIR" /tmp/.X11-unix /run/dbus
-rm -f /run/stearlight/quest/dashboard.ready /tmp/.X0-lock /tmp/.X11-unix/X0
+rm -f /run/stearlight/quest/dashboard.ready /run/stearlight/quest/desktop-mode.active /run/stearlight/quest/desktop-mode.ready /run/stearlight/quest/desktop-focus.request /tmp/.X0-lock /tmp/.X11-unix/X0
 printf '%s' 'Starting Linux GPU and IPC services' >/run/stearlight/quest/linux-status
 chmod 700 "$XDG_RUNTIME_DIR"
 # Fonts are bundled for offline use. Rebuild the ARM64 cache only when the
@@ -36,13 +37,16 @@ if ! /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu /opt/q
  exit 78
 fi
 dbus-uuidgen --ensure=/etc/machine-id
+mkdir -p /run/stearlight/quest/desktop-services
+rm -f /run/stearlight/quest/desktop-services/*.service
 dbus_pid=$(dbus-daemon --config-file=/opt/quest/system-bus.conf --fork --print-pid)
-/opt/quest/bluetooth-bridge >/tmp/quest-bluetooth.log 2>&1 &
-bluetooth_pid=$!
 export DBUS_SESSION_BUS_ADDRESS=unix:path="$XDG_RUNTIME_DIR/bus"
 export PULSE_SERVER=unix:$XDG_RUNTIME_DIR/pulse/native
 export PULSE_SINK=quest_output PULSE_SOURCE=quest_microphone
 export PULSE_LATENCY_MSEC=30
+/bin/bash /opt/quest/prepare-desktop.sh
+/usr/bin/python3 /opt/quest/desktop-manager.py serve >/tmp/quest-desktop-manager.log 2>&1 &
+desktop_pid=$!
 pulseaudio -n --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
  --log-target=stderr --file=/opt/quest/audio.pa >/tmp/quest-audio.log 2>&1 &
 audio_pid=$!
@@ -55,7 +59,7 @@ printf '%s\n' 'xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xk
 # the Quest Vulkan bridge supplies the GPU swapchain, independently of Xvfb.
 Xvfb :0 -screen 0 3664x1920x24 -xkbdir /opt/frame-gamescope/share/X11/xkb -ac -nolisten tcp -noreset > /tmp/xvfb.log 2>&1 &
 xvfb_pid=$!
-trap 'kill ${wireplumber_pid:+"$wireplumber_pid"} ${pipewire_pid:+"$pipewire_pid"} "$audio_pid" "$bluetooth_pid" "$xvfb_pid" "$dbus_pid" 2>/dev/null || true' EXIT
+trap 'kill ${wireplumber_pid:+"$wireplumber_pid"} ${pipewire_pid:+"$pipewire_pid"} "$desktop_pid" "$audio_pid" "$xvfb_pid" "$dbus_pid" 2>/dev/null || true' EXIT
 for attempt in $(seq 1 50);do
  if pactl info >/dev/null 2>&1;then echo STEARLIGHT_QUEST_AUDIO_READY;break;fi
  if ! kill -0 "$audio_pid" 2>/dev/null;then cat /tmp/quest-audio.log >&2;break;fi
@@ -134,7 +138,6 @@ export VK_ICD_FILENAMES=/opt/quest/turnip_icd.json
 # the VR Store-origin adapter before its browser starts.
 export STEAM_EXTRA_ARGS="${STEAM_EXTRA_ARGS:-} -cef-use-vulkan -noverifyfiles"
 export STEARLIGHT_FAKE_TRACKING=0
-export STEARLIGHT_QUEST_RUNTIME=1
 printf '%s' 'Starting SteamVR and Steam' >/run/stearlight/quest/linux-status
 export LD_PRELOAD=/opt/quest/libquest_socket.so
 # PRoot's --kill-on-exit owns service cleanup. Avoid keeping another shell

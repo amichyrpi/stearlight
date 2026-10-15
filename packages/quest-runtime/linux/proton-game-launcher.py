@@ -18,7 +18,7 @@ def prepare_platform(platform):
     files = platform / "files"
     manifest = platform / "usr-mtree.txt.gz"
     stamp = platform / ".quest-aliases.json"
-    signature = [2, manifest.stat().st_size, manifest.stat().st_mtime_ns]
+    signature = [4, manifest.stat().st_size, manifest.stat().st_mtime_ns]
     managed = set()
     try:
         previous = json.loads(stamp.read_text())
@@ -56,9 +56,24 @@ def prepare_platform(platform):
             content = Path(unescape(attributes["contents"]))
             if content.is_absolute() or ".." in content.parts:
                 raise ValueError("Invalid Steam runtime content path")
+            canonical = files / content
+            is_alias = False
+            if os.path.lexists(path):
+                try:
+                    is_alias = path.samefile(canonical)
+                except FileNotFoundError:
+                    # PRoot can report an emulated hard link as an existing
+                    # regular file even though its old absolute target moved.
+                    path.unlink()
+                else:
+                    if path.is_symlink() and not is_alias:
+                        path.unlink()
             if not os.path.lexists(path):
-                os.link(files / content, path)
-            if path.samefile(files / content):
+                # Relative links stay inside this platform across Steam moves
+                # and avoid PRoot's absolute hard-link backing-file records.
+                path.symlink_to(os.path.relpath(canonical, path.parent))
+                is_alias = True
+            if is_alias:
                 aliases.append(relative)
     temporary = stamp.with_suffix(".next")
     temporary.write_text(json.dumps({"signature": signature, "aliases": aliases}))
@@ -183,6 +198,7 @@ def launch_environment(files, environment):
     env["LIBGL_KOPPER_DRI2"] = "1"
     env["VK_ICD_FILENAMES"] = env["VK_DRIVER_FILES"] = "/opt/quest/turnip_icd.json"
     env["MESA_VK_WSI_DEBUG"] = "sw"
+    env["MESA_SHADER_CACHE_MAX_SIZE"] = env["MESA_GLSL_CACHE_MAX_SIZE"] = env.get("STEARLIGHT_SHADER_CACHE_MAX_SIZE", "128M")
     # Streaming's injected layers are unnecessary for a local VR scene.
     for name in ("VK_INSTANCE_LAYERS", "STEAM_COMPAT_MEDIA_PATH", "STEAM_COMPAT_TRANSCODED_MEDIA_PATH"):
         env.pop(name, None)

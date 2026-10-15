@@ -42,14 +42,14 @@ public:
         unlink(supported); unlink(paused); unlink(request);
         for (pid_t pid : services) if (pid > 1) kill(pid, SIGTERM);
     }
-    void poll() {
+    void poll(bool desktop = false) {
         if (!enabled) return;
         long game = -1;
         if (FILE* file = std::fopen(request, "r")) {
             if (std::fscanf(file, "%ld", &game) != 1) game = -1;
             std::fclose(file);
         }
-        bool local = game > 1 && kill(static_cast<pid_t>(game), 0) == 0;
+        bool local = desktop || (game > 1 && kill(static_cast<pid_t>(game), 0) == 0);
         if (local && !quiescing) {
             quiescing = true;
             stopping = std::chrono::steady_clock::now();

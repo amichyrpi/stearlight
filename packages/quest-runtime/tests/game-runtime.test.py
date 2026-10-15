@@ -15,6 +15,25 @@ spec.loader.exec_module(launcher)
 
 
 class GameRuntimeTest(unittest.TestCase):
+    def test_runtime_update_retargets_shell_and_support_directories(self):
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            destination = base / "quest-rootfs"
+            for version in ("old", "new"):
+                platform = base / version
+                files = platform / "files"
+                (files / "bin").mkdir(parents=True)
+                (files / "lib/x86_64-linux-gnu").mkdir(parents=True)
+                (files / "etc").mkdir()
+                (files / "bin/bash").write_text(version)
+                with gzip.open(platform / "usr-mtree.txt.gz", "wt") as manifest:
+                    manifest.write("./bin type=dir\n./lib type=dir\n./etc type=dir\n")
+                launcher.prepare_rootfs(platform, destination)
+                self.assertEqual((destination / "bin/bash").read_text(), version)
+                self.assertEqual((destination / "etc").resolve(), files / "etc")
+            launcher.prepare_rootfs(platform, destination)
+            self.assertEqual((destination / "bin/bash").read_text(), "new")
+
     def test_monokickstart_replaces_shell_without_changing_setup(self):
         with tempfile.TemporaryDirectory() as folder:
             game = Path(folder) / "Game"
@@ -34,13 +53,15 @@ class GameRuntimeTest(unittest.TestCase):
             runtime = tool.parent.parent / "SteamLinuxRuntime_soldier/soldier_platform_test"
             runtime.mkdir(parents=True)
             (runtime / "usr-mtree.txt.gz").touch()
-            with patch.object(launcher.sys, "argv", [str(tool), "run", "/games/Game", "two words"]), patch.dict(os.environ, {"SteamAppId": "123", "STEAM_COMPAT_DATA_PATH": folder}, clear=True), patch.object(launcher, "prepare_rootfs", return_value=Path(folder)), patch.object(launcher.os, "execve") as execute:
+            with patch.object(launcher.sys, "argv", [str(tool), "run", "/games/Game", "two words"]), patch.dict(os.environ, {"SteamAppId": "123", "STEAM_COMPAT_DATA_PATH": folder}, clear=True), patch.object(launcher, "prepare_rootfs", return_value=Path(folder)), patch.object(launcher.os, "setsid"), patch.object(launcher.os, "execve") as execute:
                 launcher.main()
             executable, arguments, environment = execute.call_args.args
             self.assertIn("--backend", arguments)
             self.assertIn("openvr", arguments)
             self.assertIn("valve.steam.desktopgame.123", arguments)
             self.assertEqual(arguments[arguments.index("--virtual-connector-strategy") + 1], "SingleApplication")
+            self.assertEqual(arguments[arguments.index("-w") + 1], "960")
+            self.assertEqual(arguments[arguments.index("-h") + 1], "540")
             self.assertIn("/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so.0", arguments)
             self.assertEqual(arguments[-4:], [str(tool), "run", "/games/Game", "two words"])
             self.assertEqual(environment["STEARLIGHT_FEX_GAMESCOPE"], "1")

@@ -1,5 +1,6 @@
 // BlueZ discovery, bonding and advertising backed by Android's actual radio.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <map>
@@ -14,7 +15,7 @@
 #include <unistd.h>
 
 static const char *directory = "/run/stearlight/quest/";
-static bool stopping = false;
+static std::atomic_bool stopping{false};
 static std::string owner, advertisement, agentOwner, agentPath;
 static unsigned requestId = 0;
 static bool active = false;
@@ -48,7 +49,9 @@ static bool validAddress(const std::string &value) {
     if (i % 3 == 2 ? value[i] != ':' : !std::isxdigit(static_cast<unsigned char>(value[i]))) return false;
   return true;
 }
+#ifndef QUEST_SERVICES_EMBEDDED
 static void stop(int) { stopping = true; }
+#endif
 static std::string read(const char *name) {
   std::ifstream file(std::string(directory) + name);
   return std::string(std::istreambuf_iterator<char>(file), {});
@@ -511,25 +514,36 @@ static DBusMessage *handle(DBusConnection *bus, DBusMessage *request) {
   return reply;
 }
 #include "network-bridge.h"
-int main() {
+#include "power-bridge.h"
+extern "C" void quest_services_stop() { stopping = true; }
+extern "C" int quest_services_run() {
+#ifndef QUEST_SERVICES_EMBEDDED
   std::signal(SIGINT, stop);
   std::signal(SIGTERM, stop);
   setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
+  dbus_threads_init_default();
   requestId = static_cast<unsigned>(getpid()) * 10000;
   DBusError error;
   dbus_error_init(&error);
-  auto bus = dbus_bus_get(DBUS_BUS_SYSTEM, &error);
+  auto bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, &error);
   if (!bus) {
     std::fprintf(stderr, "Quest Bluetooth system bus: %s\n", error.message);
     dbus_error_free(&error);
     return 1;
   }
-  if (dbus_bus_request_name(bus, "org.bluez", DBUS_NAME_FLAG_DO_NOT_QUEUE,
-                            &error) != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER)
-    return 1;
-  if (dbus_bus_request_name(bus, "org.freedesktop.NetworkManager", DBUS_NAME_FLAG_DO_NOT_QUEUE,
-                            &error) != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER)
-    return 1;
+  dbus_connection_set_exit_on_disconnect(bus, false);
+  for (const char* name : {"org.bluez", "org.freedesktop.NetworkManager", "org.freedesktop.UPower"}) {
+    if (dbus_bus_request_name(bus, name, DBUS_NAME_FLAG_DO_NOT_QUEUE,
+                              &error) != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+      std::fprintf(stderr, "Quest services cannot own %s: %s\n", name,
+                   error.message ? error.message : "name already owned");
+      dbus_error_free(&error);
+      dbus_connection_close(bus);
+      dbus_connection_unref(bus);
+      return 1;
+    }
+  }
   dbus_bus_add_match(bus,
                      "type='signal',interface='org.freedesktop.DBus',member='"
                      "NameOwnerChanged'",
@@ -538,6 +552,7 @@ int main() {
   while (!stopping && dbus_connection_read_write(bus, 100)) {
     synchronize(bus);
     questNetwork::synchronize(bus);
+    questPower::synchronize(bus);
     auto request = dbus_connection_pop_message(bus);
     if (!request)
       continue;
@@ -556,7 +571,7 @@ int main() {
       }
     } else if (dbus_message_get_type(request) ==
                DBUS_MESSAGE_TYPE_METHOD_CALL) {
-      auto reply = questNetwork::owns(request) ? questNetwork::handle(request) : handle(bus, request);
+      auto reply = questPower::owns(request) ? questPower::handle(bus, request) : questNetwork::owns(request) ? questNetwork::handle(request) : handle(bus, request);
       if (reply) { dbus_connection_send(bus, reply, nullptr); dbus_message_unref(reply); }
     }
     dbus_message_unref(request);
@@ -566,6 +581,10 @@ int main() {
     std::string error;
     command("stop", "{}", error);
   }
+  dbus_connection_close(bus);
   dbus_connection_unref(bus);
   return 0;
 }
+#ifndef QUEST_SERVICES_EMBEDDED
+int main() { return quest_services_run(); }
+#endif
