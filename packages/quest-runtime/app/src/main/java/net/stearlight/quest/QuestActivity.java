@@ -147,7 +147,17 @@ public final class QuestActivity extends NativeActivity {
    // The shell records its pid and immediately execs PRoot, retaining that pid.
    args.addAll(0,Arrays.asList("/system/bin/sh","-c","printf '%s\\n' \"$$\" > \"$1\" || exit; shift; exec \"$@\"","stearlight-linux",pidFile.toString()));
    ProcessBuilder builder=new ProcessBuilder(args);Map<String,String> env=builder.environment();env.put("LD_LIBRARY_PATH",nativeDir);env.put("PROOT_LOADER",nativeDir+"/libproot_loader.so");env.put("PROOT_TMP_DIR",tmp.toString());env.remove("PROOT_NO_SECCOMP");env.put("PROOT_QUEST_ROBUST","1");env.put("TMPDIR","/tmp");env.put("HOME","/home/stearlight");env.put("USER","stearlight");env.put("LOGNAME","stearlight");env.put("PATH","/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");env.put("GLIBC_TUNABLES","glibc.pthread.rseq=0");
-   builder.redirectErrorStream(true);builder.redirectOutput(new File(logs,"linux.log"));status("Starting Stearlight OS");if(closing)return;linux=builder.start();int result=linux.waitFor();if(!closing)status(result==78?"Linux IPC verification failed":"Stearlight stopped ("+result+")");
+   builder.redirectErrorStream(true);builder.redirectOutput(new File(logs,"linux.log"));
+   while(!closing){
+    status("Starting Stearlight OS");if(closing)return;
+    linux=builder.start();int result=linux.waitFor();if(closing)return;
+    // Only the Remote Desktop return asks for a fresh Linux/SteamVR session.
+    // PRoot's kill-on-exit has already stopped its owned service processes.
+    if(result!=75){status(result==78?"Linux IPC verification failed":"Stearlight stopped ("+result+")");break;}
+    status("Returning to Steam");
+    removeTree(tmp,tmp);removeTree(shm,shm);tmp.mkdirs();shm.mkdirs();
+    startSocketRegistry(getStateDirectory());
+   }
   }catch(Exception|LinkageError e){if(closing)return;Log.e("StearlightQuest","Linux startup failed",e);try{status("Stearlight startup failed: "+e.getMessage());}catch(IOException ignored){}}
  }
  private InputStream rootfsStream()throws IOException {List<InputStream> parts=new ArrayList<>();try(BufferedReader list=new BufferedReader(new InputStreamReader(getAssets().open("rootfs.list"),StandardCharsets.US_ASCII))){String name;while((name=list.readLine())!=null){if(!name.matches("rootfs/part-[0-9]{3}\\.bin"))throw new IOException("Invalid rootfs part name");parts.add(getAssets().open(name));}}catch(IOException error){for(InputStream part:parts)part.close();throw error;}if(parts.isEmpty())throw new IOException("Empty rootfs payload");return new SequenceInputStream(Collections.enumeration(parts));}

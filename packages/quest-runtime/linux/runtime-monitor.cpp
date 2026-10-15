@@ -6,6 +6,25 @@
 #include <cstring>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <fstream>
+#include <map>
+#include <set>
+#include <sys/stat.h>
+#include <thread>
+extern "C" int quest_services_run();
+extern "C" void quest_services_stop();
+class QuestServices {
+    std::thread worker;
+public:
+    explicit QuestServices(bool enabled) {
+        if (enabled) worker = std::thread([] { quest_services_run(); });
+    }
+    ~QuestServices() {
+        quest_services_stop();
+        if (worker.joinable()) worker.join();
+    }
+};
 #define QUEST_WATCH_EMBEDDED
 #include "store-browser-watch.c"
 #include "local-vr-audio.h"
@@ -16,12 +35,62 @@ static void stop(int) { stopping = 1; }
 // Own Steam's launcher directly: shell polling otherwise forks transient
 // helpers on every check, exceeding Android's process budget during games.
 class Session {
+    bool desktopMode = false;
+    void stopClient() {
+        if (client <= 0) return;
+        // PRoot can resume traced SIGSTOP targets. Close the owned Steam
+        // launcher so its watchdog cannot recreate CEF during desktop mode.
+        std::set<pid_t> clients{client};
+        std::set<pid_t> browsers;
+        DIR* directory=opendir("/proc");
+        if(directory){
+            while(auto* entry=readdir(directory)){
+                pid_t pid=atoi(entry->d_name);if(pid<=0)continue;
+                std::string path=std::string("/proc/")+entry->d_name;
+                // Android hides proc inode ownership from app processes.
+                // Read the real UID from status instead of stat(2).
+                std::ifstream status(path+"/status");std::string line;bool ours=false;
+                while(std::getline(status,line))if(line.rfind("Uid:",0)==0){ours=atoi(line.c_str()+4)==getuid();break;}
+                if(!ours)continue;
+                std::ifstream command(path+"/comm");std::string name;std::getline(command,name);
+                if (name == "steam") clients.insert(pid);
+                if (name == "steamwebhelper") browsers.insert(pid);
+            }
+            closedir(directory);
+        }
+        for (pid_t pid : clients) kill(pid, SIGKILL);
+        kill(-client, SIGKILL);
+        for (pid_t pid : browsers) kill(pid, SIGKILL);
+        std::printf("QUEST_DESKTOP_PROCESS_BUDGET clients=%zu browsers=%zu uid=%u\n",clients.size(),browsers.size(),getuid());
+        std::fflush(stdout);
+        int status;waitpid(client,&status,0);client=-1;
+    }
 public:
     pid_t client = -1, startup = -1;
     unsigned restarts = 0;
     std::chrono::steady_clock::time_point started;
     bool enabled;
     explicit Session(bool own) : enabled(own) {}
+    void stopVR() {
+        // Remote Desktop does not need the headset compositor or its browser.
+        // Marked descendants include Chromium helpers with generic names.
+        DIR* directory=opendir("/proc");
+        if(directory){
+            while(auto* entry=readdir(directory)){
+                pid_t pid=atoi(entry->d_name);if(pid<=0)continue;
+                std::string path=std::string("/proc/")+entry->d_name;
+                std::ifstream status(path+"/status");std::string line;bool ours=false;
+                while(std::getline(status,line))if(line.rfind("Uid:",0)==0){ours=atoi(line.c_str()+4)==getuid();break;}
+                if(!ours)continue;
+                std::ifstream environment(path+"/environ",std::ios::binary);
+                while(std::getline(environment,line,'\0'))if(line=="STEARLIGHT_DESKTOP_VR_RUNTIME=1"){
+                    kill(pid,SIGKILL);break;
+                }
+            }
+            closedir(directory);
+        }
+        if(startup>0){int status;waitpid(startup,&status,0);startup=-1;}
+    }
     ~Session() {
         if (client > 0) kill(client, SIGTERM);
         if (startup > 0) kill(startup, SIGTERM);
@@ -34,6 +103,7 @@ public:
             if (!std::freopen("/tmp/stearlight-steamvr-native.log", "w", stdout)) _exit(127);
             dup2(STDOUT_FILENO, STDERR_FILENO);
             setenv("STEARLIGHT_NATIVE_STEAMVR_WAIT_FOR_STEAM", "0", 1);
+            setenv("STEARLIGHT_DESKTOP_VR_RUNTIME", "1", 1);
             setenv("NODEVICE_SELECT", "1", 1);
             setenv("ENABLE_GAMESCOPE_WSI", "", 1);
             setenv("DISABLE_GAMESCOPE_WSI", "1", 1);
@@ -50,6 +120,9 @@ public:
         client = fork();
         if (client < 0) return false;
         if (!client) {
+            // Give the desktop handover ownership of the complete launcher,
+            // including FEX's helper processes.
+            setpgid(0, 0);
             if (!std::freopen("/home/stearlight/.local/share/Steam/logs/steam_output.log", "a", stdout)) _exit(127);
             dup2(STDOUT_FILENO, STDERR_FILENO);
             setenv("VK_ICD_FILENAMES", "/opt/quest/quest_icd.json", 1);
@@ -59,8 +132,27 @@ public:
         }
         return true;
     }
-    bool poll() {
+    bool poll(bool desktopAudioReady = true) {
         if (!enabled) return true;
+        bool requested=access("/run/stearlight/quest/desktop-mode.active",F_OK)==0;
+        if(requested){
+            if(!desktopMode){
+                desktopMode=true;
+                std::ifstream mode("/run/stearlight/quest/desktop-mode.active");
+                std::string kind;std::getline(mode,kind);
+                if(kind=="remote")stopClient();
+                std::puts("QUEST_DESKTOP_MODE_READY");
+            }
+            if(desktopAudioReady){FILE* ready=std::fopen("/run/stearlight/quest/desktop-mode.ready","w");if(ready)std::fclose(ready);}
+            return true;
+        }
+        if(desktopMode){
+            desktopMode=false;unlink("/run/stearlight/quest/desktop-mode.ready");
+            std::puts("QUEST_DESKTOP_MODE_RETURN_TO_STEAM");
+            int status;
+            if(client>0 && waitpid(client,&status,WNOHANG)==client)client=-1;
+            if(client<=0)return startClient();
+        }
         int status;
         if (startup > 0 && waitpid(startup, &status, WNOHANG) == startup) startup = -1;
         if (client <= 0 || waitpid(client, &status, WNOHANG) != client) return true;
@@ -81,6 +173,7 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, stop);
     Session session(argc == 2 && !std::strcmp(argv[1], "--launch-session"));
     LocalVRAudio audio(session.enabled);
+    QuestServices services(session.enabled);
     if (!session.startVR()) return 1;
     vr::EVRInitError error = vr::VRInitError_Unknown;
     vr::IVRSystem* system = nullptr;
@@ -109,10 +202,29 @@ int main(int argc, char** argv) {
     const char* ready = "/run/stearlight/quest/dashboard.ready";
     unlink(ready);
     bool dashboardRequested = false, dashboardReady = false, steamRequested = false;
-    bool failed = false;
+    bool failed = false, desktopShown = false, desktopWasActive = false, remoteMode = false;
     while (!stopping) {
-        audio.poll();
-        if (!session.poll() || quest_watch_step() < 0) { failed = true; break; }
+        std::ifstream desktopRequest("/run/stearlight/quest/desktop-mode.active");
+        std::string desktopKind;std::getline(desktopRequest,desktopKind);
+        if(desktopKind=="remote"){
+            if(!remoteMode){
+                remoteMode=true;vr::VR_Shutdown();session.stopVR();
+                unlink(ready);std::puts("QUEST_REMOTE_DESKTOP_VR_RELEASED");
+            }
+            audio.poll(true);
+            if(!session.poll(access("/run/stearlight/quest/local-vr-audio.paused",F_OK)==0)){failed=true;break;}
+            usleep(200000);continue;
+        }
+        if(remoteMode){
+            // Valve's bootstrap IPC cannot be reused after this handover.
+            // Ask the Android owner to start a fresh Linux session and IPC
+            // directory, without adding a permanent supervisor process.
+            std::puts("QUEST_REMOTE_DESKTOP_VR_RESTARTING");std::fflush(nullptr);
+            return 75;
+        }
+        audio.poll(!desktopKind.empty());
+        bool desktopAudioReady=desktopKind.empty() || access("/run/stearlight/quest/local-vr-audio.paused",F_OK)==0;
+        if (!session.poll(desktopAudioReady) || quest_watch_step() < 0) { failed = true; break; }
         vr::EVRSettingsError settingError;
         bool requested = settings->GetBool("stearlight_quest", "passthrough_enabled", &settingError);
         if (settingError == vr::VRSettingsError_None && requested != passthroughRequested) {
@@ -132,12 +244,26 @@ int main(int argc, char** argv) {
         }
         vr::VROverlayHandle_t overlay;
         auto* overlays = vr::VROverlay();
+        bool desktopMode = access("/run/stearlight/quest/desktop-mode.active", F_OK) == 0;
+        if (!desktopMode && desktopWasActive) { desktopShown = false; steamRequested = false; }
+        desktopWasActive = desktopMode;
+        const char* desktopFocus = "/run/stearlight/quest/desktop-focus.request";
+        if (desktopMode && (!desktopShown || access(desktopFocus, F_OK) == 0) && overlays) {
+            vr::VROverlayHandle_t desktop;
+            // Gamescope's master dashboard overlay owns connector surfaces;
+            // the master itself need not have a texture size.
+            if (overlays->FindOverlay("stearlight.plasma.desktop", &desktop) == vr::VROverlayError_None) {
+                overlays->ShowDashboard("stearlight.plasma.desktop");
+                desktopShown = true;
+                unlink(desktopFocus);
+            }
+        }
         vr::VROverlayHandle_t steamOverlay;
         bool steamAvailable = false;
         if (overlays && overlays->FindOverlay("valve.steam.gamepadui.main", &steamOverlay) == vr::VROverlayError_None) {
             uint32_t width = 0, height = 0;
             bool hasTexture = overlays->GetOverlayTextureSize(steamOverlay, &width, &height) == vr::VROverlayError_None && width && height;
-            if (!steamRequested && dashboardRequested && hasTexture) {
+            if (!desktopMode && !steamRequested && dashboardRequested && hasTexture) {
                 overlays->ShowDashboard("valve.steam.gamepadui.main");
                 steamRequested = true;
                 std::puts("QUEST_NATIVE_STEAM_DASHBOARD_REQUESTED");

@@ -32,3 +32,4 @@ fi
 /bin/sh "$quest/frame-steam-ipc" || true
 /bin/sh "$quest/prepare-streaming-client.sh"
 /bin/sh "$quest/prepare-game-runtime.sh"
+/usr/bin/python3 "$quest/prepare-desktop-ui.py" "$root"

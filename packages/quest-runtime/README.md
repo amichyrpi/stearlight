@@ -245,13 +245,48 @@ installed Steam files after updates, preserving Valve's matching UI chunks.
 NetworkManager and UPower services are still missing. Touch battery levels
 are unknown and are not invented.
 
+## Desktop and developer access
+
+The bottom dock's **+ > Desktop** action opens Valve's KDE Plasma workspace in a
+headset window. **Return to Gaming Mode** on the desktop closes it and restores
+Steam. The workspace includes Dolphin, Konsole, System Settings, Discover, VLC,
+KDE utilities, and Valve's Vapor theme, taken from the Frame image. Its Chromium
+entry is Valve's browser-install shortcut. Tools requiring a full system service
+session are omitted. Flatpak installation, including Chromium's install shortcut,
+is currently blocked by Horizon OS's restricted Linux `/proc` access.
+A nested KWin compositor keeps windows and menus inside
+the headset panel. The desktop service owns its application processes directly
+to leave room within Android's unchanged child-process budget.
+Radio/network bridging shares the runtime monitor, and headset KDE reuses the
+app's private D-Bus. A code-verified KIO adapter releases idle file workers after
+five seconds instead of retaining them for three minutes; active jobs are unchanged.
+
+Enable **Settings > System > Developer Mode**, then use **Set User Password**
+in Developer settings to enable authenticated remote access while Stearlight
+is open. Connect Windows Remote Desktop to `QUEST_IP:3389`, or use
+`ssh -p 2222 stearlight@QUEST_IP`. Both use the `stearlight` account and your
+desktop password; SSH also supports SFTP and `~/.ssh/authorized_keys`.
+The RDP server uses TLS and a certificate generated on first setup.
+Quest allows one active Plasma session. Return to Gaming Mode before connecting
+Remote Desktop; its listeners pause while the headset desktop is open to leave
+room for applications. SSH remains available. A Remote Desktop login releases
+the headset renderer. Disconnecting/logging out
+returns to Steam; XRDP allows up to a minute before ending a disconnected
+session, then the headset runtime starts again.
+
+USB ADB remains Horizon OS's normal ADB connection. To enter the bundled Linux
+environment, use `post_process/quest/shell.ps1 -Adb /path/to/adb.exe` on Windows,
+or `ADB=/path/to/adb sh post_process/quest/shell.sh` on Linux/macOS. An optional
+command argument runs a single Linux command. These scripts locate the installed
+APK's runtime automatically and require no paths from the build computer.
+
 ## Build
 
 Use a mounted **clean** Stearlight ARM64 image as the input. On Ubuntu 24.04,
 install Python 3.12, the ARM64 GCC/G++ cross compilers, x86-64 GCC, CMake,
 Ninja, pkg-config,
 Bison, Flex, glslangValidator, zlib headers, dpkg-deb, patchelf, FFmpeg (including
-ffprobe), and libdbus-1 and libdrm development headers. Create a
+ffprobe), and libdbus-1, libdrm, and libpam development headers. Create a
 Python environment with `build_files/quest/requirements.txt`. Mesa's code
 generators also need those Python modules visible to the Python interpreter
 selected by Meson. Install the Linux Android NDK as well; it compiles the
@@ -262,6 +297,7 @@ python3 -m venv --system-site-packages /path/to/quest-tools
 /path/to/quest-tools/bin/pip install -r build_files/quest/requirements.txt
 /path/to/quest-tools/bin/python build_files/quest/prepare-payload.py \
   --root /path/to/mounted-clean-rootfs \
+  --frame-desktop-root /path/to/read-only-steam-frame-recovery-root \
   --work /path/to/linux-build-cache \
   --android-ndk /path/to/android-ndk \
   --output /path/to/new-quest-payload
@@ -272,6 +308,10 @@ rejected to prevent old rootfs chunks from being included. Build output is
 recorded in `quest-payload-build.log` inside the work directory. The script
 also writes an adjacent dependency source archive; keep it with the APK.
 `--rootfs-archive` can reuse a previously generated clean rootfs archive.
+Plasma is extracted from the original ARM64 Frame OS mount, together with its
+matching Qt/KDE libraries, themes and licenses. The staging manifest records
+each file's checksum. If the clean rootfs already contains a staged
+`/opt/stearlight-desktop`, `--frame-desktop-root` can be omitted.
 
 The Linux build host also needs X11/OpenGL development headers for Zink's
 GLX loader. On Ubuntu 24.04:
