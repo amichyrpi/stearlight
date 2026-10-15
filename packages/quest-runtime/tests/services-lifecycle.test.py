@@ -1,4 +1,4 @@
-"""The embedded radio/network bridge releases both D-Bus names on shutdown."""
+"""The embedded device services release their D-Bus names on shutdown."""
 import os
 from pathlib import Path
 import subprocess
@@ -19,14 +19,16 @@ int main(int argc, char** argv) {
   auto bus = dbus_bus_get_private(DBUS_BUS_SYSTEM, nullptr);
   assert(bus);
   std::thread services([] { assert(quest_services_run() == 0); });
-  for (unsigned i = 0; i < 200 && !dbus_bus_name_has_owner(bus, "org.freedesktop.NetworkManager", nullptr); ++i)
+  for (unsigned i = 0; i < 200 && !dbus_bus_name_has_owner(bus, "org.freedesktop.UPower", nullptr); ++i)
     usleep(10000);
   assert(dbus_bus_name_has_owner(bus, "org.bluez", nullptr));
   assert(dbus_bus_name_has_owner(bus, "org.freedesktop.NetworkManager", nullptr));
+  assert(dbus_bus_name_has_owner(bus, "org.freedesktop.UPower", nullptr));
   quest_services_stop();
   services.join();
   assert(!dbus_bus_name_has_owner(bus, "org.bluez", nullptr));
   assert(!dbus_bus_name_has_owner(bus, "org.freedesktop.NetworkManager", nullptr));
+  assert(!dbus_bus_name_has_owner(bus, "org.freedesktop.UPower", nullptr));
   dbus_connection_close(bus);
   dbus_connection_unref(bus);
 }

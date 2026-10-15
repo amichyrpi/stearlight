@@ -214,8 +214,14 @@ Steam's Wi-Fi page uses Android's actual network name, signal strength,
 connection state, and cached scan results through a NetworkManager D-Bus adapter.
 Scanning asks for Android's location permission when needed. Wi-Fi switching and
 connection changes open Horizon's Wi-Fi settings; Android owns network credentials
-and Steam follows its observed connection. The adapter shares the Bluetooth
-bridge process and does not add a background Linux service.
+and Steam follows its observed connection. The adapter shares the runtime
+monitor's device-services thread and does not add a background Linux process.
+
+Steam and Plasma receive the Quest's real battery percentage and charger state
+through the same thread's UPower adapter. Android also supplies battery voltage,
+temperature, and time to full charge when available. Changes are published over
+D-Bus once per second; Android continues to manage charging and low-battery
+shutdown. Unsupported battery-health and remaining-time estimates stay unknown.
 
 Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. The BlueZ bridge
@@ -242,8 +248,7 @@ entries during SteamVR's browser cleanup. Both guards require an exact binary
 checksum; unknown binaries remain unchanged. Touch input uses OpenXR.
 The Steam adapters are reapplied to the
 installed Steam files after updates, preserving Valve's matching UI chunks.
-NetworkManager and UPower services are still missing. Touch battery levels
-are unknown and are not invented.
+Touch battery levels are unknown and are not invented.
 
 ## Desktop and developer access
 
@@ -257,7 +262,7 @@ is currently blocked by Horizon OS's restricted Linux `/proc` access.
 A nested KWin compositor keeps windows and menus inside
 the headset panel. The desktop service owns its application processes directly
 to leave room within Android's unchanged child-process budget.
-Radio/network bridging shares the runtime monitor, and headset KDE reuses the
+Radio, network, and battery bridging share the runtime monitor, and headset KDE reuses the
 app's private D-Bus. A code-verified KIO adapter releases idle file workers after
 five seconds instead of retaining them for three minutes; active jobs are unchanged.
 

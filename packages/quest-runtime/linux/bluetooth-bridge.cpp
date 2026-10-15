@@ -514,6 +514,7 @@ static DBusMessage *handle(DBusConnection *bus, DBusMessage *request) {
   return reply;
 }
 #include "network-bridge.h"
+#include "power-bridge.h"
 extern "C" void quest_services_stop() { stopping = true; }
 extern "C" int quest_services_run() {
 #ifndef QUEST_SERVICES_EMBEDDED
@@ -532,7 +533,7 @@ extern "C" int quest_services_run() {
     return 1;
   }
   dbus_connection_set_exit_on_disconnect(bus, false);
-  for (const char* name : {"org.bluez", "org.freedesktop.NetworkManager"}) {
+  for (const char* name : {"org.bluez", "org.freedesktop.NetworkManager", "org.freedesktop.UPower"}) {
     if (dbus_bus_request_name(bus, name, DBUS_NAME_FLAG_DO_NOT_QUEUE,
                               &error) != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
       std::fprintf(stderr, "Quest services cannot own %s: %s\n", name,
@@ -551,6 +552,7 @@ extern "C" int quest_services_run() {
   while (!stopping && dbus_connection_read_write(bus, 100)) {
     synchronize(bus);
     questNetwork::synchronize(bus);
+    questPower::synchronize(bus);
     auto request = dbus_connection_pop_message(bus);
     if (!request)
       continue;
@@ -569,7 +571,7 @@ extern "C" int quest_services_run() {
       }
     } else if (dbus_message_get_type(request) ==
                DBUS_MESSAGE_TYPE_METHOD_CALL) {
-      auto reply = questNetwork::owns(request) ? questNetwork::handle(request) : handle(bus, request);
+      auto reply = questPower::owns(request) ? questPower::handle(bus, request) : questNetwork::owns(request) ? questNetwork::handle(request) : handle(bus, request);
       if (reply) { dbus_connection_send(bus, reply, nullptr); dbus_message_unref(reply); }
     }
     dbus_message_unref(request);
