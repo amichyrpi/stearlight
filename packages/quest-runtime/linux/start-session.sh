@@ -100,6 +100,7 @@ mkdir -p "$HOME/.config/openvr" "$VR_CONFIG_PATH"
 /bin/sh /opt/quest/prepare-vrclient.sh || true
 /usr/local/bin/stearlight-steamvr-native prepare
 /bin/sh /opt/quest/prepare-frame-controls.sh || true
+/usr/bin/python3 /opt/quest/prepare-gamepad-ui.py || true
 # SteamVR invokes this installed launcher directly. Refresh our Quest adapter
 # after runtime updates as well as APK updates.
 cp /usr/local/bin/stearlight-frame-vrwebhelper /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh

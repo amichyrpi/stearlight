@@ -3,6 +3,21 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { runInNewContext } = require('node:vm');
 const source = readFileSync(`${__dirname}/../linux/roomview-bridge.js`, 'utf8');
+test('gamepad mode follows each native hand flag and preserves callbacks', () => {
+  let event;
+  const writes = [], calls = [];
+  const VRHTML = {
+    VRSettings: { Set: (...args) => writes.push(args) },
+    RegisterForSystemBehaviorFlags(callback) { event = callback; return 42; },
+  };
+  runInNewContext(source, { VRHTML, console });
+  assert.equal(VRHTML.RegisterForSystemBehaviorFlags(flags => { calls.push(flags); return 7; }), 42);
+  for (const flags of [0, 1, 512, 2560, 2048, 0, 0]) assert.equal(event(flags), 7);
+  assert.deepEqual(writes.map(args => args[2]), [false,false,true,false,true,true,false,true,false,false]);
+  assert.deepEqual(calls, [0,1,512,2560,2048,0,0]);
+  VRHTML.VRSettings.Set = () => { throw Error('unavailable'); };
+  assert.equal(event(512), 7);
+});
 
 test('native room-view events reach the platform and retain Valve callbacks', () => {
   let event;

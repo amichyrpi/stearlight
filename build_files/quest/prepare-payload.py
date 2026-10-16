@@ -371,6 +371,9 @@ def main():
     verify_musl_preload(quest / "libquest_socket.so", root)
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "wine-pe-memory.c", "-ldl", "-o", quest / "libquest_wine_pe.so")
+    for compiler, architecture in (("x86_64-linux-gnu-g++", "x86_64"), ("aarch64-linux-gnu-g++", "aarch64")):
+        run(compiler, "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-Wl,-Bsymbolic-functions", "-std=c++17",
+            f"-I{includes}", linux / "sdl-gamepad.cpp", "-ldl", "-o", quest / f"libquest_gamepad_{architecture}.so")
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
         f"-I{includes}", linux / "video-bridge.cpp", "-ldl", "-pthread",
         "-o", quest / "libquest_video.so")
@@ -387,6 +390,7 @@ def main():
     shutil.copyfile(linux / "gamescope-local-games.lua", gamescope_scripts / "90-quest-local-games.lua")
     shutil.copyfile(linux / "prepare-game-runtime.sh", quest / "prepare-game-runtime.sh")
     shutil.copyfile(linux / "fex-game-launcher.py", quest / "fex-game-launcher.py")
+    shutil.copyfile(linux / "prepare-gamepad-ui.py", quest / "prepare-gamepad-ui.py")
     for name in ("proton-game-launcher.py", "proton-runtime-entry.sh", "audio-namespace-launcher.sh"):
         shutil.copyfile(linux / name, quest / name)
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"

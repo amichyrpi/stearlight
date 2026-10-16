@@ -15,6 +15,13 @@ spec.loader.exec_module(launcher)
 
 
 class ProtonRuntimeTest(unittest.TestCase):
+    def test_native_gamepad_adapter_is_scoped_to_wine_and_can_be_disabled(self):
+        with patch.object(Path, "is_file", return_value=True):
+            environment = launcher.launch_environment(Path("/runtime"), {"SteamAppId": "123"})
+            self.assertIn("/opt/quest/libquest_gamepad_aarch64.so", environment["LD_PRELOAD"])
+            disabled = launcher.launch_environment(Path("/runtime"), {"STEARLIGHT_STEAM_INPUT": "0"})
+            self.assertNotIn("gamepad", disabled["LD_PRELOAD"])
+
     def test_migrated_proot_alias_retargets_current_canonical_file(self):
         with tempfile.TemporaryDirectory() as folder:
             platform = Path(folder)

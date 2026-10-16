@@ -36,6 +36,18 @@ Steam's browser ownership checks and shared GPU textures.
 
 Steam's native sign-in panel, separate left dock, bottom dock, and Touch lasers
 are supplied by Valve's runtime.
+The Touch pair advertises SteamVR's Frame gamepad capability. Select gamepad
+input on a game window. Local SDL2 games receive a virtual gamepad inside the
+game process; the Wine adapter also supplies it to SDL2-based Wine input.
+This local fallback uses the mapping below; streamed games use Steam Input's
+configuration. A/B stay
+on the right Touch controller, X/Y on the left; both sticks and triggers keep
+their normal gamepad positions. Grips supply LB/RB. Grip + stick click supplies
+View on the left and Menu on the right. Touch has no physical D-pad; streamed
+games can map a stick to it in Steam Input. Original per-hand VR
+input paths remain available. Losing focus or a controller releases its inputs.
+The local adapter adds no background process and needs no kernel input-device
+permission. SDL3 and applications that bypass SDL are not covered by this fallback.
 The streaming player uses the matching Mesa 26.1.6 EGL vendor with a
 surfaceless display. EGL/Vulkan pixel sharing is checked on the Quest;
 the older rootfs EGL driver produces black shared images. Its V4L2 decoder

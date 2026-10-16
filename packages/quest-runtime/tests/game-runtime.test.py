@@ -15,6 +15,15 @@ spec.loader.exec_module(launcher)
 
 
 class GameRuntimeTest(unittest.TestCase):
+    def test_gamepad_preload_is_scoped_to_the_fex_guest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            library = Path(folder) / "libquest_gamepad_x86_64.so"
+            root = Path(folder) / "root"
+            self.assertEqual(launcher.guest_gamepad(root, library), [])
+            library.write_bytes(b"adapter")
+            self.assertEqual(launcher.guest_gamepad(root, library), ["LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libquest_gamepad.so"])
+            self.assertEqual((root / "usr/lib/x86_64-linux-gnu/libquest_gamepad.so").read_bytes(), b"adapter")
+
     def test_runtime_update_retargets_shell_and_support_directories(self):
         with tempfile.TemporaryDirectory() as folder:
             base = Path(folder)
@@ -46,6 +55,20 @@ class GameRuntimeTest(unittest.TestCase):
             game.write_text('#!/bin/bash\n./Other.bin.x86_64 $@\n')
             launcher.prepare_game_script([str(game)])
             self.assertNotIn('exec ', game.read_text())
+
+    def test_monokickstart_selects_only_a_verified_x86_64_binary(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = Path(folder) / "Celeste"
+            game.write_text('#!/bin/bash\n# MonoKickstart picks the right libfolder\n./Game.bin.x86_64 $@\n')
+            binary = game.with_name("Game.bin.x86_64")
+            elf = bytearray(20)
+            elf[:6] = b"\x7fELF\x02\x01"
+            elf[18:20] = b"\x3e\x00"
+            binary.write_bytes(elf)
+            self.assertEqual(launcher.prepare_game_script([str(game)]), binary)
+            elf[18:20] = b"\xb7\x00"
+            binary.write_bytes(elf)
+            self.assertIsNone(launcher.prepare_game_script([str(game)]))
 
     def test_gamescope_owns_local_game_panel_and_uses_matching_pipewire(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -82,7 +105,7 @@ class GameRuntimeTest(unittest.TestCase):
                            "SteamAppId": "123", "GLIBC_TUNABLES": "glibc.pthread.rseq=0",
                            "LD_PRELOAD": "native.so", "LD_LIBRARY_PATH": "/native/libs",
                            "PULSE_SERVER": "unix:/tmp/pulse", "STEARLIGHT_FEX_GAMESCOPE": "1"}
-            with patch.object(launcher.sys, "argv", command), patch.dict(os.environ, environment, clear=True), patch.object(launcher.os, "execve") as execute:
+            with patch.object(launcher.sys, "argv", command), patch.dict(os.environ, environment, clear=True), patch.object(launcher, "guest_gamepad", return_value=["LD_PRELOAD=/guest/input.so"]), patch.object(launcher.os, "execve") as execute:
                 launcher.main()
                 self.assertEqual(os.environ["GLIBC_TUNABLES"], "glibc.pthread.rseq=0")
             executable, arguments, actual = execute.call_args.args
@@ -93,6 +116,7 @@ class GameRuntimeTest(unittest.TestCase):
             self.assertEqual(actual["VK_ICD_FILENAMES"], "/opt/quest/turnip_icd.json")
             self.assertNotIn("GLIBC_TUNABLES", actual)
             self.assertNotIn("LD_PRELOAD", actual)
+            self.assertEqual(actual["FEX_ENV"], "LD_PRELOAD=/guest/input.so")
             self.assertNotIn("LD_LIBRARY_PATH", actual)
             self.assertEqual(actual["MESA_VK_WSI_DEBUG"], "sw")
             self.assertEqual(json.loads(Path(actual["FEX_APP_CONFIG"]).read_text())["ThunksDB"], {"GL": 1, "Vulkan": 1})
