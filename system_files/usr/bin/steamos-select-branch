@@ -1,11 +1,14 @@
 #!/bin/sh
 set -eu
 # Steam's native channel selector calls -l, -c, and the polkit helper. Only
-# Stable/Beta select both Steam's client feed and the Frame OS image feed.
+# Stable/Beta select the Frame OS image feed independently of the client.
 root=${STEARLIGHT_STEAM_ROOT:-/opt/steam}
 case "${1:-}" in
  -l|--list) printf '%s\n' rel beta; exit 0 ;;
  -c|--current)
+  if [ -r "$root/package/stearlight-os-channel" ];then
+   cat "$root/package/stearlight-os-channel";exit 0
+  fi
   if [ -r "$root/package/stearlight-channel" ];then
    cat "$root/package/stearlight-channel";exit 0
   fi
@@ -17,26 +20,8 @@ case "${1:-}" in
 esac
 [ "$#" -eq 1 ] || exit 2
 mkdir -p "$root/package"
-native_beta=$(cat "$root/package/beta" 2>/dev/null || true)
-case "$native_beta" in
- linux_arm64_beta_*) printf '%s\n' "$native_beta" >"$root/package/stearlight-frame-beta" ;;
-esac
-previous=$(cat "$root/package/stearlight-channel" 2>/dev/null || true)
 umask 077
-temporary="$root/package/stearlight-channel.next-$$"
+temporary="$root/package/stearlight-os-channel.next-$$"
 trap 'rm -f "$temporary"' EXIT
 printf '%s\n' "$branch" >"$temporary"
-mv "$temporary" "$root/package/stearlight-channel"
-if [ "$branch" = rel ];then
- rm -f "$root/package/beta"
-else
- temporary="$root/package/beta.channel-$$"
- trap 'rm -f "$temporary"' EXIT
- printf '%s\n' publicbeta >"$temporary"
- mv "$temporary" "$root/package/beta"
-fi
-# A channel change can be a downgrade. Force one native update check rather
-# than allowing the previous feed's cache/version to suppress the switch.
-if [ "$previous" != "$branch" ];then
- printf '%s\n' "$branch" >"$root/package/stearlight-channel-update"
-fi
+mv "$temporary" "$root/package/stearlight-os-channel"

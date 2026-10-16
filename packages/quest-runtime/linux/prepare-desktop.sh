@@ -13,6 +13,26 @@ rm -f "$desktop/usr/share/dbus-1/services/org.kde.KSplash.service"
 # Relocated VLC plugins cannot use the recovery image's original cache.
 rm -f "$desktop/usr/lib/vlc/plugins/plugins.dat"
 /usr/bin/python3 /opt/quest/prepare-desktop-kio.py
+if [ -x /opt/stearlight-browser/usr/lib/chromium/chromium ];then
+ cat >"$desktop/usr/share/applications/org.chromium.Chromium.desktop" <<'ENTRY'
+[Desktop Entry]
+Type=Application
+Name=Chromium
+GenericName=Web Browser
+Exec=/opt/quest/chromium-launcher.sh %U
+Icon=chromium
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+StartupWMClass=chromium
+ENTRY
+ # Chromium's Debian desktop file otherwise shadows the Frame entry and
+ # points to an uninstalled /usr/bin wrapper. Keep one visible menu entry.
+ cp "$desktop/usr/share/applications/org.chromium.Chromium.desktop" \
+  /opt/stearlight-browser/usr/share/applications/chromium.desktop
+ printf 'NoDisplay=true\n' >>/opt/stearlight-browser/usr/share/applications/chromium.desktop
+ if [ ! -e /usr/bin/chromium ];then ln -s /opt/quest/chromium-launcher.sh /usr/bin/chromium;fi
+fi
 mkdir -p /usr/lib /usr/local/bin
 ln -sf /opt/quest/desktop-manager.py /usr/local/bin/stearlight-desktop
 ln -sf /opt/quest/desktop-launcher.sh /usr/bin/steamos-nested-desktop

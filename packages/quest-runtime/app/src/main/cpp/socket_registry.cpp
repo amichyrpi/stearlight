@@ -1,9 +1,12 @@
 #include <jni.h>
 #include <android/log.h>
+#include <android/multinetwork.h>
+#include <cerrno>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <netinet/in.h>
+#include <net/if.h>
 #include <unistd.h>
 #include <poll.h>
 #include <atomic>
@@ -17,12 +20,36 @@
 namespace {
 struct Entry { int fd=-1,original=-1;pid_t pid=0;uid_t uid=0;uint64_t inode=0;std::chrono::steady_clock::time_point expires; sockaddr_in local{},peer{};bool listening=false; };
 std::atomic<bool> running{false};std::thread worker;
+std::atomic<net_handle_t> usbNetwork{0};
+void bindUsbSocket(int listener){
+ int client=accept4(listener,nullptr,nullptr,SOCK_CLOEXEC|SOCK_NONBLOCK);if(client<0)return;
+ ucred peer{};socklen_t peerSize=sizeof(peer);int32_t result=EACCES;int domain=0;
+ if(!getsockopt(client,SOL_SOCKET,SO_PEERCRED,&peer,&peerSize)&&peer.uid==getuid()){
+  pollfd ready{client,POLLIN,0};
+  int waiting=poll(&ready,1,1000);
+  if(waiting>0){
+   result=EPROTO;
+   int32_t useUsb=-1;char control[CMSG_SPACE(sizeof(int)*8)]{};iovec io{&useUsb,sizeof(useUsb)};
+   msghdr message{};message.msg_iov=&io;message.msg_iovlen=1;message.msg_control=control;message.msg_controllen=sizeof(control);
+   ssize_t size=recvmsg(client,&message,MSG_CMSG_CLOEXEC);std::vector<int> fds;
+   for(auto* c=CMSG_FIRSTHDR(&message);c;c=CMSG_NXTHDR(&message,c))if(c->cmsg_level==SOL_SOCKET&&c->cmsg_type==SCM_RIGHTS){int* p=(int*)CMSG_DATA(c);fds.insert(fds.end(),p,p+(c->cmsg_len-CMSG_LEN(0))/sizeof(int));}
+   if(size==sizeof(useUsb)&&(useUsb==0||useUsb==1)&&fds.size()==1&&!(message.msg_flags&(MSG_TRUNC|MSG_CTRUNC))){
+    socklen_t length=sizeof(domain);auto network=usbNetwork.load();result=EAFNOSUPPORT;
+    if(!getsockopt(fds[0],SOL_SOCKET,SO_DOMAIN,&domain,&length)&&(domain==AF_INET||domain==AF_INET6))
+     result=useUsb&&!network?ENONET:(android_setsocknetwork(useUsb?network:0,fds[0])?errno:0);
+   }
+   for(int fd:fds)close(fd);
+  }else result=waiting==0?ETIMEDOUT:errno;
+ }
+ if(result)__android_log_print(ANDROID_LOG_ERROR,"StearlightUSB","USB socket bind failed: errno=%d domain=%d peer_uid=%u",result,domain,peer.uid);
+ send(client,&result,sizeof(result),MSG_NOSIGNAL);close(client);
+}
 bool stillOwned(const Entry &e){
  char path[128],value[128];snprintf(path,sizeof(path),"/proc/%d/fd/%d",e.pid,e.original);
  ssize_t size=readlink(path,value,sizeof(value)-1);if(size<0)return false;value[size]=0;
  unsigned long long inode=0;return sscanf(value,"socket:[%llu]",&inode)==1&&inode==e.inode;
 }
-void serve(std::string directory,int socket){
+void serve(std::string directory,int socket,int usbSocket){
  std::map<uint64_t,Entry> entries;
  auto publish=[&](){
   std::string path=directory+"/proc-net/tcp",temporary=path+".tmp";
@@ -34,7 +61,8 @@ void serve(std::string directory,int socket){
   if(fclose(out)==0)rename(temporary.c_str(),path.c_str());
  };
  while(running){
-  pollfd p{socket,POLLIN,0};poll(&p,1,50);
+  pollfd sockets[]={{socket,POLLIN,0},{usbSocket,POLLIN,0}};poll(sockets,2,50);auto& p=sockets[0];
+  if(sockets[1].revents&POLLIN)bindUsbSocket(usbSocket);
   if(p.revents&POLLIN){
    int32_t original=-1;char control[CMSG_SPACE(sizeof(int)*8)+CMSG_SPACE(sizeof(ucred))]{};
    iovec io{&original,sizeof(original)};msghdr message{};message.msg_iov=&io;message.msg_iovlen=1;message.msg_control=control;message.msg_controllen=sizeof(control);
@@ -71,6 +99,7 @@ void serve(std::string directory,int socket){
  }
  for(auto &[inode,e]:entries)if(e.fd>=0)close(e.fd);
  close(socket);unlink((directory+"/socket-registry.sock").c_str());
+ if(usbSocket>=0)close(usbSocket);unlink((directory+"/usb-network.sock").c_str());
 }
 void stop(){running=false;if(worker.joinable())worker.join();}
 }
@@ -81,6 +110,13 @@ extern "C" JNIEXPORT void JNICALL Java_net_stearlight_quest_QuestActivity_startS
  if(fd<0||name.size()>=sizeof(address.sun_path)){if(fd>=0)close(fd);return;}
  strcpy(address.sun_path,name.c_str());unlink(name.c_str());
  if(setsockopt(fd,SOL_SOCKET,SO_PASSCRED,&pass,sizeof(pass))||bind(fd,(sockaddr*)&address,sizeof(address))){__android_log_print(ANDROID_LOG_ERROR,"StearlightQuest","Socket registry could not start");close(fd);return;}
- chmod(name.c_str(),0600);running=true;worker=std::thread(serve,path,fd);
+ chmod(name.c_str(),0600);
+ int usb=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC|SOCK_NONBLOCK,0);name=path+"/usb-network.sock";
+ strcpy(address.sun_path,name.c_str());unlink(name.c_str());
+ if(usb>=0&&(bind(usb,(sockaddr*)&address,sizeof(address))||listen(usb,8))){close(usb);usb=-1;}
+ if(usb>=0)chmod(name.c_str(),0600);
+ running=true;worker=std::thread(serve,path,fd,usb);
 }
+extern "C" JNIEXPORT void JNICALL Java_net_stearlight_quest_QuestActivity_setUsbNetwork(JNIEnv*,jobject,jlong handle){usbNetwork=static_cast<net_handle_t>(handle);}
+extern "C" JNIEXPORT jint JNICALL Java_net_stearlight_quest_QuestActivity_networkInterfaceIndex(JNIEnv* env,jobject,jstring name){const char* text=env->GetStringUTFChars(name,nullptr);unsigned index=if_nametoindex(text);env->ReleaseStringUTFChars(name,text);return index;}
 extern "C" JNIEXPORT void JNICALL Java_net_stearlight_quest_QuestActivity_stopSocketRegistry(JNIEnv*,jobject){stop();}

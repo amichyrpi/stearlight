@@ -7,7 +7,7 @@ binary=${STEARLIGHT_STEAM_ROOT:-/opt/steam}/steamrtarm64/chromehtml.so
 # Extend only the master response stream's wait; keep the IPC protocol intact.
 current=$(sha256sum "$binary" | cut -d ' ' -f 1)
 case "$current" in
-    4ea4e9aa5146e2f4b7c003abd83fb8a4cf6edf2118e8a50c5a7f10ddf14013b0|dd22bb0da0e636a52135aa7b4514abac0fa57799813ee301881559f2195f0171|cf90f845837c6edaddf8fb27dd136ffc6a4187ec8476b01ae1a0059e744b07ce|1f853fe9a31e09cb620a71c99bb2c773f32ea87d28fe26dc9e8621b900c2503e|a8a9c2949a7366deb1ccdc9bfef879a69d5888fd4bc42874f001bfe9e4904aa3) exit 0 ;;
+    4ea4e9aa5146e2f4b7c003abd83fb8a4cf6edf2118e8a50c5a7f10ddf14013b0|dd22bb0da0e636a52135aa7b4514abac0fa57799813ee301881559f2195f0171|cf90f845837c6edaddf8fb27dd136ffc6a4187ec8476b01ae1a0059e744b07ce|1f853fe9a31e09cb620a71c99bb2c773f32ea87d28fe26dc9e8621b900c2503e|a8a9c2949a7366deb1ccdc9bfef879a69d5888fd4bc42874f001bfe9e4904aa3|89d18689e4f33b3c63174981c8b0cc5b6db46a644298bd5c96d0c7acf7599e68) exit 0 ;;
     9313efbb3c64108cb990271f3c9ba59821595a87e4f1b0c07d7538ab9a21786b)
         offset=374660
         patched=4ea4e9aa5146e2f4b7c003abd83fb8a4cf6edf2118e8a50c5a7f10ddf14013b0 ;;
@@ -31,6 +31,11 @@ case "$current" in
         # response constructor's mov w3, #500 at 0x5afbc.
         offset=372668
         patched=a8a9c2949a7366deb1ccdc9bfef879a69d5888fd4bc42874f001bfe9e4904aa3 ;;
+    cb2956ea9c42850e1e19c8d27f3260a45f023b0429224f9a3f50a0b0560fc0e8)
+        # Public Beta/Stable 1791918634: verified MasterStream reference at
+        # 0x2013c8 and response constructor's mov w3, #500 at 0x5afbc.
+        offset=372668
+        patched=89d18689e4f33b3c63174981c8b0cc5b6db46a644298bd5c96d0c7acf7599e68 ;;
     *) echo 'Steam IPC timeout adaptation does not match this recovery build.' >&2; exit 1 ;;
 esac
 temporary="$binary.stearlight-ipc"

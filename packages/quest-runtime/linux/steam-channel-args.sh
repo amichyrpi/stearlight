@@ -5,20 +5,35 @@
 if [ "${STEARLIGHT_SHADER_PRECACHE:-0}" != 1 ];then
  STEAM_ARGS+=( -noshaders )
 fi
-# Frame supplies its own ARM64 Beta branch. Its client build can differ from
-# the general Public Beta manifest; selecting that manifest repeatedly offers
-# the same package. Preserve Valve's runtime-provided Frame branch across UI
-# selections, and use Public Beta on runtimes without a Frame branch.
-frame_beta=$(cat "${STEAMROOT}/package/beta" 2>/dev/null || true)
-case "$frame_beta" in
- linux_arm64_beta_*) printf '%s\n' "$frame_beta" >"${STEAMROOT}/package/stearlight-frame-beta" ;;
- *) frame_beta=$(cat "${STEAMROOT}/package/stearlight-frame-beta" 2>/dev/null || true) ;;
+# Use Valve's moving public feeds. A recovery image's linux_arm64_beta_* name
+# identifies a snapshot and must not pin future Beta checks to that old build.
+channel=$(cat "${STEAMROOT}/package/stearlight-channel" 2>/dev/null || true)
+case "$channel" in
+ rel|beta)
+  # Frame injects its own -clientbeta earlier in this array. Steam uses the
+  # first value, so appending our selection alone silently keeps the snapshot.
+  selected_args=();skip_channel_value=0
+  for argument in "${STEAM_ARGS[@]}";do
+   if [ "$skip_channel_value" = 1 ];then skip_channel_value=0;continue;fi
+   case "$argument" in
+    -clientbeta) skip_channel_value=1 ;;
+    -clientbeta=*) ;;
+    *) selected_args+=( "$argument" ) ;;
+   esac
+  done
+  STEAM_ARGS=( "${selected_args[@]}" ) ;;
 esac
-case "$frame_beta" in linux_arm64_beta_*) ;; *) frame_beta= ;; esac
-case "$(cat "${STEAMROOT}/package/stearlight-channel" 2>/dev/null || true)" in
- rel) STEAM_ARGS+=( -clientbeta steamdeck_stable ) ;;
- beta) STEAM_ARGS+=( -clientbeta "${frame_beta:-publicbeta}" ) ;;
+case "$channel" in
+ rel) feed=steamdeck_stable ;;
+ beta) feed=publicbeta ;;
+ *) feed= ;;
 esac
+if [ -n "$feed" ];then
+ # Steam also uses package/beta to identify its installed manifest. A stale
+ # recovery branch here makes each launch reinstall the already-current feed.
+ printf '%s\n' "$feed" >"${STEAMROOT}/package/beta"
+ STEAM_ARGS+=( -clientbeta "$feed" )
+fi
 if [ -f "${STEAMROOT}/package/stearlight-channel-update" ];then
  STEAM_ARGS+=( -forcesteamupdate -forcepackagedownload )
  rm -f "${STEAMROOT}/package/stearlight-channel-update"

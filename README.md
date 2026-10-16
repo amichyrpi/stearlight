@@ -59,6 +59,11 @@ It includes:
 
 - [ ] Blue dots appearing in the right eye when the headset is in use.
 
+## Performance
+
+For a better VR experience, you will need to disable battery-saving
+mode on your Quest. That means a smoother experience but shorter playtime.
+
 ## Development
 
 This project bundles a VM version of the OS and a Quest version of the OS.
@@ -74,8 +79,8 @@ the project for your game, your changes will be merged.
 
 ### Next update
 
+- [ ] Hand traking
 - [ ] Controller support via Bluetooth
-- [x] Desktop mode
 
 ## Build for VM
 

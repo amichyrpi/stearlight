@@ -198,5 +198,39 @@
       "url": "https://deb.debian.org/debian/pool/main/l/lzo2/liblzo2-2_2.10-3+b2_arm64.deb",
       "sha256": "3da35028991e5e6408d65d55e9e8468abd03932f335d2e7f3d45c7f8f7d90c65"
     }
+  },
+  "chromium": {
+    "chromium": {
+      "url": "https://security.debian.org/debian-security/pool/updates/main/c/chromium/chromium_155.0.8059.79-1~deb13u1_arm64.deb",
+      "sha256": "bb4334a065801d7482df4783b535ab16654fb71e6eac8a89bd49eb2e7082be27"
+    },
+    "chromium-common": {
+      "url": "https://security.debian.org/debian-security/pool/updates/main/c/chromium/chromium-common_155.0.8059.79-1~deb13u1_arm64.deb",
+      "sha256": "2f8d97e652adc2afa8cc96f79141ffdff0ca4f11c3a35671e7b61f60d10eb2b5"
+    },
+    "libflac14": {
+      "url": "https://deb.debian.org/debian/pool/main/f/flac/libflac14_1.5.0+ds-2_arm64.deb",
+      "sha256": "11800827306e56fcbd1a65ea67d9d13126fc02bf87fdfecd35e0f48a145b3c59"
+    },
+    "libharfbuzz-subset0": {
+      "url": "https://deb.debian.org/debian/pool/main/h/harfbuzz/libharfbuzz-subset0_10.2.0-1+deb13u1_arm64.deb",
+      "sha256": "94762ffe1961b0d3d042398fef3f56545f99c5e070b17a557782664056b05a00"
+    },
+    "libharfbuzz0b": {
+      "url": "https://deb.debian.org/debian/pool/main/h/harfbuzz/libharfbuzz0b_10.2.0-1+deb13u1_arm64.deb",
+      "sha256": "3ff928f981b54b491ee12e4cf68558cc5d61c652bdab276cd4c4c3fbbcee16ca"
+    },
+    "libjpeg62-turbo": {
+      "url": "https://deb.debian.org/debian/pool/main/libj/libjpeg-turbo/libjpeg62-turbo_2.1.5-4_arm64.deb",
+      "sha256": "e4989073bb0bac8a6ec043c7adb80e1dfe601d8552233da48bb24ab45d1a1d4a"
+    },
+    "libxnvctrl0": {
+      "url": "https://deb.debian.org/debian/pool/main/libx/libxnvctrl/libxnvctrl0_535.171.04-1+b2_arm64.deb",
+      "sha256": "87a7c8e67630667d4b6067f956ab62211f26dee2005560cb6090df22b15b25c7"
+    },
+    "libopenh264-8": {
+      "url": "https://deb.debian.org/debian/pool/main/o/openh264/libopenh264-8_2.6.0+dfsg-2_arm64.deb",
+      "sha256": "dd40ffeeb006af3a610e015881340c704b8bb38627434a150b7d9e39e657dfbe"
+    }
   }
 }

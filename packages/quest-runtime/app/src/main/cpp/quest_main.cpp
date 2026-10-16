@@ -20,11 +20,13 @@
 #include <cmath>
 #include <stdexcept>
 #include <ctime>
+#include <chrono>
 #include "quest_bridge.h"
 #include "play_space.h"
 #include "gpu_bridge.h"
 #include "video_bridge.h"
 #include "passthrough.h"
+#include "loading_boost.h"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"StearlightXR",__VA_ARGS__)
 static void check(XrResult result,const char* name){if(XR_FAILED(result)){LOG("%s failed: %d",name,result);throw std::runtime_error(name);}}
@@ -53,6 +55,8 @@ struct Runtime {
  PFN_xrConvertTimeToTimespecTimeKHR timeToMonotonic=nullptr;
  PFN_xrGetDisplayRefreshRateFB getRate=nullptr;PFN_xrRequestDisplayRefreshRateFB requestRate=nullptr;
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
+ LoadingBoost loadingBoost;
+ bool cpuBoosted=false;
  float requestedRate=72;
  bool bootFinished=false;
  int hapticSocket=-1;
@@ -217,6 +221,13 @@ struct Runtime {
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   if(!bootFinished)bootFinished=bootComplete();
   bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootFinished;
+  struct stat boostRequest{};
+  bool gameLoading=stat((directory+"/performance-boost.request").c_str(),&boostRequest)==0&&time(nullptr)-boostRequest.st_mtime<15;
+  bool boost=loadingBoost.update(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),loading||gameLoading,focused);
+  if(setPerformance&&boost!=cpuBoosted){
+   XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,boost?XR_PERF_SETTINGS_LEVEL_BOOST_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
+   LOG("Loading CPU boost %d result %d",boost,result);cpuBoosted=boost;
+  }
   bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;
   if(!loading&&visible&&compositionReady)camera.update();else camera.suspend();
   bool passthroughActive=camera.active;

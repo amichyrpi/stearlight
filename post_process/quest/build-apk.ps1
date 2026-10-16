@@ -31,7 +31,7 @@ $apk=Join-Path $outputPath 'outputs/apk/debug/app-debug.apk'
 if(!(Test-Path -LiteralPath $apk)){throw 'Gradle did not produce the Quest APK'}
 $digest=(Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
 Set-Content -LiteralPath "$apk.sha256" -Value "$digest  app-debug.apk" -Encoding ascii
-foreach($name in @('run-linux-debug.ps1','socket-table-monitor.sh','shell.ps1','shell.sh')){
+foreach($name in @('run-linux-debug.ps1','socket-table-monitor.sh','shell.ps1','shell.sh','usb-network.ps1')){
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path (Split-Path $apk) $name) -Force
 }
 Copy-Item -LiteralPath (Join-Path $repo 'packages/quest-runtime/README.md') -Destination (Join-Path (Split-Path $apk) 'README.md') -Force

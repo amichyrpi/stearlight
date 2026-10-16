@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <fstream>
+#include <sstream>
 #include <map>
 #include <set>
 #include <sys/stat.h>
@@ -203,6 +204,7 @@ int main(int argc, char** argv) {
     unlink(ready);
     bool dashboardRequested = false, dashboardReady = false, steamRequested = false;
     bool failed = false, desktopShown = false, desktopWasActive = false, remoteMode = false;
+    std::string previousCameraStyle;
     while (!stopping) {
         std::ifstream desktopRequest("/run/stearlight/quest/desktop-mode.active");
         std::string desktopKind;std::getline(desktopRequest,desktopKind);
@@ -226,6 +228,18 @@ int main(int argc, char** argv) {
         bool desktopAudioReady=desktopKind.empty() || access("/run/stearlight/quest/local-vr-audio.paused",F_OK)==0;
         if (!session.poll(desktopAudioReady) || quest_watch_step() < 0) { failed = true; break; }
         vr::EVRSettingsError settingError;
+        auto cameraValue=[&](const char* name,float fallback){vr::EVRSettingsError error;float value=settings->GetFloat("camera",name,&error);return error==vr::VRSettingsError_None?value:fallback;};
+        auto cameraInteger=[&](const char* name,int fallback){vr::EVRSettingsError error;int value=settings->GetInt32("camera",name,&error);return error==vr::VRSettingsError_None?value:fallback;};
+        std::ostringstream cameraStyle;
+        cameraStyle<<1<<' '<<cameraInteger("roomViewStyle",0)<<' '<<cameraValue("monochromeTintHue",.67f)<<' '
+                   <<cameraInteger("cameraBoundsColorGammaR",0)/255.f<<' '<<cameraInteger("cameraBoundsColorGammaG",255)/255.f<<' '
+                   <<cameraInteger("cameraBoundsColorGammaB",255)/255.f<<' '<<cameraInteger("cameraBoundsColorGammaA",153)/255.f<<' '
+                   <<cameraInteger("cameraBoundsStrength",78)/100.f;
+        if(cameraStyle.str()!=previousCameraStyle){
+            const char* next="/run/stearlight/quest/passthrough-style.tsv.next";
+            std::ofstream file(next);file<<cameraStyle.str()<<'\n';file.close();
+            if(file&&rename(next,"/run/stearlight/quest/passthrough-style.tsv")==0)previousCameraStyle=cameraStyle.str();
+        }
         bool requested = settings->GetBool("stearlight_quest", "passthrough_enabled", &settingError);
         if (settingError == vr::VRSettingsError_None && requested != passthroughRequested) {
             if (requested && access("/run/stearlight/quest/passthrough.supported", F_OK) == 0) {
@@ -237,6 +251,9 @@ int main(int argc, char** argv) {
         }
         vr::VREvent_t event;
         while (system->PollNextEvent(&event, sizeof(event))) {
+            if (event.eventType == vr::VREvent_ProcessConnected) {
+                if (FILE* request = std::fopen("/run/stearlight/quest/performance-boost.request", "w")) std::fclose(request);
+            }
             if (event.eventType == vr::VREvent_Quit) {
                 system->AcknowledgeQuit_Exiting();
                 stopping = 1;
