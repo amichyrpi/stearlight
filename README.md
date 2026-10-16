@@ -51,9 +51,11 @@ It includes:
 
 - ARM64 SteamVR with FEX and Proton
 - Tracking support and passthrough
-- VR streaming for VR and non-VR games
+- VR streaming for VR and non-VR games with usb support
 - Bluetooth support for sign-in
 - Standalone capability for VR and non-VR games
+- Desktop mode
+- Hand tracking
 
 ## Known-issues
 
@@ -79,7 +81,7 @@ the project for your game, your changes will be merged.
 
 ### Next update
 
-- [ ] Hand traking
+- [ ] Finish desktop mode
 - [ ] Controller support via Bluetooth
 
 ## Build for VM

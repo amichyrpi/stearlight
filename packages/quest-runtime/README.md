@@ -48,6 +48,15 @@ games can map a stick to it in Steam Input. Original per-hand VR
 input paths remain available. Losing focus or a controller releases its inputs.
 The local adapter adds no background process and needs no kernel input-device
 permission. SDL3 and applications that bypass SDL are not covered by this fallback.
+Enable Hand Tracking in Horizon settings and set the Touch controllers down to
+use hands in Steam's dashboard. Quest supplies articulated hand meshes and aim
+poses; index-thumb pinch selects, and holding a pinch drags Steam's controls.
+The non-dominant hand's menu gesture toggles the dashboard when Horizon supplies
+that event. Horizon keeps its system gestures. Tracking or focus loss releases
+pinch input, and a hand must open before clicking again. Picking up Touch
+controllers restores their models, buttons, sticks and gamepad input. Hands do
+not synthesize gamepad buttons or sticks; game-specific skeletal hand input is
+not forwarded. No hand-tracking history is recorded.
 The streaming player uses the matching Mesa 26.1.6 EGL vendor with a
 surfaceless display. EGL/Vulkan pixel sharing is checked on the Quest;
 the older rootfs EGL driver produces black shared images. Its V4L2 decoder

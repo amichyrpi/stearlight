@@ -359,6 +359,7 @@ def main():
     driver = quest / "stearlight-quest"
     (driver / "bin/linuxarm64").mkdir(parents=True, exist_ok=True)
     (driver / "resources").mkdir(exist_ok=True)
+    shutil.copytree(linux / "resources", driver / "resources", dirs_exist_ok=True)
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-Wl,-Bsymbolic", "-std=c++17",
         f"-I{includes}", linux / "quest_wsi.cpp", "-ldl", "-o", quest / "libquest_vulkan.so")
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",

@@ -85,13 +85,13 @@ public:
 };
 class Controller final:public Device {
  int hand;std::array<vr::VRInputComponentHandle_t,7> clicks{};vr::VRInputComponentHandle_t trigger=0,squeeze=0,x=0,y=0,touch=0,haptic=0;
- bool haveInputs=false,gripped=false;vr::VRInputComponentHandle_t gripClick=0,bumper=0,menu=0;bool previousMenu=false;std::array<bool,8> previousClicks{};std::array<float,4> previousScalars{};
+ bool haveInputs=false,gripped=false,handMode=false;vr::VRInputComponentHandle_t gripClick=0,bumper=0,menu=0;bool previousMenu=false;std::array<bool,8> previousClicks{};std::array<float,4> previousScalars{};
 public:
  explicit Controller(int value):hand(value){}
  const char* serial(){return hand?"STEARLIGHT-QUEST2-RIGHT":"STEARLIGHT-QUEST2-LEFT";}
  bool acceptsHaptic(const vr::VREvent_HapticVibration_t& event)const{return haptic&&event.componentHandle==haptic&&event.containerHandle==properties;}
  vr::EVRInitError Activate(uint32_t id)override{
-  haveInputs=false;gripped=false;previousMenu=false;
+  haveInputs=false;gripped=false;previousMenu=false;handMode=false;
   base(id,serial(),hand?"Oculus Quest2 (Right Controller)":"Oculus Quest2 (Left Controller)");auto* p=vr::VRProperties();p->SetStringProperty(properties,vr::Prop_RenderModelName_String,hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"frame_controller");p->SetStringProperty(properties,vr::Prop_InputProfilePath_String,"{frame_controller}/input/frame_controller_profile.json");p->SetStringProperty(properties,vr::Prop_ControllerType_String,"frame_controller");p->SetInt32Property(properties,vr::Prop_ControllerRoleHint_Int32,hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);p->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,false);
   // SteamVR 2.18's Frame profile gates its gamepad mode on property 2117.
   // This property is present in Valve's runtime, ahead of our public SDK.
@@ -103,6 +103,12 @@ public:
  vr::DriverPose_t GetPose()override{return trackedPose(quest::controllerModelPose(state.grip[hand],hand));}
  void frame()override{
   if(index==vr::k_unTrackedDeviceIndexInvalid)return;
+  bool nextHand=state.grip[hand].flags?(state.grip[hand].flags&QUEST_POSE_HAND)!=0:handMode;
+  if(nextHand!=handMode){
+   vr::VRProperties()->SetStringProperty(properties,vr::Prop_RenderModelName_String,nextHand?"{stearlight-quest}quest_hand_pointer":hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");
+   vr::VRProperties()->SetBoolProperty(properties,static_cast<vr::ETrackedDeviceProperty>(2117),!nextHand);
+   handMode=nextHand;
+  }
   vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,GetPose(),sizeof(vr::DriverPose_t));
   const auto input=quest::controllerInput(state,hand),left=quest::controllerInput(state,0);
   uint32_t mapped=quest::frameButtons(input,left,hand);

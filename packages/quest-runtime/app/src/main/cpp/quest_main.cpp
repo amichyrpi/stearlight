@@ -27,6 +27,8 @@
 #include "video_bridge.h"
 #include "passthrough.h"
 #include "loading_boost.h"
+#include "hand_tracking.h"
+#include "hand_render.h"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"StearlightXR",__VA_ARGS__)
 static void check(XrResult result,const char* name){if(XR_FAILED(result)){LOG("%s failed: %d",name,result);throw std::runtime_error(name);}}
@@ -61,6 +63,8 @@ struct Runtime {
  bool bootFinished=false;
  int hapticSocket=-1;
  Passthrough camera;
+ HandTracking handTracking;HandRender handRender;
+ bool controllerProfile[2]{true,true},lastHands=false;XrPath touchProfile=XR_NULL_PATH;
  bool has(const std::vector<XrExtensionProperties>& e,const char* name){for(const auto& p:e)if(!strcmp(p.extensionName,name))return true;return false;}
  XrPath path(const char* s){XrPath p;XR(xrStringToPath(instance,s,&p));return p;}
  void egl(){
@@ -85,6 +89,9 @@ struct Runtime {
   uint32_t n=0;XR(xrEnumerateInstanceExtensionProperties(nullptr,0,&n,nullptr));std::vector<XrExtensionProperties> extensions(n,{XR_TYPE_EXTENSION_PROPERTIES});XR(xrEnumerateInstanceExtensionProperties(nullptr,n,&n,extensions.data()));
   std::vector<const char*> enabled={XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME};
   for(const auto& extension:extensions)LOG("OpenXR extension %s",extension.extensionName);
+  bool handSupport=has(extensions,XR_EXT_HAND_TRACKING_EXTENSION_NAME)&&has(extensions,XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
+  bool handMesh=handSupport&&has(extensions,XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME);
+  if(handSupport){enabled.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);enabled.push_back(XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);if(handMesh)enabled.push_back(XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME);}
   for(const char* name:{XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME,XR_FB_PASSTHROUGH_EXTENSION_NAME,XR_FB_RENDER_MODEL_EXTENSION_NAME,XR_EXT_PERFORMANCE_SETTINGS_EXTENSION_NAME,XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME,XR_FB_COLOR_SPACE_EXTENSION_NAME})if(has(extensions,name))enabled.push_back(name);
   XrInstanceCreateInfoAndroidKHR androidInfo{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};androidInfo.applicationVM=app->activity->vm;androidInfo.applicationActivity=app->activity->clazz;
   XrInstanceCreateInfo create{XR_TYPE_INSTANCE_CREATE_INFO};create.next=&androidInfo;strcpy(create.applicationInfo.applicationName,"Stearlight OS");create.applicationInfo.applicationVersion=2;strcpy(create.applicationInfo.engineName,"Stearlight Quest bridge");create.applicationInfo.apiVersion=XR_CURRENT_API_VERSION;create.enabledExtensionCount=enabled.size();create.enabledExtensionNames=enabled.data();XR(xrCreateInstance(&create,&instance));
@@ -108,6 +115,7 @@ struct Runtime {
   haveStage=std::find(spaces.begin(),spaces.end(),XR_REFERENCE_SPACE_TYPE_STAGE)!=spaces.end();
   XrReferenceSpaceCreateInfo reference{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};reference.poseInReferenceSpace=identity();reference.referenceSpaceType=haveStage?XR_REFERENCE_SPACE_TYPE_STAGE:XR_REFERENCE_SPACE_TYPE_LOCAL;XR(xrCreateReferenceSpace(session,&reference,&stage));reference.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;XR(xrCreateReferenceSpace(session,&reference,&head));
   actionsSetup();
+  handTracking.initialize(instance,system,session,handSupport,handMesh);handRender.initialize(handTracking);
   uint32_t viewsCount=0;XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,0,&viewsCount,nullptr));if(viewsCount!=2)throw std::runtime_error("Expected stereo view configuration");
   std::vector<XrViewConfigurationView> views(viewsCount,{XR_TYPE_VIEW_CONFIGURATION_VIEW});XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,viewsCount,&viewsCount,views.data()));
   uint32_t formatCount;XR(xrEnumerateSwapchainFormats(session,0,&formatCount,nullptr));std::vector<int64_t> formats(formatCount);XR(xrEnumerateSwapchainFormats(session,formatCount,&formatCount,formats.data()));int64_t format=GL_SRGB8_ALPHA8;if(std::find(formats.begin(),formats.end(),format)==formats.end())format=GL_RGBA8;
@@ -131,6 +139,7 @@ struct Runtime {
  }
  XrAction action(const char* name,XrActionType type,bool sub=true){XrActionCreateInfo create{XR_TYPE_ACTION_CREATE_INFO};strncpy(create.actionName,name,sizeof(create.actionName)-1);strncpy(create.localizedActionName,name,sizeof(create.localizedActionName)-1);create.actionType=type;if(sub){create.countSubactionPaths=2;create.subactionPaths=hands;}XrAction a;XR(xrCreateAction(actions,&create,&a));return a;}
  void actionsSetup(){
+  touchProfile=path("/interaction_profiles/oculus/touch_controller");
   hands[0]=path("/user/hand/left");hands[1]=path("/user/hand/right");XrActionSetCreateInfo create{XR_TYPE_ACTION_SET_CREATE_INFO};strcpy(create.actionSetName,"quest");strcpy(create.localizedActionSetName,"Quest controllers");XR(xrCreateActionSet(instance,&create,&actions));
   gripAction=action("grip_pose",XR_ACTION_TYPE_POSE_INPUT);aimAction=action("aim_pose",XR_ACTION_TYPE_POSE_INPUT);triggerAction=action("trigger",XR_ACTION_TYPE_FLOAT_INPUT);squeezeAction=action("squeeze",XR_ACTION_TYPE_FLOAT_INPUT);stickAction=action("thumbstick",XR_ACTION_TYPE_VECTOR2F_INPUT);touchAction=action("trigger_touch",XR_ACTION_TYPE_BOOLEAN_INPUT);hapticAction=action("haptic",XR_ACTION_TYPE_VIBRATION_OUTPUT);
   const char* names[]={"a","b","x","y","stick_click","menu"};for(int i=0;i<6;i++)buttonActions[i]=action(names[i],XR_ACTION_TYPE_BOOLEAN_INPUT);
@@ -163,7 +172,7 @@ struct Runtime {
    tracking->session_visible=visible;tracking->session_focused=focused;
    __atomic_add_fetch(&tracking->sequence,1,__ATOMIC_RELEASE);
    if(state.state==XR_SESSION_STATE_EXITING||state.state==XR_SESSION_STATE_LOSS_PENDING)return false;
-  }else if(event.type==XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB){auto& rate=*reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(&event);tracking->refresh_hz=rate.toDisplayRefreshRate;LOG("Display refresh changed to %.0f Hz",rate.toDisplayRefreshRate);}else if(event.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED){for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));char name[XR_MAX_PATH_LENGTH]="none";uint32_t size=0;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d interaction profile %s",i,name);}}event={XR_TYPE_EVENT_DATA_BUFFER};}return true;
+  }else if(event.type==XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB){auto& rate=*reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(&event);tracking->refresh_hz=rate.toDisplayRefreshRate;LOG("Display refresh changed to %.0f Hz",rate.toDisplayRefreshRate);}else if(event.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED){for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size=0;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d interaction profile %s",i,name);}}event={XR_TYPE_EVENT_DATA_BUFFER};}return true;
  }
  float value(XrAction action,int i){XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};info.action=action;info.subactionPath=hands[i];XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};XR(xrGetActionStateFloat(session,&info,&state));return state.isActive?state.currentState:0;}
  bool button(XrAction action,int i){XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};info.action=action;info.subactionPath=hands[i];XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};XR(xrGetActionStateBoolean(session,&info,&state));return state.isActive&&state.currentState;}
@@ -172,6 +181,7 @@ struct Runtime {
    QuestHaptic packet{};auto size=recv(hapticSocket,&packet,sizeof(packet),MSG_TRUNC);
    if(size<0)break;
    if(size!=sizeof(packet)||packet.magic!=QUEST_BRIDGE_MAGIC||packet.hand>1||!focused||!std::isfinite(packet.duration_seconds)||!std::isfinite(packet.frequency)||!std::isfinite(packet.amplitude))continue;
+   if(tracking->grip[packet.hand].flags&QUEST_POSE_HAND)continue;
    XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};info.action=hapticAction;info.subactionPath=hands[packet.hand];
    XrResult result;
    if(packet.duration_seconds<=0||packet.amplitude<=0)result=xrStopHapticFeedback(session,&info);
@@ -209,13 +219,16 @@ struct Runtime {
    // controllers, so wake/disconnect still publishes a complete new sample.
    sample.trigger[i]=sample.squeeze[i]=0;sample.buttons[i]=sample.touches[i]=0;
    sample.thumbstick[i][0]=sample.thumbstick[i][1]=0;
-   if(!poseState.isActive)continue;
+   bool physical=poseState.isActive&&(controllerProfile[i]||!handTracking.available());
+   if(physical){
    sample.trigger[i]=value(triggerAction,i);if(!sample.trigger[i]&&button(selectAction,i))sample.trigger[i]=1;sample.squeeze[i]=value(squeezeAction,i);
    for(int b=i?0:2;b<(i?2:4);b++)if(button(buttonActions[b],i))sample.buttons[i]|=1u<<b;
    if(button(buttonActions[4],i))sample.buttons[i]|=QUEST_THUMBSTICK;
    if(!i&&button(buttonActions[5],i))sample.buttons[i]|=QUEST_MENU;
    sample.touches[i]=button(touchAction,i)?1:0;
    XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));sample.thumbstick[i][0]=stick.isActive?stick.currentState.x:0;sample.thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
+   }
+   handTracking.update(sample,i,physical,stage,state.predictedDisplayTime);
   }questPublishTracking(tracking,sample);
   publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
@@ -235,7 +248,9 @@ struct Runtime {
   // working camera view available; mixed composition needs transparent output.
   XrCompositionLayerProjectionView projectionViews[2]={{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
   gpu.poll();
-  eyesDirty=eyesDirty||loading!=lastLoading||passthroughActive!=lastPassthrough||(!loading&&gpu.ready());
+  bool showHands=!loading&&handTracking.visible();
+  eyesDirty=eyesDirty||loading!=lastLoading||passthroughActive!=lastPassthrough||(!loading&&gpu.ready())||showHands||lastHands;
+  lastHands=showHands;
   lastLoading=loading;lastPassthrough=passthroughActive;
   // Repeated submissions of the same pixels must keep the same layer pose.
   // Updating it every xrWaitFrame incorrectly head-locks a stalled Linux image.
@@ -268,7 +283,7 @@ struct Runtime {
   if(state.shouldRender)for(int i=0;i<2;i++){
    Eye& eye=eyes[i];
    if(eyesDirty){
-   uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eye.chain,&acquire,&index));XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eye.chain,&imageWait));glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[index].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loading)gpu.draw(i,passthroughActive);glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));
+   uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eye.chain,&acquire,&index));XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eye.chain,&imageWait));glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[index].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loading){gpu.draw(i,passthroughActive);if(showHands)handRender.draw(handTracking,frameViews[i],eye.width,eye.height);}glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));
    }
    projectionViews[i].pose=frameViews[i].pose;projectionViews[i].fov=frameViews[i].fov;projectionViews[i].subImage={eye.chain,{{0,0},{static_cast<int32_t>(eye.width),static_cast<int32_t>(eye.height)}},0};
   }
@@ -284,9 +299,9 @@ struct Runtime {
    if(eyeReport.time_since_epoch().count()==0)eyeReport=done;
    if(std::chrono::duration<double>(done-eyeReport).count()>=5){LOG("Stereo eye draw/submit %.2f ms/frame",eyeMs/eyeFrames);eyeMs=0;eyeFrames=0;eyeReport=done;}
   }
-  static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
+  static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }
  void idle(){gpu.poll();gpu.finish();}
- void shutdown(){video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
+ void shutdown(){handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
 };
 extern "C" void android_main(android_app* app){Runtime runtime;runtime.app=app;try{while(!app->destroyRequested&&(!app->window||app->activityState!=APP_CMD_RESUME)){int events;android_poll_source* source;if(ALooper_pollOnce(50,nullptr,&events,reinterpret_cast<void**>(&source))>=0&&source)source->process(app,source);}if(app->destroyRequested)return;LOG("Android VR activity resumed with a native window");runtime.initialize(app);while(!app->destroyRequested){int events;android_poll_source* source;while(ALooper_pollOnce(runtime.running?0:50,nullptr,&events,reinterpret_cast<void**>(&source))>=0){if(source)source->process(app,source);if(app->destroyRequested)break;}if(app->destroyRequested||!runtime.events())break;if(runtime.running)runtime.frame();else runtime.idle();}}catch(const std::exception& e){LOG("Native runtime stopped: %s",e.what());}runtime.shutdown();}

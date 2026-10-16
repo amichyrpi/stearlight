@@ -14,8 +14,8 @@ namespace quest {
 inline QuestGamepadState gamepadState(const QuestTracking& tracking,bool leftMode,bool rightMode,uint64_t now){
  QuestGamepadState result;result.monotonic_ns=now;
  auto left=controllerInput(tracking,0),right=controllerInput(tracking,1);
- if(!leftMode)left={};
- if(!rightMode)right={};
+ if(!leftMode||(tracking.grip[0].flags&QUEST_POSE_HAND))left={};
+ if(!rightMode||(tracking.grip[1].flags&QUEST_POSE_HAND))right={};
  auto button=[&](int index,bool down){if(down)result.buttons|=1u<<index;};
  button(0,right.buttons&QUEST_A);button(1,right.buttons&QUEST_B);
  button(2,left.buttons&QUEST_X);button(3,left.buttons&QUEST_Y);

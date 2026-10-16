@@ -7,6 +7,7 @@ namespace quest {
 // origin (+/-0.007, -0.00182941, 0.1019482), rotate_xyz (20.6, 0, 0).
 // OpenXR locates this component, while OpenVR locates the model's origin.
 inline QuestPose controllerModelPose(const QuestPose& grip, int hand) {
+ if(grip.flags&QUEST_POSE_HAND)return grip;
  const float angle = 20.6f * 3.14159265358979323846f / 360.f;
  const float s = std::sin(angle), c = std::cos(angle);
  const auto* q = grip.orientation;

@@ -6,6 +6,8 @@
 enum { QUEST_BRIDGE_MAGIC=0x53515231, QUEST_BRIDGE_VERSION=2 };
 enum QuestButtons { QUEST_A=1,QUEST_B=2,QUEST_X=4,QUEST_Y=8,QUEST_THUMBSTICK=16,QUEST_MENU=32 };
 struct QuestPose { float position[3]; float orientation[4]; uint32_t flags; };
+// Private source tag; low bits keep the OpenXR location flags and wire size.
+constexpr uint32_t QUEST_POSE_HAND = 1u << 16;
 // Private Unix datagram from the OpenVR driver to the OpenXR frame thread.
 struct QuestHaptic {
  uint32_t magic,hand;
