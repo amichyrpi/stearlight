@@ -4,7 +4,7 @@ set -eu
 desktop=/opt/stearlight-desktop
 unset LD_LIBRARY_PATH LD_PRELOAD EGL_PLATFORM XDG_DESKTOP_PORTAL_DIR
 export PATH="$desktop/usr/bin:/usr/local/bin:/usr/bin:/bin"
-export XDG_DATA_DIRS="$desktop/usr/share:/usr/share"
+export XDG_DATA_DIRS="/opt/stearlight-browser/usr/share:$desktop/usr/share:/usr/share"
 export XDG_MENU_PREFIX=plasma-
 export XDG_CONFIG_DIRS="$desktop/etc/xdg:/etc/xdg"
 export XDG_CONFIG_HOME="$HOME/.config/stearlight-plasma"

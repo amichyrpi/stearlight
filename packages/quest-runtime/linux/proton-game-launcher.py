@@ -185,6 +185,9 @@ def launch_environment(files, environment):
     env["PATH"] = "/usr/bin:/bin"
     env["LD_LIBRARY_PATH"] = "/usr/lib/aarch64-linux-gnu:/opt/frame-gamescope/lib:" + str(files / "lib/aarch64-linux-gnu")
     env["LD_PRELOAD"] = "/opt/quest/libquest_wine_pe.so:/opt/quest/libquest_socket.so"
+    gamepad = Path("/opt/quest/libquest_gamepad_aarch64.so")
+    if gamepad.is_file() and env.get("STEARLIGHT_STEAM_INPUT", "1") != "0":
+        env["LD_PRELOAD"] += ":" + str(gamepad)
     env["GLIBC_TUNABLES"] = "glibc.pthread.rseq=0"
     env["PROTON_USE_XALIA"] = "0"
     env["PROTON_NO_ESYNC"] = env["PROTON_NO_FSYNC"] = "1"

@@ -32,6 +32,9 @@ public final class QuestActivity extends NativeActivity {
  private BluetoothBridge bluetoothBridge;
  private AudioBridge audioBridge;
  private NetworkBridge networkBridge;
+ private UsbNetworkBridge usbNetworkBridge;
+ native void setUsbNetwork(long handle);
+ native int networkInterfaceIndex(String name);
  private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));batteryStatus=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=batteryStatus==BatteryManager.BATTERY_STATUS_CHARGING||batteryStatus==BatteryManager.BATTERY_STATUS_FULL;batteryPlugged=intent.getIntExtra(BatteryManager.EXTRA_PLUGGED,0);batteryVoltage=intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE,0);batteryTemperature=intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,0);}};
  @Override public void onCreate(Bundle state){
   new File(getStateDirectory(),"dashboard.ready").delete();
@@ -44,6 +47,7 @@ public final class QuestActivity extends NativeActivity {
   if(!missing.isEmpty())requestPermissions(missing.toArray(new String[0]),7);
   workers.scheduleWithFixedDelay(this::writeDeviceState,0,1,TimeUnit.SECONDS);
   networkBridge=new NetworkBridge(this,new File(getStateDirectory()));
+  usbNetworkBridge=new UsbNetworkBridge(this,new File(getStateDirectory()));
   workers.scheduleWithFixedDelay(networkBridge::poll,0,1,TimeUnit.SECONDS);
   bluetoothBridge=new BluetoothBridge(this,new File(getStateDirectory()));
   workers.scheduleWithFixedDelay(bluetoothBridge::poll,0,25,TimeUnit.MILLISECONDS);
@@ -52,8 +56,8 @@ public final class QuestActivity extends NativeActivity {
  @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);requestLinux();}
  private void requestLinux(){if(!closing&&(linux==null||!linux.isAlive())&&starting.compareAndSet(false,true))workers.execute(()->{try{startLinux();}finally{starting.set(false);}});}
  public String getStateDirectory(){File state=new File(getFilesDir(),"state");state.mkdirs();return state.toString();}
- @Override public void onResume(){super.onResume();if(audioBridge!=null)audioBridge.setResumed(true);requestLinux();}
- @Override public void onPause(){if(audioBridge!=null)audioBridge.setResumed(false);super.onPause();}
+ @Override public void onResume(){super.onResume();if(audioBridge!=null)audioBridge.setResumed(true);if(usbNetworkBridge!=null)usbNetworkBridge.resumed(true);requestLinux();}
+ @Override public void onPause(){if(audioBridge!=null)audioBridge.setResumed(false);if(usbNetworkBridge!=null)usbNetworkBridge.resumed(false);super.onPause();}
  public void onXrAudioFocus(boolean focused){runOnUiThread(()->{if(!closing&&audioBridge!=null)audioBridge.setXrFocused(focused);});}
  @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(audioBridge!=null)audioBridge.permissionsChanged();}
  private BootAnimation bootAnimation;
@@ -165,5 +169,5 @@ public final class QuestActivity extends NativeActivity {
  private InputStream rootfsStream()throws IOException {List<InputStream> parts=new ArrayList<>();try(BufferedReader list=new BufferedReader(new InputStreamReader(getAssets().open("rootfs.list"),StandardCharsets.US_ASCII))){String name;while((name=list.readLine())!=null){if(!name.matches("rootfs/part-[0-9]{3}\\.bin"))throw new IOException("Invalid rootfs part name");parts.add(getAssets().open(name));}}catch(IOException error){for(InputStream part:parts)part.close();throw error;}if(parts.isEmpty())throw new IOException("Empty rootfs payload");return new SequenceInputStream(Collections.enumeration(parts));}
  private void removeIncomplete(File path)throws IOException {removeTree(path,new File(getFilesDir(),"rootfs-install"));}
  private void removeTree(File path,File base)throws IOException {String target=path.getAbsolutePath();if(!target.equals(base.getAbsolutePath())&&!target.startsWith(base.getAbsolutePath()+File.separator))throw new IOException("Invalid runtime cleanup path");if(java.nio.file.Files.isSymbolicLink(path.toPath())){java.nio.file.Files.delete(path.toPath());return;}if(path.isDirectory()){File[] entries=path.listFiles();if(entries==null)throw new IOException("Cannot read runtime directory");for(File entry:entries)removeTree(entry,base);}if(path.exists()&&!path.delete())throw new IOException("Cannot remove runtime directory");}
- @Override public void onDestroy(){closing=true;if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);killLinux();workers.shutdownNow();super.onDestroy();}
+ @Override public void onDestroy(){closing=true;if(usbNetworkBridge!=null)usbNetworkBridge.close();if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);killLinux();workers.shutdownNow();super.onDestroy();}
 }

@@ -2,6 +2,13 @@
 set -eu
 launcher=/opt/quest/streaming-client-launcher
 [ -f "$launcher" ] || exit 0
+tools=${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}/tools/vrlink/bin/linuxarm64
+# Repair images staged by older updaters, which restored executable modes
+# only below bin/ and left the VR launch scripts and query tool without
+# executable modes. Valve's files here are executable entry points.
+for entry in "$tools"/*; do
+    [ ! -f "$entry" ] || [ -L "$entry" ] || chmod 755 "$entry"
+done
 for player in /opt/steam/steamrtarm64/streaming_client \
     "${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}/tools/vrlink/bin/linuxarm64/vrlink";do
 [ -f "$player" ] || continue

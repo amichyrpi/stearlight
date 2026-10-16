@@ -138,6 +138,16 @@ def prepare_game_script(command):
         patched = re.sub(r'(?m)^(\s*)(\./[\w.-]+\.bin\.x86(?:_64)?) \$@$', r'\1exec \2 "$@"', text)
         if text != patched:
             path.write_text(patched)
+        # Execute the verified 64-bit payload directly. The shell's uname/
+        # dirname helpers may be native ARM64 binaries under PRoot, and must
+        # not inherit an x86-only input preload.
+        candidates = re.findall(r"\./([\w.-]+\.bin\.x86_64)", text)
+        if path.name == "Celeste" and len(set(candidates)) == 1:
+            binary = path.parent / candidates[0]
+            with binary.open("rb") as source:
+                elf = source.read(20)
+            if elf[:6] == b"\x7fELF\x02\x01" and elf[18:20] == b"\x3e\x00":
+                return binary
     except (OSError, UnicodeError):
         pass
 
@@ -197,6 +207,20 @@ def prepare_celeste_memory(game, enabled=True, runtime=Path("/opt/quest/fna3d"))
         replace(updated)
 
 
+def guest_gamepad(rootfs, library=Path("/opt/quest/libquest_gamepad_x86_64.so")):
+    # FEX's guest environment keeps this x86 library out of native Gamescope
+    # and the ARM64 emulator. Mono's SDL entry points are adapted in-process.
+    if not library.is_file():
+        return []
+    target = rootfs / "usr/lib/x86_64-linux-gnu/libquest_gamepad.so"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists() or target.read_bytes() != library.read_bytes():
+        temporary = target.with_suffix(".so.next")
+        shutil.copyfile(library, temporary)
+        temporary.replace(target)
+    return ["LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libquest_gamepad.so"]
+
+
 def main():
     if len(sys.argv) < 3 or sys.argv[1] not in ("run", "waitforexitandrun"):
         raise ValueError("Unsupported FEX launch command")
@@ -214,12 +238,15 @@ def main():
     data = Path(os.environ.get("STEAM_COMPAT_DATA_PATH", str(Path.home() / ".local/share/stearlight/fex")))
     rootfs = prepare_rootfs(candidates[-1].parent, data / "quest-rootfs")
     config = data / "quest-fex.json"
+    guest = guest_gamepad(rootfs) if os.environ.get("SteamAppId") and os.environ.get("STEARLIGHT_STEAM_INPUT", "1") != "0" else []
     config.write_text(json.dumps({"Config": {}, "ThunksDB": {"GL": 1, "Vulkan": 1}}))
     environment = dict(os.environ)
     # Native glibc needs rseq disabled in PRoot, but soldier's older x86
     # glibc cannot parse that tunable while initializing its allocator.
     for key in ("GLIBC_TUNABLES", "LD_PRELOAD", "LD_LIBRARY_PATH"):
         environment.pop(key, None)
+    if guest:
+        environment["FEX_ENV"] = guest[0]
     environment.update({
         "FEX_PORTABLE": "1", "FEX_ROOTFS": str(rootfs), "FEX_APP_CONFIG": str(config),
         "FEX_THUNKHOSTLIBS": str(tool / "usr/lib/aarch64-linux-gnu/fex-emu/HostThunks"),
@@ -237,7 +264,10 @@ def main():
     command = unwrap(sys.argv[2:])
     if environment.get("SteamAppId") == "504230" and environment.get("STEAM_COMPAT_INSTALL_PATH"):
         prepare_celeste_memory(Path(environment["STEAM_COMPAT_INSTALL_PATH"]), environment.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0")
-    prepare_game_script(command)
+    binary = prepare_game_script(command)
+    if binary:
+        os.chdir(binary.parent)
+        command[0] = str(binary)
     environment["MESA_SHADER_CACHE_MAX_SIZE"] = environment["MESA_GLSL_CACHE_MAX_SIZE"] = environment.get("STEARLIGHT_SHADER_CACHE_MAX_SIZE", "128M")
     environment.setdefault("FNA3D_FORCE_DRIVER", "Vulkan")
     environment.setdefault("SDL_AUDIODRIVER", "pulseaudio")

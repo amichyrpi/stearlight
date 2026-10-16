@@ -50,6 +50,29 @@ def fetch(spec, downloads):
     return target
 
 
+def verify_musl_preload(library, root):
+    """The socket preload is shared by Alpine tools and Valve's glibc clients."""
+    musl = root / "lib/ld-musl-aarch64.so.1"
+    if not musl.is_file():
+        return
+
+    def symbols(path, undefined):
+        output = subprocess.check_output(
+            ["aarch64-linux-gnu-readelf", "--dyn-syms", "--wide", str(path)], text=True)
+        result = set()
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) < 8 or not fields[0].endswith(":"):
+                continue
+            if (fields[6] == "UND") == undefined and (not undefined or fields[4] == "GLOBAL"):
+                result.add(fields[7].split("@")[0])
+        return result
+
+    missing = symbols(library, True) - symbols(musl, False)
+    if missing:
+        raise RuntimeError("Socket preload requires symbols absent from musl: " + ", ".join(sorted(missing)))
+
+
 def stage_glx_dependencies(root, library_dir):
     """Use host X11 headers with the clean rootfs's ARM64 link libraries."""
     pending = ["x11", "x11-xcb", "xext", "xrandr", "xxf86vm", "glproto", "libglvnd",
@@ -201,7 +224,8 @@ def stage_update_helpers(overlay, downloads):
         # Only our loader boundary should run these glibc tools.
         (overlay / "usr/bin" / name).unlink()
     for name in ("steam-os-update.py", "prepare-os-runtime.py", "activate-os-update.py",
-                 "steamdeck-images.pem", "systemui-overlay-bridge.js", "roomview-bridge.js"):
+                 "steamdeck-images.pem", "steamos-dev-images.pem",
+                 "systemui-overlay-bridge.js", "roomview-bridge.js"):
         shutil.copy2(REPO / "packages/quest-runtime/linux" / name, quest / name)
     for name in ["steamos-select-branch", "steamos-update",
                  "steamos-polkit-helpers/steamos-select-branch", "steamos-polkit-helpers/steamos-update"]:
@@ -285,7 +309,16 @@ def main():
         shutil.copytree(desktop, overlay / "opt/stearlight-desktop", dirs_exist_ok=True)
     else:
         parser.error("Provide --frame-desktop-root, or stage Plasma in the clean rootfs first")
-    for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-launcher.sh", "desktop-manager.py",
+    browser = root / "opt/stearlight-browser"
+    if args.frame_desktop_root:
+        run("python3", REPO / "build_files/quest/stage-chromium.py", "--frame", args.frame_desktop_root,
+            "--desktop", overlay / "opt/stearlight-desktop", "--output", overlay / "opt/stearlight-browser",
+            "--downloads", downloads)
+    elif (browser / "usr/lib/chromium/chromium").is_file():
+        shutil.copytree(browser, overlay / "opt/stearlight-browser", dirs_exist_ok=True)
+    else:
+        parser.error("Provide --frame-desktop-root to stage Chromium and its ARM64 dependencies")
+    for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-launcher.sh", "desktop-manager.py", "steam_channels.py", "chromium-launcher.sh",
                  "desktop-ui-bridge.js", "plasma-core-session.sh", "prepare-desktop.sh",
                  "prepare-desktop-ui.py", "prepare-desktop-kio.py", "desktop-shell.sh", "adb-command.py", "desktop-remote.sh", "desktop-fonts.conf"):
         shutil.copyfile(REPO / "packages/quest-runtime/linux" / name, quest / name)
@@ -326,6 +359,7 @@ def main():
     driver = quest / "stearlight-quest"
     (driver / "bin/linuxarm64").mkdir(parents=True, exist_ok=True)
     (driver / "resources").mkdir(exist_ok=True)
+    shutil.copytree(linux / "resources", driver / "resources", dirs_exist_ok=True)
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-Wl,-Bsymbolic", "-std=c++17",
         f"-I{includes}", linux / "quest_wsi.cpp", "-ldl", "-o", quest / "libquest_vulkan.so")
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
@@ -335,8 +369,12 @@ def main():
         run("aarch64-linux-gnu-gcc", "-O2", linux / f"{name}.c", *libs, "-o", quest / name)
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "socket-report.c", "-ldl", "-o", quest / "libquest_socket.so")
+    verify_musl_preload(quest / "libquest_socket.so", root)
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "wine-pe-memory.c", "-ldl", "-o", quest / "libquest_wine_pe.so")
+    for compiler, architecture in (("x86_64-linux-gnu-g++", "x86_64"), ("aarch64-linux-gnu-g++", "aarch64")):
+        run(compiler, "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-Wl,-Bsymbolic-functions", "-std=c++17",
+            f"-I{includes}", linux / "sdl-gamepad.cpp", "-ldl", "-o", quest / f"libquest_gamepad_{architecture}.so")
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
         f"-I{includes}", linux / "video-bridge.cpp", "-ldl", "-pthread",
         "-o", quest / "libquest_video.so")
@@ -353,6 +391,7 @@ def main():
     shutil.copyfile(linux / "gamescope-local-games.lua", gamescope_scripts / "90-quest-local-games.lua")
     shutil.copyfile(linux / "prepare-game-runtime.sh", quest / "prepare-game-runtime.sh")
     shutil.copyfile(linux / "fex-game-launcher.py", quest / "fex-game-launcher.py")
+    shutil.copyfile(linux / "prepare-gamepad-ui.py", quest / "prepare-gamepad-ui.py")
     for name in ("proton-game-launcher.py", "proton-runtime-entry.sh", "audio-namespace-launcher.sh"):
         shutil.copyfile(linux / name, quest / name)
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
@@ -441,6 +480,7 @@ def main():
     source_files.extend(fetch(spec, downloads) for spec in LOCK["audio"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["gaming"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fex_libraries"].values())
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["chromium"].values())
     (assets / "quest-dependencies.json").write_text(json.dumps(LOCK, indent=2) + "\n")
     source_bundle = output.parent / (output.name + "-sources.zip")
     with zipfile.ZipFile(source_bundle, "w", compression=zipfile.ZIP_STORED) as bundle:
@@ -460,7 +500,8 @@ def main():
                 if source.is_file() and "__pycache__" not in source.parts:
                     bundle.write(source, source.relative_to(REPO))
         for name in ["build_files/stage-frame-desktop.py", "post_process/quest/shell.ps1",
-                     "post_process/quest/shell.sh", "packages/quest-runtime/README.md",
+                     "post_process/quest/shell.sh", "post_process/quest/usb-network.ps1",
+                     "packages/quest-runtime/README.md",
                      "system_files/usr/local/libexec/stearlight/frame-steam-ipc",
                      "system_files/usr/local/libexec/stearlight/steamframe-session",
                      "system_files/usr/bin/steamos-select-branch", "system_files/usr/bin/steamos-update",

@@ -18,12 +18,66 @@
   // when its native launcher is selected again from the + menu.
   let desktopFocus = '';
   let checkingFocus = false;
+  let updateStatus;
+  let systemInfoStore, reportedFrameVersion;
+  const stableID = 2147483600, betaID = 2147483601;
+  function synchronizeUpdates(state) {
+    if (!state) return;
+    updateStatus = state;
+    const settings = globalThis.settingsStore?.settings;
+    const client = globalThis.SteamClient;
+    if (!settings || !client?.Settings) return;
+    // A recovery snapshot can lack account-provided beta entries altogether.
+    // These local IDs map only to our public-feed selector, never to Valve IDs.
+    const choices = settings.vecAvailableClientBetas || [];
+    if (!choices.some(x => /deckard steam|steam frame|local/i.test(x.strName) &&
+        x.nBetaID !== stableID && x.nBetaID !== betaID)) {
+      if (!choices.some(x => x.nBetaID === stableID)) settings.vecAvailableClientBetas = [
+        ...choices,
+        { nBetaID: stableID, strName: 'Steam Frame Hotfix' },
+        { nBetaID: betaID, strName: 'Steam Frame Hotfix Preview' },
+      ];
+      settings.nAvailableBetas = settings.vecAvailableClientBetas.length;
+      settings.bChangeBetaEnabled = true;
+      settings.nSelectedBetaID = state.client_channel === 'beta' ? betaID : stableID;
+      settings.bIsInClientBeta = state.client_channel === 'beta';
+      settings.strCurrentBetaName = state.client_channel === 'beta' ? 'Steam Frame Hotfix Preview' : 'Steam Frame Hotfix';
+    }
+    if (!client.Settings.__stearlightChannels) {
+      client.Settings.__stearlightChannels = true;
+      const select = client.Settings.SelectClientBeta.bind(client.Settings);
+      client.Settings.SelectClientBeta = async id => {
+        if (id !== stableID && id !== betaID) return select(id);
+        const result = await call('client-channel', { channel: id === betaID ? 'beta' : 'rel' });
+        if (!result.ok) throw new Error('Cannot change Steam client channel');
+        synchronizeUpdates(result.value);
+        client.User.StartRestart(false);
+      };
+    }
+    if (client.System?.GetSystemInfo && !client.System.__stearlightFrameVersion) {
+      client.System.__stearlightFrameVersion = true;
+      const info = client.System.GetSystemInfo.bind(client.System);
+      client.System.GetSystemInfo = async (...args) => {
+        const result = await info(...args);
+        if (!updateStatus?.frame_version) return result;
+        return { ...result, sOSName: 'Stearlight OS (Steam Frame runtime)',
+          sOSVersionId: updateStatus.frame_version, sOSBuildId: updateStatus.frame_build,
+          sOSCodename: 'holo', sOSVariantId: 'vr' };
+      };
+    }
+    const version = state.frame_build;
+    if (version && systemInfoStore && version !== reportedFrameVersion) {
+      reportedFrameVersion = version;
+      systemInfoStore.UpdateSystemInfo().catch(() => { reportedFrameVersion = undefined; });
+    }
+  }
   setInterval(async () => {
     const overlay = globalThis.SteamClient?.OpenVR?.VROverlay;
     if (!overlay || checkingFocus) return;
     checkingFocus = true;
     try {
       const result = await call('status');
+      if (result.ok) synchronizeUpdates(result.value.updates);
       if (result.ok && result.value.desktop_running && result.value.focus_id &&
           result.value.focus_id !== desktopFocus) {
         desktopFocus = result.value.focus_id;
@@ -51,6 +105,7 @@
         desktop_sessions_available: status.value.desktop_available ? ["plasma"] : [],
         default_desktop_session: "plasma",
       });
+      if (status.value.updates?.frame_version) body.state.os_version = status.value.updates.frame_version;
       const value = api.GetStateHandler.response.fromObject(body);
       native.Body = () => value;
       return native;
@@ -87,11 +142,19 @@
   }
   chunks.push = function (chunk) {
     for (const [id, factory] of Object.entries(chunk[1] || {})) {
-      if (typeof factory !== "function" || !factory.toString().includes("SteamOSManager.SetUserPassword#1")) continue;
+      if (typeof factory !== "function") continue;
+      const text = factory.toString();
+      const desktopAPI = text.includes("SteamOSManager.SetUserPassword#1");
+      const systemInfo = text.includes("Updated Steam Version Info:");
+      if (!desktopAPI && !systemInfo) continue;
       chunk[1][id] = function (module, exports, require) {
         factory(module, exports, require);
         for (const api of Object.values(module.exports || {})) {
-          if (api && typeof api === "object" && api.GetState && api.SetUserPassword && api.SwitchToDesktop) install(api);
+          if (desktopAPI && api && typeof api === "object" && api.GetState && api.SetUserPassword && api.SwitchToDesktop) install(api);
+          if (systemInfo && api && typeof api === "object" && api.UpdateSystemInfo) {
+            systemInfoStore = api;
+            if (updateStatus) synchronizeUpdates(updateStatus);
+          }
         }
       };
     }

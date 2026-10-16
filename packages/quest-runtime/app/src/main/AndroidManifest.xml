@@ -3,8 +3,12 @@
  <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true"/>
  <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
  <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false"/>
+ <uses-feature android:name="oculus.software.handtracking" android:required="false"/>
+ <uses-permission android:name="com.oculus.permission.HAND_TRACKING"/>
  <uses-permission android:name="android.permission.INTERNET"/>
  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+ <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE"/>
+ <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
  <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
@@ -18,6 +22,7 @@
  <application android:label="Stearlight OS" android:extractNativeLibs="true" android:allowBackup="false" android:hasCode="true">
   <meta-data android:name="com.oculus.supportedDevices" android:value="quest2"/>
   <meta-data android:name="com.oculus.vr.focusaware" android:value="true"/>
+  <meta-data android:name="com.oculus.handtracking.version" android:value="V2.0"/>
   <activity android:name=".QuestActivity" android:exported="true" android:screenOrientation="landscape" android:launchMode="singleTask" android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" android:immersive="true" android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|navigation|uiMode|density">
    <meta-data android:name="android.app.lib_name" android:value="stearlight_quest"/>
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/><category android:name="com.oculus.intent.category.VR"/></intent-filter>

@@ -17,6 +17,9 @@ import subprocess
 import time
 import urllib.request
 import urllib.parse
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import steam_channels
 
 RUNTIME = Path('/opt/stearlight-desktop')
 STATE = Path('/home/stearlight/.local/state/stearlight-desktop')
@@ -89,7 +92,7 @@ class Manager:
                 'desktop_running': self.running('desktop') or self.remote, 'ssh_running': self.running('ssh'),
                 'rdp_running': self.running('rdp'), 'ssh_port': 2222, 'rdp_port': 3389,
                 'username': 'stearlight', 'default_session': self.settings['default_session'],
-                'focus_id': self.focus_id, 'error': self.error}
+                'focus_id': self.focus_id, 'error': self.error, 'updates': steam_channels.status()}
 
     def running(self, name):
         if name == 'ssh':
@@ -391,6 +394,9 @@ param={STATE}/xorg.%s.log
     def call(self, operation, args):
         if operation == 'status':
             return self.status()
+        if operation == 'client-channel':
+            steam_channels.select_client(args['channel'])
+            return steam_channels.status()
         if operation == 'password':
             self.set_password(args.get('current_password', ''), args.get('new_password', ''))
         elif operation == 'developer':

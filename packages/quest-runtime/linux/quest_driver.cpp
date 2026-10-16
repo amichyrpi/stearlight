@@ -2,6 +2,8 @@
 #include <openvr_driver.h>
 #include "quest_bridge.h"
 #include "controller_pose.h"
+#include "controller_input.h"
+#include "gamepad_state.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -83,25 +85,43 @@ public:
 };
 class Controller final:public Device {
  int hand;std::array<vr::VRInputComponentHandle_t,7> clicks{};vr::VRInputComponentHandle_t trigger=0,squeeze=0,x=0,y=0,touch=0,haptic=0;
- bool haveInputs=false,gripped=false;vr::VRInputComponentHandle_t gripClick=0;std::array<bool,8> previousClicks{};std::array<float,4> previousScalars{};
+ bool haveInputs=false,gripped=false,handMode=false;vr::VRInputComponentHandle_t gripClick=0,bumper=0,menu=0;bool previousMenu=false;std::array<bool,8> previousClicks{};std::array<float,4> previousScalars{};
 public:
  explicit Controller(int value):hand(value){}
  const char* serial(){return hand?"STEARLIGHT-QUEST2-RIGHT":"STEARLIGHT-QUEST2-LEFT";}
  bool acceptsHaptic(const vr::VREvent_HapticVibration_t& event)const{return haptic&&event.componentHandle==haptic&&event.containerHandle==properties;}
  vr::EVRInitError Activate(uint32_t id)override{
-  haveInputs=false;gripped=false;
+  haveInputs=false;gripped=false;previousMenu=false;handMode=false;
   base(id,serial(),hand?"Oculus Quest2 (Right Controller)":"Oculus Quest2 (Left Controller)");auto* p=vr::VRProperties();p->SetStringProperty(properties,vr::Prop_RenderModelName_String,hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"frame_controller");p->SetStringProperty(properties,vr::Prop_InputProfilePath_String,"{frame_controller}/input/frame_controller_profile.json");p->SetStringProperty(properties,vr::Prop_ControllerType_String,"frame_controller");p->SetInt32Property(properties,vr::Prop_ControllerRoleHint_Int32,hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);p->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,false);
+  // SteamVR 2.18's Frame profile gates its gamepad mode on property 2117.
+  // This property is present in Valve's runtime, ahead of our public SDK.
+  p->SetBoolProperty(properties,static_cast<vr::ETrackedDeviceProperty>(2117),true);
+  vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/bumper/click",&bumper);
+  vr::VRDriverInput()->CreateBooleanComponent(properties,hand?"/input/menu/click":"/input/view/click",&menu);
   const char* paths[]={"/input/a/click","/input/b/click","/input/x/click","/input/y/click","/input/thumbstick/click","/input/system/click","/input/trigger/click"};for(int i=0;i<7;i++)vr::VRDriverInput()->CreateBooleanComponent(properties,paths[i],&clicks[i]);vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/grip/click",&gripClick);vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/trigger/touch",&touch);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/trigger/value",&trigger,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/grip/value",&squeeze,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/x",&x,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/y",&y,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateHapticComponent(properties,"/output/haptic",&haptic);return vr::VRInitError_None;
  }
  vr::DriverPose_t GetPose()override{return trackedPose(quest::controllerModelPose(state.grip[hand],hand));}
  void frame()override{
   if(index==vr::k_unTrackedDeviceIndexInvalid)return;
+  bool nextHand=state.grip[hand].flags?(state.grip[hand].flags&QUEST_POSE_HAND)!=0:handMode;
+  if(nextHand!=handMode){
+   vr::VRProperties()->SetStringProperty(properties,vr::Prop_RenderModelName_String,nextHand?"{stearlight-quest}quest_hand_pointer":hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");
+   vr::VRProperties()->SetBoolProperty(properties,static_cast<vr::ETrackedDeviceProperty>(2117),!nextHand);
+   handMode=nextHand;
+  }
   vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,GetPose(),sizeof(vr::DriverPose_t));
-  std::array<bool,8> buttons{};for(int i=0;i<6;i++)buttons[i]=(state.buttons[hand]&(1u<<i))!=0;
-  buttons[6]=state.trigger[hand]>.75f;buttons[7]=state.touches[hand]!=0;
+  const auto input=quest::controllerInput(state,hand),left=quest::controllerInput(state,0);
+  uint32_t mapped=quest::frameButtons(input,left,hand);
+  std::array<bool,8> buttons{};for(int i=0;i<6;i++)buttons[i]=(mapped&(1u<<i))!=0;
+  buttons[6]=input.trigger>.75f;buttons[7]=input.touches!=0;
   for(int i=0;i<8;i++)if(!haveInputs||buttons[i]!=previousClicks[i])vr::VRDriverInput()->UpdateBooleanComponent(i<7?clicks[i]:touch,buttons[i],0);
-  bool nextGrip=state.squeeze[hand]>(gripped?.7f:.8f);if(!haveInputs||nextGrip!=gripped)vr::VRDriverInput()->UpdateBooleanComponent(gripClick,nextGrip,0);gripped=nextGrip;
-  std::array<float,4> scalars={state.trigger[hand],state.squeeze[hand],state.thumbstick[hand][0],state.thumbstick[hand][1]};
+  bool nextGrip=input.squeeze>(gripped?.7f:.8f);if(!haveInputs||nextGrip!=gripped){vr::VRDriverInput()->UpdateBooleanComponent(gripClick,nextGrip,0);vr::VRDriverInput()->UpdateBooleanComponent(bumper,nextGrip,0);}gripped=nextGrip;
+  // Touch has no separate View/Menu keys. Grip + stick click supplies them
+  // without taking over the left system button or the existing VR paths.
+  bool nextMenu=gripped&&(input.buttons&QUEST_THUMBSTICK);
+  if(!haveInputs||nextMenu!=previousMenu)vr::VRDriverInput()->UpdateBooleanComponent(menu,nextMenu,0);
+  previousMenu=nextMenu;
+  std::array<float,4> scalars={input.trigger,input.squeeze,input.x,input.y};
   vr::VRInputComponentHandle_t handles[]={trigger,squeeze,x,y};
   // Compare with the last value actually sent. Ignore sub-per-mille sensor
   // noise without losing slow accumulated motion or exact release/endpoints.
@@ -115,16 +135,30 @@ public:
 class Provider final:public vr::IServerTrackedDeviceProvider {
  Headset head;Controller left{0},right{1};
  int hapticSocket=-1;
+ QuestGamepadState* gamepad=nullptr;
+ bool leftGamepad=false,rightGamepad=false;
+ std::chrono::steady_clock::time_point gamepadModeRead{};
  uint32_t measuredSequence=0,measuredCalls=0,measuredSamples=0;
  bool havePublished=false;uint32_t publishedSequence=0;
  std::chrono::steady_clock::time_point measuredSince=std::chrono::steady_clock::now();
 public:
  vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;if(!vr::VRServerDriverHost()->TrackedDeviceAdded("STEARLIGHT-QUEST2-HMD",vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
- void Cleanup()override{head.Deactivate();left.Deactivate();right.Deactivate();if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
+ void Cleanup()override{head.Deactivate();left.Deactivate();right.Deactivate();if(gamepad){quest::publishGamepad(gamepad,QuestGamepadState{});munmap(gamepad,sizeof(*gamepad));gamepad=nullptr;}if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
  const char* const* GetInterfaceVersions()override{return vr::k_InterfaceVersions;}
  void RunFrame()override{
   ++measuredCalls;
   if(readTracking()){
+   if(!gamepad){
+    int fd=open("/run/stearlight/quest/gamepad",O_RDWR|O_CREAT|O_CLOEXEC|O_NOFOLLOW,0600);
+    if(fd>=0){if(ftruncate(fd,sizeof(QuestGamepadState))==0){void* mapping=mmap(nullptr,sizeof(QuestGamepadState),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);if(mapping!=MAP_FAILED){gamepad=static_cast<QuestGamepadState*>(mapping);*gamepad=QuestGamepadState{};}}close(fd);}
+   }
+   auto now=std::chrono::steady_clock::now();
+   if(now-gamepadModeRead>=std::chrono::milliseconds(100)){
+    vr::EVRSettingsError error;
+    leftGamepad=vr::VRSettings()->GetBool("stearlight_quest","gamepad_left",&error)&&error==vr::VRSettingsError_None;
+    rightGamepad=vr::VRSettings()->GetBool("stearlight_quest","gamepad_right",&error)&&error==vr::VRSettingsError_None;
+    gamepadModeRead=now;
+   }
    if(state.sequence!=measuredSequence){measuredSequence=state.sequence;++measuredSamples;}
    // OpenXR writes at the headset rate. Re-reading a sample must not repeat
    // SteamVR property/input work, but haptics below are polled on every call.
@@ -133,7 +167,9 @@ public:
     // so Frame's renderer does not wait for an unavailable Linux display IRQ.
     if(state.session_visible&&state.predicted_monotonic_ns&&state.refresh_hz>0)
      vr::VRServerDriverHost()->VsyncEvent(0);
-    head.frame();left.frame();right.frame();publishedSequence=state.sequence;havePublished=true;
+    head.frame();left.frame();right.frame();
+    if(gamepad)quest::publishGamepad(gamepad,quest::gamepadState(state,leftGamepad,rightGamepad,std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count()));
+    publishedSequence=state.sequence;havePublished=true;
    }
   }
   auto measuredNow=std::chrono::steady_clock::now();double measuredSeconds=std::chrono::duration<double>(measuredNow-measuredSince).count();

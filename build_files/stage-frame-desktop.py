@@ -29,7 +29,7 @@ usr/share/plasma usr/share/kpackage usr/share/kservices6 usr/share/kservicetypes
 usr/share/kf6 usr/share/kio usr/share/knotifications6 usr/share/kconf_update
 usr/share/konsole usr/share/dolphin usr/share/kwin usr/share/ksmserver
 usr/share/color-schemes usr/share/icons/breeze usr/share/icons/breeze-dark
-usr/share/icons/hicolor usr/share/wallpapers/Next usr/share/steamos
+usr/share/icons/hicolor usr/share/wallpapers usr/share/steamos
 usr/share/icons/breeze_cursors usr/share/icons/Adwaita usr/share/icons/default
 usr/share/Qt6 usr/share/X11/xkb usr/share/xrdp usr/share/wayland-sessions
 usr/share/xsessions usr/share/dbus-1/services usr/share/kglobalaccel

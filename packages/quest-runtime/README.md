@@ -36,6 +36,27 @@ Steam's browser ownership checks and shared GPU textures.
 
 Steam's native sign-in panel, separate left dock, bottom dock, and Touch lasers
 are supplied by Valve's runtime.
+The Touch pair advertises SteamVR's Frame gamepad capability. Select gamepad
+input on a game window. Local SDL2 games receive a virtual gamepad inside the
+game process; the Wine adapter also supplies it to SDL2-based Wine input.
+This local fallback uses the mapping below; streamed games use Steam Input's
+configuration. A/B stay
+on the right Touch controller, X/Y on the left; both sticks and triggers keep
+their normal gamepad positions. Grips supply LB/RB. Grip + stick click supplies
+View on the left and Menu on the right. Touch has no physical D-pad; streamed
+games can map a stick to it in Steam Input. Original per-hand VR
+input paths remain available. Losing focus or a controller releases its inputs.
+The local adapter adds no background process and needs no kernel input-device
+permission. SDL3 and applications that bypass SDL are not covered by this fallback.
+Enable Hand Tracking in Horizon settings and set the Touch controllers down to
+use hands in Steam's dashboard. Quest supplies articulated hand meshes and aim
+poses; index-thumb pinch selects, and holding a pinch drags Steam's controls.
+The non-dominant hand's menu gesture toggles the dashboard when Horizon supplies
+that event. Horizon keeps its system gestures. Tracking or focus loss releases
+pinch input, and a hand must open before clicking again. Picking up Touch
+controllers restores their models, buttons, sticks and gamepad input. Hands do
+not synthesize gamepad buttons or sticks; game-specific skeletal hand input is
+not forwarded. No hand-tracking history is recorded.
 The streaming player uses the matching Mesa 26.1.6 EGL vendor with a
 surfaceless display. EGL/Vulkan pixel sharing is checked on the Quest;
 the older rootfs EGL driver produces black shared images. Its V4L2 decoder
@@ -153,25 +174,33 @@ Steam's CEF owner query reads those socket inodes and the actual process
 descriptors directly, avoiding repeated shell forks under PRoot. Other `lsof`
 queries retain the original GNU implementation.
 
-Steam's native **Settings > System > System Update Channel** selector offers
-Stable and Beta. Stable selects Valve's ARM64 `steamdeck_stable` client feed.
-Beta uses the Frame Beta branch supplied by the installed Valve runtime,
-or `publicbeta` on runtimes without a Frame branch. Quit Stearlight from the Quest menu and
-reopen it after changing the channel. A channel change forces one native
+Steam's native client channel menu offers a Stable and Beta choice even when
+the recovery client's account catalog is empty. These appear as Frame Hotfix
+and Frame Hotfix Preview in Valve's combined channel controls. Stable selects
+Valve's ARM64 `steamdeck_stable` feed; Beta selects the moving `publicbeta`
+feed, rather than a recovery snapshot. Selecting one restarts Steam.
+A channel change forces one native
 update check, including when returning to an older Stable build. The choice
 persists across launches; the client updater downloads and installs its own
 packages. Startup and the update watcher restore the Quest browser and
 streaming adapters after Valve replaces those files.
 
-The same selector chooses Valve's Stable or Beta ARM64 Frame OS image feed.
+The OS channel separately chooses Valve's Stable or Beta ARM64 Frame image feed.
 Steam's OS updater verifies the RAUC signature against Valve's pinned signing
 certificate and verifies every downloaded chunk and the complete root image.
+The Beta channel additionally trusts Valve's pinned development certificate,
+shipped in its authenticated Frame image; Stable uses only the production key.
 It extracts SteamVR into a staging directory, reapplies the Quest adapters,
 and activates the runtime on the next launch. The previous runtime is restored
 if the new dashboard fails to start. APK upgrades preserve an installed OS
-runtime update. An initial OS download needs at least 12 GiB of free storage;
+runtime update. Empty image extents remain sparse. The required free space is
+calculated from the selected image's data plus 2 GiB for staging and recovery;
 interrupted downloads resume. Stable and Beta may publish the same OS image,
 and the OS feed may lag SteamVR's separately distributed Beta releases.
+The October 15 image (0.5.6 Beta, build `20261015.6141207`) has completed this
+update path on Quest, and Steam's native client and OS update checks succeed.
+The version page reports the confirmed installed Frame userspace runtime,
+including its build ID. It does not report an available download as installed.
 The updater does not flash Quest partitions or update Android firmware.
 
 Local x86 Linux games use Valve's FEX tool and the installed Steam Linux
@@ -223,7 +252,11 @@ temperature, and time to full charge when available. Changes are published over
 D-Bus once per second; Android continues to manage charging and low-battery
 shutdown. Unsupported battery-health and remaining-time estimates stay unknown.
 
-Passthrough uses a real OpenXR compositor layer. Wi-Fi, headset battery,
+Passthrough uses a real OpenXR compositor layer. Native room-view style,
+monochrome hue, edge color and strength settings are forwarded to that layer.
+Quest 2's cameras remain monochrome; its compositor's edge and tint effects
+approximate the Frame controls without exposing raw camera images to Linux.
+Wi-Fi, headset battery,
 charging, and Bluetooth availability come from Android. The BlueZ bridge
 exposes real Classic and connectable BLE discoveries and remembered bonds in
 Steam's Bluetooth Settings. Pairing, cancellation, forgetting, and profile
@@ -255,9 +288,18 @@ Touch battery levels are unknown and are not invented.
 The bottom dock's **+ > Desktop** action opens Valve's KDE Plasma workspace in a
 headset window. **Return to Gaming Mode** on the desktop closes it and restores
 Steam. The workspace includes Dolphin, Konsole, System Settings, Discover, VLC,
-KDE utilities, and Valve's Vapor theme, taken from the Frame image. Its Chromium
-entry is Valve's browser-install shortcut. Tools requiring a full system service
-session are omitted. Flatpak installation, including Chromium's install shortcut,
+KDE utilities, Valve's Vapor theme, and the Frame wallpaper catalog.
+Chromium is bundled separately from pinned Debian ARM64 packages, with private
+font and NSS libraries. It uses software rendering to avoid another GPU service.
+PRoot cannot supply Chromium's Linux namespace sandbox; the surrounding Android
+app sandbox still applies. Chromium retains separate renderer processes.
+Headset browsing disables per-site renderer isolation to fit alongside SteamVR
+within Android's unchanged process cap. Remote Desktop retains site isolation.
+The browser uses the native address-bar popup and avoids the unavailable KDE
+notification service; speculative renderers, the page back/forward cache, and
+on-device AI model execution are disabled. Large pages and multiple simultaneous
+apps remain resource limited.
+Tools requiring a full system service session are omitted. Flatpak installation
 is currently blocked by Horizon OS's restricted Linux `/proc` access.
 A nested KWin compositor keeps windows and menus inside
 the headset panel. The desktop service owns its application processes directly
@@ -265,6 +307,31 @@ to leave room within Android's unchanged child-process budget.
 Radio, network, and battery bridging share the runtime monitor, and headset KDE reuses the
 app's private D-Bus. A code-verified KIO adapter releases idle file workers after
 five seconds instead of retaining them for three minutes; active jobs are unchanged.
+
+Loading can request a short OpenXR CPU boost, limited to 15 seconds per 75
+seconds. Sustained rendering retains the existing performance levels; Horizon
+controls clocks, thermal limits and whether a boost is granted. This does not
+enable unsupported Quest 3 performance features on Quest 2 or raise Android's
+child-process limit.
+
+The experimental USB transport requests Horizon's consent-based NCM network
+while the app is foreground and a PC cable is connected. Horizon must support
+that API and the user must approve its system dialog. Linux receives the actual
+IPv4 and IPv6 link-local interfaces. Sockets addressed to the USB subnet or
+scoped IPv6 link are bound to that Android network; Wi-Fi remains the internet
+connection. Socket bindings refresh after cable reconnection. If Horizon drops
+an established USB network, the app renews its request after a short recovery
+interval; unavailable requests retain their retry delay.
+On Windows, run `post_process/quest/usb-network.ps1 -Adb /path/to/adb.exe`
+from an Administrator PowerShell after opening Stearlight and approving the
+USB-network prompt. It assigns a compatible IPv4 address only to the USB NCM
+adapter, without a default gateway or DNS change. Use `-WhatIf` to preview it
+or `-Undo` to remove the address and restore the adapter's original DHCP state.
+Direct PC-to-Quest streaming has passed stereo video and audio playback, with
+the host's USB cable indicator visible and both VR endpoints reporting the USB
+addresses as their primary link. Wi-Fi remains available for internet traffic.
+`usb-network.json` in the
+private state directory records connection status and negotiated bandwidth.
 
 Enable **Settings > System > Developer Mode**, then use **Set User Password**
 in Developer settings to enable authenticated remote access while Stearlight
@@ -316,7 +383,8 @@ also writes an adjacent dependency source archive; keep it with the APK.
 Plasma is extracted from the original ARM64 Frame OS mount, together with its
 matching Qt/KDE libraries, themes and licenses. The staging manifest records
 each file's checksum. If the clean rootfs already contains a staged
-`/opt/stearlight-desktop`, `--frame-desktop-root` can be omitted.
+`/opt/stearlight-desktop` and `/opt/stearlight-browser`, `--frame-desktop-root`
+can be omitted.
 
 The Linux build host also needs X11/OpenGL development headers for Zink's
 GLX loader. On Ubuntu 24.04:

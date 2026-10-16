@@ -22,10 +22,32 @@ final class NetworkBridge {
  private static String encoded(String text){return Base64.encodeToString(text.getBytes(StandardCharsets.UTF_8),Base64.NO_WRAP);}
  private static String ssid(WifiInfo info){String name=info==null?null:info.getSSID();if(name==null||name.equals(WifiManager.UNKNOWN_SSID))return "";return name.startsWith("\"")&&name.endsWith("\"")?name.substring(1,name.length()-1):name;}
  private static int security(String capabilities){return capabilities.contains("PSK")?392:capabilities.contains("EAP")?648:0;}
+ private void publishInterfaces(ConnectivityManager cm){
+  try{
+   // Android blocks the guest's route-netlink dump. Publish the real link
+   // properties so libc clients can enumerate Wi-Fi and scoped USB addresses.
+   StringBuilder interfaces=new StringBuilder();
+   for(Network candidate:cm.getAllNetworks()){
+    LinkProperties properties=cm.getLinkProperties(candidate);if(properties==null||properties.getInterfaceName()==null)continue;
+    int index=activity.networkInterfaceIndex(properties.getInterfaceName());if(index<=0)continue;
+    for(LinkAddress address:properties.getLinkAddresses()){
+     String host=address.getAddress().getHostAddress().split("%",2)[0];
+     interfaces.append(properties.getInterfaceName()).append(' ').append(index).append(' ')
+      .append(address.getAddress() instanceof java.net.Inet6Address?6:4).append(' ').append(address.getPrefixLength()).append(' ').append(host).append('\n');
+    }
+   }
+   int loopback=activity.networkInterfaceIndex("lo");
+   if(loopback>0){interfaces.append("lo ").append(loopback).append(" 4 8 127.0.0.1\nlo ").append(loopback).append(" 6 128 ::1\n");}
+   File interfacesNext=new File(directory,"network-interfaces.tsv.next");
+   try(FileOutputStream out=new FileOutputStream(interfacesNext)){out.write(interfaces.toString().getBytes(StandardCharsets.US_ASCII));}
+   if(!interfacesNext.renameTo(new File(directory,"network-interfaces.tsv")))throw new IOException("Cannot publish network interfaces");
+  }catch(Exception error){Log.w("StearlightNetwork","Interface state update failed",error);}
+ }
  void poll(){
   try{
    WifiManager wifi=(WifiManager)activity.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
    ConnectivityManager cm=(ConnectivityManager)activity.getSystemService(Context.CONNECTIVITY_SERVICE);
+   publishInterfaces(cm);
    Network network=cm.getActiveNetwork();NetworkCapabilities caps=cm.getNetworkCapabilities(network);
    boolean connected=caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI);
    boolean validated=connected&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
