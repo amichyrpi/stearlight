@@ -59,7 +59,7 @@ It includes:
 
 ## Known-issues
 
-- [ ] Blue dots appearing in the right eye when the headset is in use.
+- [ ] Overall performance is really slow due to the emulation system.
 
 ## Performance
 
@@ -79,25 +79,23 @@ project, we have added patches for standalone gaming, but they are not perfect,
 and some games still don't run. If you want to run a game and you have patched
 the project for your game, your changes will be merged.
 
-### Next update
+## Build the Quest APK
 
-- [ ] Controller support via Bluetooth
+The **Quest APK** workflow builds the complete standalone application for
+pull requests and pushes to `main`. Download the `stearlight-quest` artifact
+from the workflow run to test a PR.
 
-## Build for VM
+Successful builds on the default branch publish `stearlight-quest.apk`,
+checksums and dependency sources to the [Continuous build](https://github.com/amichyrpi/stearlight/releases/tag/continuous).
+Sideload the APK and open **Stearlight OS** from the Quest app library.
+The APK includes its Linux rootfs, SteamVR, KDE, drivers and adapters.
 
-On Linux, install Docker/Buildx, Python 3, pax-utils, btrfs-progs, zstd,
-e2fsprogs and qemu-utils:
-
-```sh
-git submodule update --init --recursive
-bash build_files/check.sh
-sudo bash build_files/build-image.sh dist
-```
-
-`just --list` shows check, build, Windows runtime, package and launch recipes.
-The Windows runtime needs MSYS2 UCRT64; its dependencies are in the workflow.
-Windows packaging requires `7z` on `PATH`. Source payloads are pinned in
-`packages/sources.lock.json`; outputs go in `dist/`.
+See the [Quest build guide](packages/quest-runtime/README.md#building-the-apk)
+for local build commands and continuous signing setup. The workflow uses
+the pinned public Frame recovery and builds from repository sources; it
+does not require files from a developer's PC or a signed-in Steam account.
+VM build tools remain archived in the repository and are not built or
+published by CI.
 
 ## Contribution
 

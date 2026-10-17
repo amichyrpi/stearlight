@@ -55,4 +55,15 @@ with tempfile.TemporaryDirectory() as directory:
     except ValueError:
         pass
 
-print("Recovery checksum, atomic replacement and partition bounds passed.")
+    # A zero tail must retain its logical length when written as a sparse file.
+    struct.pack_into("<QQ", disk, 1024 + 32, 8, 15)
+    disk.extend(bytes(9 * 1024 * 1024))
+    source.write_bytes(bz2.compress(disk))
+    metadata['recovery']['sha256'] = hashlib.sha256(source.read_bytes()).hexdigest()
+    lock.write_text(json.dumps(metadata))
+    partial.unlink()
+    recovery.fetch(lock, destination)
+    assert destination.stat().st_size == len(disk)
+    assert destination.read_bytes() == disk
+
+print("Recovery checksum, sparse writes, atomic replacement and partition bounds passed.")

@@ -47,10 +47,17 @@ def fetch(lock_path, destination):
                 # Bound decompressed chunks so a corrupt stream cannot exhaust RAM.
                 pending = chunk
                 while True:
-                    out.write(decoder.decompress(pending, max_length=4 * 1024 * 1024))
+                    block = decoder.decompress(pending, max_length=4 * 1024 * 1024)
+                    # Recovery disks contain large unused zero ranges. Keep
+                    # those sparse so hosted runners have room for the build.
+                    if block and block.count(0) == len(block):
+                        out.seek(len(block), os.SEEK_CUR)
+                    else:
+                        out.write(block)
                     pending = b""
                     if decoder.eof or decoder.needs_input:
                         break
+            out.truncate()
         if digest.hexdigest() != recovery["sha256"] or not decoder.eof or decoder.unused_data:
             raise ValueError("Recovery checksum or compressed stream validation failed")
         root_partition(temporary)
