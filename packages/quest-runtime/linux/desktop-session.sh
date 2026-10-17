@@ -4,7 +4,7 @@ set -eu
 desktop=/opt/stearlight-desktop
 unset LD_LIBRARY_PATH LD_PRELOAD EGL_PLATFORM XDG_DESKTOP_PORTAL_DIR
 export PATH="$desktop/usr/bin:/usr/local/bin:/usr/bin:/bin"
-export XDG_DATA_DIRS="/opt/stearlight-browser/usr/share:$desktop/usr/share:/usr/share"
+export XDG_DATA_DIRS="$HOME/.local/share/flatpak/exports/share:$HOME/.local/share:/opt/stearlight-browser/usr/share:$desktop/usr/share:/usr/share"
 export XDG_MENU_PREFIX=plasma-
 export XDG_CONFIG_DIRS="$desktop/etc/xdg:/etc/xdg"
 export XDG_CONFIG_HOME="$HOME/.config/stearlight-plasma"
@@ -19,11 +19,13 @@ export QT_XCB_NO_MITSHM=1
 export QT_FORCE_STDERR_LOGGING=1
 export FONTCONFIG_PATH="$desktop/etc/fonts"
 export FONTCONFIG_FILE=/opt/quest/desktop-fonts.conf
-export LOCPATH="$desktop/usr/lib/locale" LANG=C.UTF-8 LC_ALL=C.UTF-8
+export LOCPATH="$desktop/usr/lib/locale"
+eval "$(/usr/bin/python3 /opt/quest/desktop-defaults.py locale)"
 export XCURSOR_PATH="$desktop/usr/share/icons:/usr/share/icons"
 export XCURSOR_THEME=breeze_cursors
 export GSETTINGS_SCHEMA_DIR="$desktop/usr/share/glib-2.0/schemas"
 export VLC_PLUGIN_PATH="$desktop/usr/lib/vlc/plugins"
+export SPA_PLUGIN_DIR="$desktop/usr/lib/spa-0.2"
 export KDE_FULL_SESSION=true KDE_SESSION_VERSION=6
 export XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE XDG_SESSION_TYPE=x11
 export KDE_SKIP_SYSTEMD_BOOT=1
@@ -129,6 +131,7 @@ for section in list(config.sections()):
 with path.open('w') as stream:
     config.write(stream, space_around_delimiters=False)
 PY
+/usr/bin/python3 /opt/quest/desktop-defaults.py
 # The minimal session does not run the full login autostart that normally
 # initializes KDE's application database.
 "$desktop/usr/bin/kbuildsycoca6" --noincremental
@@ -158,7 +161,7 @@ if [ "${1:-remote}" = headset ];then
   XDG_CONFIG_HOME XDG_RUNTIME_DIR WAYLAND_DISPLAY XDG_SESSION_TYPE \
   XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP QT_QPA_PLATFORM QT_PLUGIN_PATH \
   QML_IMPORT_PATH QML2_IMPORT_PATH QT_QUICK_BACKEND QT_XCB_NO_MITSHM \
-  FONTCONFIG_PATH FONTCONFIG_FILE LANG LC_ALL VLC_PLUGIN_PATH STEARLIGHT_DESKTOP_INSTANCE
+  FONTCONFIG_PATH FONTCONFIG_FILE LANG LC_ALL LANGUAGE VLC_PLUGIN_PATH SPA_PLUGIN_DIR STEARLIGHT_DESKTOP_INSTANCE
  exec "$desktop/usr/bin/kwin_wayland" --socket wayland-0 \
   --wayland-display "$parent_wayland" --width 1280 --height 800 --no-lockscreen \
   --xwayland --exit-with-session /opt/quest/plasma-core-session.sh

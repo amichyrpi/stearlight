@@ -81,7 +81,6 @@ the project for your game, your changes will be merged.
 
 ### Next update
 
-- [ ] Finish desktop mode
 - [ ] Controller support via Bluetooth
 
 ## Build for VM

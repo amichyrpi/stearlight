@@ -301,6 +301,10 @@ def main():
                 if not m.name.startswith(".")], filter="data")
     quest = overlay / "opt/quest"
     quest.mkdir(parents=True, exist_ok=True)
+    cli = quest / 'desktop-cli'
+    cli.mkdir(exist_ok=True)
+    for spec in LOCK['desktop_cli'].values():
+        shutil.copyfile(fetch(spec, downloads), cli / spec['url'].rsplit('/', 1)[1])
     desktop = root / "opt/stearlight-desktop"
     if args.frame_desktop_root:
         run(sys.executable, REPO / "build_files/stage-frame-desktop.py",
@@ -320,7 +324,8 @@ def main():
         parser.error("Provide --frame-desktop-root to stage Chromium and its ARM64 dependencies")
     for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-launcher.sh", "desktop-manager.py", "steam_channels.py", "chromium-launcher.sh",
                  "desktop-ui-bridge.js", "plasma-core-session.sh", "prepare-desktop.sh",
-                 "prepare-desktop-ui.py", "prepare-desktop-kio.py", "desktop-shell.sh", "adb-command.py", "desktop-remote.sh", "desktop-fonts.conf"):
+                 "prepare-desktop-ui.py", "prepare-desktop-kio.py", "desktop-shell.sh", "adb-command.py", "desktop-remote.sh", "desktop-fonts.conf",
+                 "flatpak-launcher.py", "prepare-flatpak.py", "flathub.flatpakrepo", "prepare-desktop-cli.sh", "desktop-defaults.py", "desktop-device-settings.sh"):
         shutil.copyfile(REPO / "packages/quest-runtime/linux" / name, quest / name)
         (quest / name).chmod(0o755)
     pam_headers = work / "desktop-pam-headers"
@@ -481,6 +486,7 @@ def main():
     source_files.extend(fetch(spec, downloads) for spec in LOCK["gaming"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fex_libraries"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["chromium"].values())
+    source_files.extend(fetch(spec, downloads) for spec in LOCK['desktop_cli'].values())
     (assets / "quest-dependencies.json").write_text(json.dumps(LOCK, indent=2) + "\n")
     source_bundle = output.parent / (output.name + "-sources.zip")
     with zipfile.ZipFile(source_bundle, "w", compression=zipfile.ZIP_STORED) as bundle:

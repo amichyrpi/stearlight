@@ -3,6 +3,9 @@ set -eu
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 desktop=/opt/stearlight-desktop
 [ -x "$desktop/usr/bin/plasmashell" ] || exit 0
+if [ -f /opt/quest/prepare-desktop-cli.sh ];then
+ /bin/bash /opt/quest/prepare-desktop-cli.sh
+fi
 # Remove indexing plugins left by an older desktop payload. This workspace
 # has no Baloo daemon; KIO must not advertise its unavailable protocols.
 for plugin in kio/tags.so kio/timeline.so kio/baloosearch.so \
@@ -37,6 +40,23 @@ mkdir -p /usr/lib /usr/local/bin
 ln -sf /opt/quest/desktop-manager.py /usr/local/bin/stearlight-desktop
 ln -sf /opt/quest/desktop-launcher.sh /usr/bin/steamos-nested-desktop
 mkdir -p /usr/share/applications
+for setting in headset wifi bluetooth;do
+ case "$setting" in
+  headset) name='Headset Settings';icon=preferences-system;;
+  wifi) name='Wi-Fi Connections';icon=network-wireless;;
+  bluetooth) name='Bluetooth Devices';icon=preferences-system-bluetooth;;
+ esac
+ cat >"$desktop/usr/share/applications/stearlight-$setting.desktop" <<ENTRY
+[Desktop Entry]
+Type=Application
+Name=$name
+Comment=Configure the Quest hardware in Horizon OS
+Exec=/bin/bash /opt/quest/desktop-device-settings.sh $setting
+Icon=$icon
+Terminal=false
+Categories=Settings;HardwareSettings;
+ENTRY
+done
 if [ -f "$desktop/usr/share/applications/deckard-nested-desktop.desktop" ];then
  ln -sf "$desktop/usr/share/applications/deckard-nested-desktop.desktop" /usr/share/applications/deckard-nested-desktop.desktop
 fi
@@ -52,6 +72,17 @@ for command in plasma_session plasmashell kwin_x11 kwin_wayland kwin_wayland_wra
   ln -s "$desktop/usr/bin/$command" "/usr/bin/$command"
  fi
 done
+for command in gpg gpgv gpgconf gpg-agent gpg-connect-agent gpgsm dirmngr pinentry;do
+ if [ -x "$desktop/usr/bin/$command" ] && [ ! -e "/usr/bin/$command" ];then
+  ln -s "$desktop/usr/bin/$command" "/usr/bin/$command"
+ fi
+done
+if [ -d "$desktop/usr/lib/gnupg" ] && [ ! -e /usr/lib/gnupg ];then
+ ln -s "$desktop/usr/lib/gnupg" /usr/lib/gnupg
+fi
+if [ -f /opt/quest/prepare-flatpak.py ] && [ -x /usr/bin/gpg ];then
+ /usr/bin/python3 /opt/quest/prepare-flatpak.py
+fi
 for command in kactivitymanagerd kglobalacceld;do
  if [ -x "$desktop/usr/lib/$command" ] && [ ! -e "/usr/lib/$command" ];then
   ln -s "$desktop/usr/lib/$command" "/usr/lib/$command"

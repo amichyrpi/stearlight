@@ -23,6 +23,8 @@ xrdp xrdp-sesman xrdp-sesexec xrdp-chansrv xrdp-keygen
 Xorg Xvnc xauth xrdb xset xprop xrandr xdpyinfo xkbcomp
 steamos-nested-desktop""".split()
 BINARIES += ['flatpak', 'bwrap', 'xdg-open', 'xdg-mime', 'kcmshell6', 'kdialog']
+BINARIES += ['gpg', 'gpgv', 'gpgconf', 'gpg-agent', 'gpg-connect-agent',
+             'gpgsm', 'dirmngr', 'pinentry', 'pinentry-qt', 'ostree', 'xdg-dbus-proxy']
 TREES = """usr/lib/qt6/plugins usr/lib/qt6/qml usr/lib/kf6 usr/lib/plasma
 usr/lib/xorg/modules usr/lib/xrdp usr/lib/security usr/lib/krb5/plugins
 usr/share/plasma usr/share/kpackage usr/share/kservices6 usr/share/kservicetypes6
@@ -40,6 +42,8 @@ etc/xdg etc/xrdp etc/X11/xrdp etc/fonts""".split()
 TREES += ['usr/lib/vlc', 'usr/lib/qt/plugins', 'usr/share/vlc', 'usr/share/vim',
           'usr/share/terminfo', 'usr/share/kmenuedit', 'usr/share/discover',
           'usr/share/glib-2.0/schemas', 'usr/share/applications/steam/steamos-nested-desktop']
+TREES += ['usr/lib/gnupg', 'usr/share/gnupg', 'etc/gnupg']
+TREES += ['usr/lib/spa-0.2/support']
 UNAVAILABLE_INDEXING_PLUGINS = {
     # KWin probes this service even when its splash is disabled. The default
     # waits indefinitely for a splash process that this core session omits.

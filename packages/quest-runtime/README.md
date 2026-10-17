@@ -299,8 +299,29 @@ The browser uses the native address-bar popup and avoids the unavailable KDE
 notification service; speculative renderers, the page back/forward cache, and
 on-device AI model execution are disabled. Large pages and multiple simultaneous
 apps remain resource limited.
-Tools requiring a full system service session are omitted. Flatpak installation
-is currently blocked by Horizon OS's restricted Linux `/proc` access.
+Discover and `flatpak` use a signed, user-owned Flathub installation. ARM64 GUI
+apps launch in a separate PRoot runtime, with their own configuration directories.
+The first launch explains compatibility mode: installed apps share the desktop's
+files and session because Horizon cannot provide Flatpak's Linux namespace
+sandbox. Accepting it applies to subsequent compatibility-mode launches.
+Apps requiring privileged services, a working portal, or unsupported GPU APIs
+may still fail; this does not provide full Flatpak sandbox compatibility.
+
+Konsole opens Bash in the active desktop session, so GUI commands use the correct
+display. Git, curl, Nano, Python and SSH tools are included. Use
+`flatpak install flathub APP_ID`, `flatpak run APP_ID`, `flatpak update`, and
+`flatpak uninstall APP_ID` for desktop applications. The underlying OS is Alpine;
+additional native terminal packages use `apk add --usermode --no-scripts PACKAGE`
+after `apk update`. These commands change the persistent Linux files inside the
+APK, not Horizon OS. Kernel drivers, systemd services and namespace-based
+containers cannot be installed into the running Quest kernel this way.
+
+Plasma includes a system tray and keeps the user's language and Konsole profile
+choices. Appearance, wallpaper and file settings use KDE. **Headset Settings**,
+**Wi-Fi Connections** and **Bluetooth Devices** in the application menu open the
+real Horizon hardware settings; Android retains control of radios, charging,
+sleep and device permissions. Tools requiring a full system service session
+remain unavailable.
 A nested KWin compositor keeps windows and menus inside
 the headset panel. The desktop service owns its application processes directly
 to leave room within Android's unchanged child-process budget.
