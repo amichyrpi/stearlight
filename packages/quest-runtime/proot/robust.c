@@ -13,6 +13,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <sys/utsname.h>
+#include <stddef.h>
 #include <linux/futex.h>
 #include "robust.h"
 #include "syscall/sysnum.h"
@@ -108,6 +110,16 @@ int quest_robust_sigsys(Tracee *t) {
  return 1;
 }
 void quest_robust_exit(Tracee *t) {
+ /* Android owns the host UTS namespace. Give every Quest Linux guest the
+  * Frame hostname without changing Android or requiring root. Keep the
+  * kernel release, architecture and all other uname fields untouched. */
+ if(enabled()&&get_sysnum(t,ORIGINAL)==PR_uname&&
+    (long)peek_reg(t,CURRENT,SYSARG_RESULT)==0){
+  static const char hostname[sizeof(((struct utsname*)0)->nodename)]="frame";
+  word_t address=peek_reg(t,ORIGINAL,SYSARG_1)+offsetof(struct utsname,nodename);
+  int result=write_data(t,address,hostname,sizeof(hostname));
+  if(result<0)poke_reg(t,SYSARG_RESULT,(word_t)result);
+ }
  if(t->quest_robust_retry&&get_sysnum(t,ORIGINAL)==PR_futex&&
     (long)peek_reg(t,CURRENT,SYSARG_RESULT)==-ETIMEDOUT)
   poke_reg(t,SYSARG_RESULT,(word_t)-EAGAIN);

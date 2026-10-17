@@ -13,6 +13,7 @@
 #include <set>
 #include <sys/stat.h>
 #include <thread>
+#include "share-mirror.h"
 extern "C" int quest_services_run();
 extern "C" void quest_services_stop();
 class QuestServices {
@@ -24,6 +25,20 @@ public:
     ~QuestServices() {
         quest_services_stop();
         if (worker.joinable()) worker.join();
+    }
+};
+class QuestShareStatus {
+    QuestShareMirror* mirror=nullptr;
+    uint64_t checked=0;
+public:
+    ~QuestShareStatus(){if(mirror)munmap(mirror,sizeof(*mirror));}
+    void poll(){
+        uint64_t now=quest_share_now();
+        if(!mirror){if(now-checked<1000000000)return;checked=now;mirror=quest_share_map(0);if(!mirror)return;}
+        uint64_t request=__atomic_load_n(&mirror->requested_ns,__ATOMIC_ACQUIRE);
+        if(!request||now<request||now-request>2000000000ull)return;
+        auto* overlays=vr::VROverlay();
+        __atomic_store_n(&mirror->reserved,overlays&&overlays->IsDashboardVisible()?QUEST_SHARE_DASHBOARD:0,__ATOMIC_RELEASE);
     }
 };
 #define QUEST_WATCH_EMBEDDED
@@ -175,6 +190,7 @@ int main(int argc, char** argv) {
     Session session(argc == 2 && !std::strcmp(argv[1], "--launch-session"));
     LocalVRAudio audio(session.enabled);
     QuestServices services(session.enabled);
+    QuestShareStatus share;
     if (!session.startVR()) return 1;
     vr::EVRInitError error = vr::VRInitError_Unknown;
     vr::IVRSystem* system = nullptr;
@@ -225,6 +241,7 @@ int main(int argc, char** argv) {
             return 75;
         }
         audio.poll(!desktopKind.empty());
+        share.poll();
         bool desktopAudioReady=desktopKind.empty() || access("/run/stearlight/quest/local-vr-audio.paused",F_OK)==0;
         if (!session.poll(desktopAudioReady) || quest_watch_step() < 0) { failed = true; break; }
         vr::EVRSettingsError settingError;

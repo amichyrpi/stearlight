@@ -26,6 +26,10 @@ The PC launcher and an ADB connection are optional developer tools. First
 installation takes longer while the rootfs is extracted; later launches reuse
 it and preserve Steam's account data.
 
+The Linux guest identifies itself as `frame` in Steam settings, Remote Play
+and desktop applications. Its PRoot adapter changes only the guest's uname
+nodename; Android's hostname and the real kernel version stay unchanged.
+
 The app's PRoot adapter tracks real guest robust-mutex lists and handles owner
 death, including an owner killed while another process is waiting. It handles
 Android's inherited syscall traps while retaining syscall acceleration. Shared
@@ -76,6 +80,13 @@ The Quest compositor adapter converts the shipped spatial-video final-pass
 shader's reconstructed RGB to linear light before its sRGB output. It matches
 that shader exactly and leaves packed depth, motion and tracking data intact;
 an unrecognized Valve shader is left unchanged.
+PC-initiated sharing uses Steam's X11 capture backend and a 1280 x 720 mirror
+of the rendered left eye, cropped to fill the landscape view. The mirror updates at
+up to 30 FPS only while capture is active; OpenXR keeps its existing resolution
+and refresh rate. Steam encodes the shared view with libx264. The Quest's
+passthrough camera is excluded, so transparent areas appear black on the PC.
+Steam's small capture windows use separate offscreen Vulkan images and cannot
+take ownership of the headset display.
 The decoder accepts packed VR video up to 8192 pixels along either axis,
 with the same 16-megapixel allocation limit used for flat streams.
 The Vulkan adapter corrects overlapping chroma planes and stale Qualcomm
@@ -379,7 +390,7 @@ Use a mounted **clean** Stearlight ARM64 image as the input. On Ubuntu 24.04,
 install Python 3.12, the ARM64 GCC/G++ cross compilers, x86-64 GCC, CMake,
 Ninja, pkg-config,
 Bison, Flex, glslangValidator, zlib headers, dpkg-deb, patchelf, FFmpeg (including
-ffprobe), and libdbus-1, libdrm, and libpam development headers. Create a
+ffprobe), and libdbus-1, libdrm, libpam, libX11, and libXext development headers. Create a
 Python environment with `build_files/quest/requirements.txt`. Mesa's code
 generators also need those Python modules visible to the Python interpreter
 selected by Meson. Install the Linux Android NDK as well; it compiles the

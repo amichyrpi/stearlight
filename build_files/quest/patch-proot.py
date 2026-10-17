@@ -69,6 +69,7 @@ static bool quest_have_terminated;
  replace(src/'tracee/seccomp.c','\tstatus = notify_extensions(tracee, SIGSYS_OCC, 0, 0);','\tif (quest_robust_sigsys(tracee)) return 0;\n\n\tstatus = notify_extensions(tracee, SIGSYS_OCC, 0, 0);')
  replace(src/'syscall/enter.c','\t/* Translate input arguments. */','\tif (quest_robust_enter(tracee)) return 0;\n\n\t/* Translate input arguments. */')
  replace(src/'syscall/seccomp.c','static FilteredSysnum proot_sysnums[] = {','static FilteredSysnum proot_sysnums[] = {\n\t{ PR_futex, FILTER_SYSEXIT },\n\t{ PR_get_robust_list, FILTER_SYSEXIT },\n\t{ PR_set_robust_list, FILTER_SYSEXIT },\n\t{ PR_setuid, FILTER_SYSEXIT },\n\t{ PR_setgid, FILTER_SYSEXIT },\n\t{ PR_setreuid, FILTER_SYSEXIT },\n\t{ PR_setregid, FILTER_SYSEXIT },\n\t{ PR_setresuid, FILTER_SYSEXIT },\n\t{ PR_setresgid, FILTER_SYSEXIT },')
+ replace(src/'syscall/seccomp.c','\t{ PR_futex, FILTER_SYSEXIT },','\t{ PR_uname, FILTER_SYSEXIT },\n\t{ PR_futex, FILTER_SYSEXIT },')
  replace(src/'syscall/seccomp.c','#define DEBUG_FILTER(', '#include "tracee/syscall-fast-path.h"\n\n#define DEBUG_FILTER(')
  replace(src/'syscall/seccomp.c','program->filter = talloc_array(NULL, struct sock_filter, 0);',
   'program->filter = talloc_memdup(NULL, quest_syscall_fast_path, sizeof(quest_syscall_fast_path));')

@@ -97,7 +97,7 @@ static Objects model(const std::string& text){
  result[device]["org.freedesktop.NetworkManager.Device.Wireless"]={
   {"HwAddress",s("")},{"PermHwAddress",s("")},{"Mode",u(2)},{"Bitrate",u(0)},{"WirelessCapabilities",u(63)},
   {"AccessPoints",paths(aps)},{"ActiveAccessPoint",o(current)},{"LastScan",{"x","",0,{}}}};
- result[root+"/Settings"]["org.freedesktop.NetworkManager.Settings"]={{"Connections",paths({})},{"CanModify",b(false)},{"Hostname",s("Quest")}};
+ result[root+"/Settings"]["org.freedesktop.NetworkManager.Settings"]={{"Connections",paths({})},{"CanModify",b(false)},{"Hostname",s("frame")}};
  if(connected)result[active]["org.freedesktop.NetworkManager.Connection.Active"]={
   {"Id",s(ssid.empty()?"Wi-Fi":ssid)},{"Uuid",s("")},{"Type",s("802-11-wireless")},{"Connection",o("/")},
   {"SpecificObject",o(current)},{"Devices",paths({device})},{"State",u(2)},{"Default",b(true)},{"Default6",b(true)},

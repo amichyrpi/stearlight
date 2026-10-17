@@ -2,6 +2,7 @@
 set -eu
 unset LD_LIBRARY_PATH LD_PRELOAD
 export HOME=/home/stearlight USER=stearlight LOGNAME=stearlight
+export HOSTNAME=frame
 export STEARLIGHT_QUEST_RUNTIME=1
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export DISPLAY=:0 XDG_RUNTIME_DIR=/tmp/stearlight-runtime
@@ -15,6 +16,11 @@ export LIBGL_KOPPER_DISABLE=true LIBGL_KOPPER_DRI2=1
 # SDL's OpenVR streaming player uses EGL without an Android/X11 window.
 export EGL_PLATFORM=surfaceless
 mkdir -p "$HOME" "$HOME/.config" "$HOME/.cache" "$HOME/.local/share/Steam/logs" "$XDG_RUNTIME_DIR" /tmp/.X11-unix /run/dbus
+printf 'frame\n' >/etc/hostname
+# Keep localhost and existing resolver entries; add the guest's own name.
+if ! grep -Eq '^[[:space:]]*127\.0\.1\.1[[:space:]]+frame([[:space:]]|$)' /etc/hosts 2>/dev/null;then
+ printf '\n127.0.1.1 frame\n' >>/etc/hosts
+fi
 rm -f /run/stearlight/quest/dashboard.ready /run/stearlight/quest/desktop-mode.active /run/stearlight/quest/desktop-mode.ready /run/stearlight/quest/desktop-focus.request /tmp/.X0-lock /tmp/.X11-unix/X0
 printf '%s' 'Starting Linux GPU and IPC services' >/run/stearlight/quest/linux-status
 chmod 700 "$XDG_RUNTIME_DIR"
@@ -57,7 +63,8 @@ xkbcomp -version
 printf '%s\n' 'xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xkb_types { include "complete" }; xkb_compatibility { include "complete" }; xkb_symbols { include "pc+us+inet(evdev)" }; };' | xkbcomp -w 0 -xkm - /tmp/quest-keymap.xkm
 # Android owns the display. Xvfb supplies X11 services to Valve's Linux clients;
 # the Quest Vulkan bridge supplies the GPU swapchain, independently of Xvfb.
-Xvfb :0 -screen 0 3664x1920x24 -xkbdir /opt/frame-gamescope/share/X11/xkb -ac -nolisten tcp -noreset > /tmp/xvfb.log 2>&1 &
+# This is the flat sharing monitor, independent of OpenXR's per-eye resolution.
+Xvfb :0 -screen 0 1280x720x24 -xkbdir /opt/frame-gamescope/share/X11/xkb -ac -nolisten tcp -noreset > /tmp/xvfb.log 2>&1 &
 xvfb_pid=$!
 trap 'kill ${wireplumber_pid:+"$wireplumber_pid"} ${pipewire_pid:+"$pipewire_pid"} "$desktop_pid" "$audio_pid" "$xvfb_pid" "$dbus_pid" 2>/dev/null || true' EXIT
 for attempt in $(seq 1 50);do
