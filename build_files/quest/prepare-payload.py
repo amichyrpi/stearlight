@@ -76,8 +76,8 @@ def verify_musl_preload(library, root):
 def stage_glx_dependencies(root, library_dir):
     """Use host X11 headers with the clean rootfs's ARM64 link libraries."""
     pending = ["x11", "x11-xcb", "xext", "xrandr", "xxf86vm", "glproto", "libglvnd",
-               "xcb-glx", "xcb-shm", "xcb-dri3", "xcb-present", "xcb-sync",
-               "xcb-xfixes", "xshmfence"]
+               "xcb-glx", "xcb-shm", "xcb-dri2", "xcb-dri3", "xcb-present", "xcb-sync",
+               "xcb-randr", "xcb-render", "xcb-shape", "xrender", "xcb-xfixes", "xshmfence"]
     required = set(pending)
     seen = set()
     while pending:
@@ -409,7 +409,8 @@ def main():
         f"-L{root / 'usr/lib/aarch64-linux-gnu'}",
         f"-Wl,-rpath-link,{root / 'usr/lib/aarch64-linux-gnu'}",
         f"-Wl,-rpath-link,{root / 'lib/aarch64-linux-gnu'}",
-        "-l:libdbus-1.so.3", "-Wl,-rpath,/opt/steamvr/bin/linuxarm64", "-o", quest / "runtime-monitor")
+        "-l:libdbus-1.so.3", "-Wl,--allow-shlib-undefined",
+        "-Wl,-rpath,/opt/steamvr/bin/linuxarm64", "-o", quest / "runtime-monitor")
     (quest / "bluetooth-bridge").unlink(missing_ok=True)
     (driver / "driver.vrdrivermanifest").write_text(json.dumps(
         {"alwaysActivate": True, "name": "stearlight-quest", "directory": "", "resourceOnly": False}))
@@ -461,6 +462,10 @@ def main():
     (overlay / "opt/steam/steamui/library.js").unlink(missing_ok=True)
     for name in ["frame-session", "start-session.sh"]:
         (quest / name).chmod(0o755)
+    # Several launchers are executed directly by Steam/KDE rather than bash.
+    for file in quest.iterdir():
+        if file.is_file() and file.suffix in (".sh", ".py"):
+            file.chmod(0o755)
     overlay_archive(overlay, assets / "quest-overlay.bin")
     proot = work / "android-proot"
     for spec in LOCK["android"].values():
@@ -483,6 +488,7 @@ def main():
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fna3d"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fonts"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["audio"].values())
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["updates"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["gaming"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fex_libraries"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["chromium"].values())

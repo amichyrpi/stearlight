@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bundle a clean Stearlight ARM64 rootfs for the Quest app's private storage."""
+"""Bundle the base rootfs; the APK installs the separate Quest overlay afterward."""
 import argparse
 import gzip
 import hashlib
@@ -34,7 +34,9 @@ def main():
                 with path.open('rb') as source:archive.addfile(info,source)
             else:archive.addfile(info)
             count+=1
-        for base in [root,overlay]:
+        # Overlay files are separate APK assets. Including them here as well
+        # duplicates KDE, Chromium and the GPU runtime, exceeding APK limits.
+        for base in [root]:
             for directory,dirs,files in os.walk(base,followlinks=False):
                 dirs.sort();files.sort()
                 for name in dirs+files:

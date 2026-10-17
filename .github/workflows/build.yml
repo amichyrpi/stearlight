@@ -1,191 +1,175 @@
-name: ARM64 Frame VM
+name: Quest APK
 
 on:
   push:
-    branches: ['**']
-    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
-    tags: ['vm-*']
+    branches: [main]
+    paths: ['Containerfile', 'Justfile', 'LICENSE.md', 'build_files/**', 'packages/**', 'post_process/quest/**', 'system_files/**', 'tests/**', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
   pull_request:
-    paths: ['Containerfile', 'Justfile', 'build_files/**', 'disk_config/**', 'packages/**', 'post_process/**', 'system_files/**', 'tests/**', 'LICENSE.md', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
+    paths: ['Containerfile', 'Justfile', 'LICENSE.md', 'build_files/**', 'packages/**', 'post_process/quest/**', 'system_files/**', 'tests/**', '.github/workflows/build.yml', '.gitmodules', '.dockerignore', '.gitattributes']
   workflow_dispatch:
     inputs:
       publish_continuous:
-        description: Update the Continuous build release
+        description: Update the Continuous build release from the default branch
         type: boolean
         default: false
 
 concurrency:
-  group: frame-vm-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: quest-apk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  vm-source-checks:
+  source-checks:
     runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check maintained VM sources
-        run: bash build_files/check.sh
-
-  vm-image:
-    needs: vm-source-checks
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - name: Prepare disk space and image tools
-        run: |
-          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
-          sudo apt-get update
-          sudo apt-get install -y pax-utils btrfs-progs zstd e2fsprogs qemu-utils
-          df -h /
-      - uses: docker/setup-buildx-action@v3
-      - name: Build fresh ARM64 image from the pinned public Frame recovery
-        run: sudo --preserve-env=DOCKER_CONFIG bash build_files/build-image.sh "$PWD/dist"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: frame-arm64-image
-          path: dist/
-          compression-level: 0
-          retention-days: 7
-          if-no-files-found: error
-
-  windows-runtime:
-    needs: vm-source-checks
-    runs-on: windows-2022
-    timeout-minutes: 120
-    defaults:
-      run:
-        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Preserve source line endings
-        shell: pwsh
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+      - name: Check Quest sources and packaging
+        run: bash build_files/quest/check.sh
+
+  quest-rootfs:
+    needs: source-checks
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare rootfs build tools and disk space
         run: |
-          git config core.autocrlf false
-          git checkout-index --force --all
-      - uses: actions/cache@v4
-        id: windows-runtime-cache
-        with:
-          path: dist/qemu
-          key: frame-windows-2022-${{ hashFiles('packages/sources.lock.json', 'packages/windows-runtime/**') }}
-      - uses: msys2/setup-msys2@v2
-        if: steps.windows-runtime-cache.outputs.cache-hit != 'true'
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            git make patch diffutils tar zstd
-            mingw-w64-ucrt-x86_64-toolchain
-            mingw-w64-ucrt-x86_64-meson
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-python
-            mingw-w64-ucrt-x86_64-python-yaml
-            mingw-w64-ucrt-x86_64-python-packaging
-            mingw-w64-ucrt-x86_64-pkgconf
-            mingw-w64-ucrt-x86_64-gtk3
-            mingw-w64-ucrt-x86_64-libepoxy
-            mingw-w64-ucrt-x86_64-glib2
-            mingw-w64-ucrt-x86_64-pixman
-            mingw-w64-ucrt-x86_64-libslirp
-            mingw-w64-ucrt-x86_64-vulkan-headers
-            mingw-w64-ucrt-x86_64-vulkan-loader
-            mingw-w64-ucrt-x86_64-zlib
-            mingw-w64-ucrt-x86_64-zstd
-      - name: Build pinned GTK QEMU and patched Venus renderer
-        if: steps.windows-runtime-cache.outputs.cache-hit != 'true'
-        run: bash packages/windows-runtime/build-runtime.sh /d/frame-build dist/qemu
-      - name: Check Windows launcher and paths containing spaces
-        shell: powershell
-        run: .\tests\launcher-test.ps1 -QemuDirectory .\dist\qemu
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet
+          sudo apt-get update
+          sudo apt-get install -y btrfs-progs zstd pax-utils patchelf
+          df -h /
+      - uses: docker/setup-buildx-action@v3
+      - name: Assemble the clean ARM64 runtime and KDE desktop
+        run: sudo --preserve-env=DOCKER_CONFIG bash build_files/quest/build-rootfs.sh "$PWD/rootfs-output"
       - uses: actions/upload-artifact@v4
         with:
-          name: frame-windows-runtime
-          path: dist/qemu/
+          name: quest-build-rootfs
+          path: rootfs-output/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  quest-apk:
+    needs: quest-rootfs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Prepare Linux cross-compilers and disk space
+        run: |
+          sudo rm -rf /opt/ghc /usr/share/dotnet
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
+            cmake ninja-build pkg-config bison flex glslang-tools zlib1g-dev patchelf ffmpeg zstd \
+            libdbus-1-dev libdrm-dev libpam0g-dev libglvnd-dev libx11-dev libx11-xcb-dev libxext-dev \
+            libxrandr-dev libxxf86vm-dev libxcb-glx0-dev libxcb-shm0-dev libxcb-dri2-0-dev libxcb-dri3-dev \
+            libxcb-randr0-dev libxcb-render0-dev libxcb-shape0-dev libxrender-dev \
+            libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev libxshmfence-dev python3-venv python3-packaging
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install pinned Android tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.3.13750724' 'cmake;3.22.1'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - uses: actions/cache@v4
+        with:
+          path: quest-work/downloads
+          key: quest-downloads-${{ runner.os }}-${{ hashFiles('build_files/quest/dependencies.json') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: quest-build-rootfs
+          path: rootfs-input
+      - name: Extract the verified build rootfs
+        run: |
+          (cd rootfs-input && sha256sum -c SHA256SUMS)
+          mkdir quest-root
+          tar --zstd -xf rootfs-input/frame-rootfs.tar.zst -C quest-root
+          rm rootfs-input/frame-rootfs.tar.zst
+      - name: Build the Linux adapters, GPU drivers and complete payload
+        run: |
+          python3 -m venv --system-site-packages quest-tools
+          quest-tools/bin/pip install -r build_files/quest/requirements.txt
+          quest-tools/bin/python build_files/quest/prepare-payload.py \
+            --root "$PWD/quest-root" --work "$PWD/quest-work" \
+            --android-ndk "$ANDROID_HOME/ndk/27.3.13750724" --output "$PWD/quest-payload"
+      - name: Restore the continuous signing identity
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous))
+        env:
+          QUEST_SIGNING_KEYSTORE_BASE64: ${{ secrets.QUEST_SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$QUEST_SIGNING_KEYSTORE_BASE64" || { echo '::error::Configure QUEST_SIGNING_KEYSTORE_BASE64 before publishing continuous builds.'; exit 1; }
+          printf '%s' "$QUEST_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/quest-continuous.keystore"
+          chmod 600 "$RUNNER_TEMP/quest-continuous.keystore"
+          echo "QUEST_SIGNING_STORE=$RUNNER_TEMP/quest-continuous.keystore" >> "$GITHUB_ENV"
+      - name: Build the standalone APK
+        run: |
+          signing=()
+          if [ -n "${QUEST_SIGNING_STORE:-}" ]; then signing+=(-PquestSigningStore="$QUEST_SIGNING_STORE"); fi
+          gradle -p packages/quest-runtime --no-daemon --console=plain \
+            -PquestPayload="$PWD/quest-payload" -PquestBuildDir="$PWD/quest-apk-build" \
+            "${signing[@]}" :app:assembleDebug
+      - name: Verify the APK signature and package downloadable files
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose quest-apk-build/outputs/apk/debug/app-debug.apk
+          python3 post_process/quest/package-apk.py \
+            --apk quest-apk-build/outputs/apk/debug/app-debug.apk --sources quest-payload-sources.zip \
+            --output dist --commit "$GITHUB_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stearlight-quest
+          path: dist/
           compression-level: 0
           retention-days: 7
           if-no-files-found: error
-
-  download-package:
-    needs: [vm-image, windows-runtime]
-    runs-on: windows-2022
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - name: Preserve failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          name: frame-arm64-image
-          path: package
-      - uses: actions/download-artifact@v4
-        with:
-          name: frame-windows-runtime
-          path: package/qemu
-      - name: Assemble download and checksums
-        shell: pwsh
-        run: ./post_process/package-windows.ps1 -PackageDirectory package
-      - uses: actions/upload-artifact@v4
-        with:
-          name: stearlight-frame-windows
-          path: |
-            stearlight-frame-windows.zip
-            stearlight-frame-windows.zip.sha256
-          compression-level: 0
-          retention-days: 30
-          if-no-files-found: error
-      - name: Publish tagged VM build
-        if: startsWith(github.ref, 'refs/tags/vm-')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-        shell: pwsh
-        run: |
-          gh release create $env:RELEASE_TAG stearlight-frame-windows.zip stearlight-frame-windows.zip.sha256 --verify-tag --title "Steam Frame VM $env:RELEASE_TAG" --notes "Extract the entire ZIP into a writable folder and run start-vm.cmd. Windows 10/11 x64 and a Vulkan-capable GPU driver are required. ARM64 CPU emulation remains slow. Account state is stored locally under data/."
-          if ($LASTEXITCODE) { throw 'Release upload failed' }
+          name: quest-build-logs
+          path: quest-work/quest-payload-build.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   continuous-release:
     name: Continuous build release
-    needs: download-package
-    if: (github.event_name == 'push' && github.ref_name == github.event.repository.default_branch) || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous)
+    needs: quest-apk
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    concurrency:
+      group: quest-continuous-release
+      cancel-in-progress: false
     steps:
-      - name: Download the verified Windows VM
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          name: stearlight-frame-windows
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: stearlight-quest
           path: release-assets
       - name: Update Continuous build
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/continuous" >/dev/null 2>&1; then
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/continuous" --method PATCH --raw-field sha="${GITHUB_SHA}" --field force=true >/dev/null
-          else
-            gh api "repos/${GITHUB_REPOSITORY}/git/refs" --method POST --raw-field ref="refs/tags/continuous" --raw-field sha="${GITHUB_SHA}" >/dev/null
-          fi
-          notes="$RUNNER_TEMP/continuous-release.md"
-          printf '%s\n' 'ARM64 Steam Frame VM for Windows x64. Extract the ZIP and run start-vm.cmd.' '' "[Build log](https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) | [Source](https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA})" > "$notes"
-          if gh release view continuous >/dev/null 2>&1; then
-            gh release edit continuous --title 'Continuous build' --notes-file "$notes" --latest
-          else
-            gh release create continuous --title 'Continuous build' --notes-file "$notes" --latest
-          fi
-          gh release upload continuous release-assets/stearlight-frame-windows.zip release-assets/stearlight-frame-windows.zip.sha256 --clobber
-          gh release view continuous --json assets --jq '.assets[].name' | while IFS= read -r asset; do
-            case "$asset" in
-              stearlight-frame-windows.zip|stearlight-frame-windows.zip.sha256) ;;
-              *) gh release delete-asset continuous "$asset" --yes ;;
-            esac
-          done
+        run: bash post_process/quest/publish-continuous.sh release-assets

@@ -384,7 +384,66 @@ or `ADB=/path/to/adb sh post_process/quest/shell.sh` on Linux/macOS. An optional
 command argument runs a single Linux command. These scripts locate the installed
 APK's runtime automatically and require no paths from the build computer.
 
-## Build
+## Building the APK
+
+GitHub Actions builds the ARM64 rootfs on `ubuntu-24.04-arm`, then builds the
+Linux adapters, Mesa and Android APK on `ubuntu-24.04`. PRs and pushes to `main`
+produce the `stearlight-quest` workflow artifact. Only successful default-branch
+pushes publish to the `continuous` release. A manual run can also publish from
+the default branch using `publish_continuous`.
+
+The download contains `stearlight-quest.apk`, its SHA-256, dependency sources,
+`BUILD.json`, this guide and the license. `SHA256SUMS` covers every download
+file. CI verifies all rootfs chunks against the installation SHA-256, checks
+the bundled runtime components and verifies the APK signature before upload.
+The base rootfs and runtime overlay are separate assets, installed in that
+order on first launch, so KDE and the GPU libraries are not duplicated.
+
+To produce the initial build rootfs on Linux with Docker/Buildx, Python 3,
+`btrfs-progs`, `zstd`, `pax-utils` and `patchelf`:
+
+```sh
+git submodule update --init --recursive
+sudo bash build_files/quest/build-rootfs.sh build/rootfs-input
+mkdir -p build/quest-root
+tar --zstd -xf build/rootfs-input/frame-rootfs.tar.zst -C build/quest-root
+```
+
+The rootfs step mounts the checksum-pinned public Frame recovery read-only,
+assembles the clean rootfs and stages its Plasma and Chromium files. It builds
+no VM disk. ARM64 Docker execution is required; CI uses a native ARM runner.
+Use `build/quest-root` as `--root` below; it already contains the staged desktop,
+so `--frame-desktop-root` can be omitted. Build directories need substantial
+free space; CI keeps the rootfs and APK stages on separate runners.
+
+### Continuous signing
+
+Configure the repository Actions secret `QUEST_SIGNING_KEYSTORE_BASE64` with
+a base64-encoded PKCS12 keystore, alias `androiddebugkey`, and store/key password
+`android`. The keystore itself is private; its password is the standard
+development password. The workflow fails rather than publishing with a new,
+incompatible key if the secret is missing. PR and nonpublishing builds use
+temporary debug certificates and do not receive this secret.
+
+For initial repository setup, generate a dedicated key outside the checkout
+and store it in GitHub with the GitHub CLI:
+
+```sh
+mkdir -p "$HOME/.local/share/stearlight-signing"
+keytool -genkeypair -storetype PKCS12 -keyalg RSA -keysize 2048 -validity 10000 \
+  -alias androiddebugkey -storepass android -keypass android \
+  -dname 'CN=Stearlight OS Continuous,O=Stearlight' \
+  -keystore "$HOME/.local/share/stearlight-signing/quest-continuous.keystore"
+chmod 600 "$HOME/.local/share/stearlight-signing/quest-continuous.keystore"
+base64 -w0 "$HOME/.local/share/stearlight-signing/quest-continuous.keystore" | \
+  gh secret set QUEST_SIGNING_KEYSTORE_BASE64 --repo OWNER/REPO
+```
+
+Keep a private backup of that key. Reuse it for all continuous APKs so Android
+can install later builds as updates. Locally debug-signed APKs use a different
+certificate unless built with `-PquestSigningStore=/private/path/to/the/key`.
+
+### Payload and local Android build
 
 Use a mounted **clean** Stearlight ARM64 image as the input. On Ubuntu 24.04,
 install Python 3.12, the ARM64 GCC/G++ cross compilers, x86-64 GCC, CMake,
@@ -423,7 +482,8 @@ GLX loader. On Ubuntu 24.04:
 
 ```sh
 sudo apt-get install libglvnd-dev libx11-dev libx11-xcb-dev libxext-dev \
-  libxrandr-dev libxxf86vm-dev libxcb-glx0-dev libxcb-shm0-dev \
+  libxrandr-dev libxxf86vm-dev libxcb-glx0-dev libxcb-shm0-dev libxcb-dri2-0-dev \
+  libxcb-randr0-dev libxcb-render0-dev libxcb-shape0-dev libxrender-dev \
   libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev \
   libxshmfence-dev
 ```

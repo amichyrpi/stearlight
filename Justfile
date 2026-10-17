@@ -4,11 +4,15 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 default:
     @just --list
 
-# Run focused OS source and lifecycle checks.
+# Run focused Quest source and packaging checks (JDK 17 and libdbus headers).
 check:
-    bash build_files/check.sh
+    bash build_files/quest/check.sh
 
-# Build the ARM64 image on Linux (requires root and Docker).
+# Build the APK from a prepared payload (JDK 17, Android SDK/NDK and Gradle 8.9).
+apk payload output="build/quest-apk":
+    gradle -p packages/quest-runtime --no-daemon -PquestPayload="$(realpath '{{ payload }}')" -PquestBuildDir="$(realpath -m '{{ output }}')" :app:assembleDebug
+
+# Archived VM: build the ARM64 image on Linux (requires root and Docker).
 build output="dist":
     sudo bash build_files/build-image.sh "{{ output }}"
 
