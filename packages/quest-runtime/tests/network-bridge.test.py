@@ -16,6 +16,7 @@ int main(int argc,char** argv){
  snapshot("enabled\t1\nconnected\t1\nvalidated\t1\ncurrent\tVGVzdA==\tQUE6QkI6Q0M6REQ6RUU6RkY=\nap\tVGVzdA==\tQUE6QkI6Q0M6REQ6RUU6RkY=\t75\t5180\t392\n");
  const auto manager=questNetwork::objects.at(questNetwork::root).at(questNetwork::manager);
  assert(manager.at("State").number==70&&manager.at("WirelessEnabled").number==1);
+ assert(questNetwork::objects.at(questNetwork::root+"/Settings").at("org.freedesktop.NetworkManager.Settings").at("Hostname").text=="frame");
  const auto wifi=questNetwork::objects.at(questNetwork::device).at("org.freedesktop.NetworkManager.Device.Wireless");
  auto ap=wifi.at("ActiveAccessPoint").text;assert(ap!="/");
  const auto props=questNetwork::objects.at(ap).at("org.freedesktop.NetworkManager.AccessPoint");

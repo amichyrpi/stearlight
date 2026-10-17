@@ -26,6 +26,10 @@ The PC launcher and an ADB connection are optional developer tools. First
 installation takes longer while the rootfs is extracted; later launches reuse
 it and preserve Steam's account data.
 
+The Linux guest identifies itself as `frame` in Steam settings, Remote Play
+and desktop applications. Its PRoot adapter changes only the guest's uname
+nodename; Android's hostname and the real kernel version stay unchanged.
+
 The app's PRoot adapter tracks real guest robust-mutex lists and handles owner
 death, including an owner killed while another process is waiting. It handles
 Android's inherited syscall traps while retaining syscall acceleration. Shared
@@ -76,6 +80,13 @@ The Quest compositor adapter converts the shipped spatial-video final-pass
 shader's reconstructed RGB to linear light before its sRGB output. It matches
 that shader exactly and leaves packed depth, motion and tracking data intact;
 an unrecognized Valve shader is left unchanged.
+PC-initiated sharing uses Steam's X11 capture backend and a 1280 x 720 mirror
+of the rendered left eye, cropped to fill the landscape view. The mirror updates at
+up to 30 FPS only while capture is active; OpenXR keeps its existing resolution
+and refresh rate. Steam encodes the shared view with libx264. The Quest's
+passthrough camera is excluded, so transparent areas appear black on the PC.
+Steam's small capture windows use separate offscreen Vulkan images and cannot
+take ownership of the headset display.
 The decoder accepts packed VR video up to 8192 pixels along either axis,
 with the same 16-megapixel allocation limit used for flat streams.
 The Vulkan adapter corrects overlapping chroma planes and stale Qualcomm
@@ -299,8 +310,29 @@ The browser uses the native address-bar popup and avoids the unavailable KDE
 notification service; speculative renderers, the page back/forward cache, and
 on-device AI model execution are disabled. Large pages and multiple simultaneous
 apps remain resource limited.
-Tools requiring a full system service session are omitted. Flatpak installation
-is currently blocked by Horizon OS's restricted Linux `/proc` access.
+Discover and `flatpak` use a signed, user-owned Flathub installation. ARM64 GUI
+apps launch in a separate PRoot runtime, with their own configuration directories.
+The first launch explains compatibility mode: installed apps share the desktop's
+files and session because Horizon cannot provide Flatpak's Linux namespace
+sandbox. Accepting it applies to subsequent compatibility-mode launches.
+Apps requiring privileged services, a working portal, or unsupported GPU APIs
+may still fail; this does not provide full Flatpak sandbox compatibility.
+
+Konsole opens Bash in the active desktop session, so GUI commands use the correct
+display. Git, curl, Nano, Python and SSH tools are included. Use
+`flatpak install flathub APP_ID`, `flatpak run APP_ID`, `flatpak update`, and
+`flatpak uninstall APP_ID` for desktop applications. The underlying OS is Alpine;
+additional native terminal packages use `apk add --usermode --no-scripts PACKAGE`
+after `apk update`. These commands change the persistent Linux files inside the
+APK, not Horizon OS. Kernel drivers, systemd services and namespace-based
+containers cannot be installed into the running Quest kernel this way.
+
+Plasma includes a system tray and keeps the user's language and Konsole profile
+choices. Appearance, wallpaper and file settings use KDE. **Headset Settings**,
+**Wi-Fi Connections** and **Bluetooth Devices** in the application menu open the
+real Horizon hardware settings; Android retains control of radios, charging,
+sleep and device permissions. Tools requiring a full system service session
+remain unavailable.
 A nested KWin compositor keeps windows and menus inside
 the headset panel. The desktop service owns its application processes directly
 to leave room within Android's unchanged child-process budget.
@@ -358,7 +390,7 @@ Use a mounted **clean** Stearlight ARM64 image as the input. On Ubuntu 24.04,
 install Python 3.12, the ARM64 GCC/G++ cross compilers, x86-64 GCC, CMake,
 Ninja, pkg-config,
 Bison, Flex, glslangValidator, zlib headers, dpkg-deb, patchelf, FFmpeg (including
-ffprobe), and libdbus-1, libdrm, and libpam development headers. Create a
+ffprobe), and libdbus-1, libdrm, libpam, libX11, and libXext development headers. Create a
 Python environment with `build_files/quest/requirements.txt`. Mesa's code
 generators also need those Python modules visible to the Python interpreter
 selected by Meson. Install the Linux Android NDK as well; it compiles the

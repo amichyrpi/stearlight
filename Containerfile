@@ -77,7 +77,7 @@ RUN apk add --no-cache linux-firmware-intel \
 FROM --platform=$TARGETPLATFORM alpine:edge AS rootfs
 # Valve identifies WebUI socket peers with lsof's field output (-F upnR).
 # BusyBox's lsof applet cannot supply that protocol and causes HTTP 403.
-RUN apk add --no-cache alpine-base bash coreutils dbus dbus-x11 e2fsprogs \
+RUN apk add --no-cache alpine-base bash coreutils curl git nano dbus dbus-x11 e2fsprogs \
     eudev eudev-openrc udev-init-scripts-openrc \
     font-dejavu font-noto-all font-noto-cjk font-noto-emoji grim linux-firmware-none linux-lts bluez bluez-openrc linux-tools-usbip \
     lsof mesa-dri-gallium mesa-egl mesa-vulkan-virtio \

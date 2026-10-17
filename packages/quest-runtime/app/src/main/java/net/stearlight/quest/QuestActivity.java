@@ -33,6 +33,7 @@ public final class QuestActivity extends NativeActivity {
  private AudioBridge audioBridge;
  private NetworkBridge networkBridge;
  private UsbNetworkBridge usbNetworkBridge;
+ private DesktopAppBridge desktopAppBridge;
  native void setUsbNetwork(long handle);
  native int networkInterfaceIndex(String name);
  private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));batteryStatus=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=batteryStatus==BatteryManager.BATTERY_STATUS_CHARGING||batteryStatus==BatteryManager.BATTERY_STATUS_FULL;batteryPlugged=intent.getIntExtra(BatteryManager.EXTRA_PLUGGED,0);batteryVoltage=intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE,0);batteryTemperature=intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,0);}};
@@ -51,6 +52,8 @@ public final class QuestActivity extends NativeActivity {
   workers.scheduleWithFixedDelay(networkBridge::poll,0,1,TimeUnit.SECONDS);
   bluetoothBridge=new BluetoothBridge(this,new File(getStateDirectory()));
   workers.scheduleWithFixedDelay(bluetoothBridge::poll,0,25,TimeUnit.MILLISECONDS);
+  desktopAppBridge=new DesktopAppBridge(this,new File(getStateDirectory()));
+  workers.scheduleWithFixedDelay(desktopAppBridge::poll,0,100,TimeUnit.MILLISECONDS);
   requestLinux();
  }
  @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);requestLinux();}
@@ -148,7 +151,12 @@ public final class QuestActivity extends NativeActivity {
    new File(getStateDirectory(),"external-runtime").delete();
    if(closing)return;
    startSocketRegistry(getStateDirectory());
+   // OSTree's emulated hardlinks retain absolute Android paths. Android's
+   // /data/user/0 and /data/data aliases must resolve in the desktop tracer too.
+   File appRepository=new File(root,"home/stearlight/.local/share/flatpak");appRepository.mkdirs();
    List<String> args=new ArrayList<>(Arrays.asList(nativeDir+"/libproot_exec.so","--kill-on-exit","--sysvipc","--link2symlink","-r",root.toString(),"-b","/dev","-b","/proc","-b","/sys","-b",tmp+":/tmp","-b",shm+":/dev/shm","-b",getStateDirectory()+":/run/stearlight/quest","-b",getStateDirectory()+"/proc-net:/proc/net","-w","/home/stearlight","/bin/bash","/opt/quest/start-session.sh"));
+   args.addAll(args.indexOf("-w"),Arrays.asList("-b",appRepository+":"+appRepository,
+       "-b",appRepository.getCanonicalPath()+":"+appRepository.getCanonicalPath()));
    File pidFile=new File(getFilesDir(),"linux.pid");java.nio.file.Files.deleteIfExists(pidFile.toPath());
    // The shell records its pid and immediately execs PRoot, retaining that pid.
    args.addAll(0,Arrays.asList("/system/bin/sh","-c","printf '%s\\n' \"$$\" > \"$1\" || exit; shift; exec \"$@\"","stearlight-linux",pidFile.toString()));
@@ -169,5 +177,5 @@ public final class QuestActivity extends NativeActivity {
  private InputStream rootfsStream()throws IOException {List<InputStream> parts=new ArrayList<>();try(BufferedReader list=new BufferedReader(new InputStreamReader(getAssets().open("rootfs.list"),StandardCharsets.US_ASCII))){String name;while((name=list.readLine())!=null){if(!name.matches("rootfs/part-[0-9]{3}\\.bin"))throw new IOException("Invalid rootfs part name");parts.add(getAssets().open(name));}}catch(IOException error){for(InputStream part:parts)part.close();throw error;}if(parts.isEmpty())throw new IOException("Empty rootfs payload");return new SequenceInputStream(Collections.enumeration(parts));}
  private void removeIncomplete(File path)throws IOException {removeTree(path,new File(getFilesDir(),"rootfs-install"));}
  private void removeTree(File path,File base)throws IOException {String target=path.getAbsolutePath();if(!target.equals(base.getAbsolutePath())&&!target.startsWith(base.getAbsolutePath()+File.separator))throw new IOException("Invalid runtime cleanup path");if(java.nio.file.Files.isSymbolicLink(path.toPath())){java.nio.file.Files.delete(path.toPath());return;}if(path.isDirectory()){File[] entries=path.listFiles();if(entries==null)throw new IOException("Cannot read runtime directory");for(File entry:entries)removeTree(entry,base);}if(path.exists()&&!path.delete())throw new IOException("Cannot remove runtime directory");}
- @Override public void onDestroy(){closing=true;if(usbNetworkBridge!=null)usbNetworkBridge.close();if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);killLinux();workers.shutdownNow();super.onDestroy();}
+ @Override public void onDestroy(){closing=true;if(desktopAppBridge!=null)desktopAppBridge.close();if(usbNetworkBridge!=null)usbNetworkBridge.close();if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);killLinux();workers.shutdownNow();super.onDestroy();}
 }

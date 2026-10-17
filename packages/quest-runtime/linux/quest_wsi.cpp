@@ -21,6 +21,8 @@
 #include <atomic>
 #include <unordered_map>
 #include <time.h>
+#include <cmath>
+#include "share-mirror.h"
 #include "roomview_shaders.h"
 #include "pcvr_color_shader.h"
 #include "gpu_bridge.h"
@@ -32,6 +34,7 @@ PFN_vkGetInstanceProcAddr realGet=nullptr;PFN_vkGetDeviceProcAddr realDeviceGet=
 uint32_t activeQueueFamily=0;
 VkInstance activeInstance=VK_NULL_HANDLE;VkPhysicalDevice activePhysical=VK_NULL_HANDLE;
 bool isCompositor(){return program_invocation_short_name&&(!strcmp(program_invocation_short_name,"vrcompositor")||!strcmp(program_invocation_short_name,"vrcompositor.bin"));}
+bool isSteamCapture(){return program_invocation_short_name&&!strcmp(program_invocation_short_name,"steam");}
 VkExtent2D displayExtent(){
  QuestTracking state{};int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);
  if(fd<0)return {3664,1920};
@@ -60,6 +63,9 @@ bool wsiExtension(const char* name){return !strcmp(name,"VK_KHR_surface")||!strc
 VkResult appendExtensions(std::vector<VkExtensionProperties>& values,const char* const* names,size_t size,uint32_t* count,VkExtensionProperties* output){for(size_t i=0;i<size;i++){bool found=false;for(const auto& value:values)if(!strcmp(value.extensionName,names[i]))found=true;if(!found){VkExtensionProperties value{};strncpy(value.extensionName,names[i],VK_MAX_EXTENSION_NAME_SIZE-1);value.specVersion=1;values.push_back(value);}}if(!output){*count=values.size();return VK_SUCCESS;}uint32_t n=std::min(*count,(uint32_t)values.size());memcpy(output,values.data(),n*sizeof(*output));*count=n;return n<values.size()?VK_INCOMPLETE:VK_SUCCESS;}
 struct Surface {uint64_t magic=QUEST_GPU_MAGIC;};
 struct Swapchain {
+ bool offscreen=false;
+ QuestShareMirror* mirror=nullptr;void* mirrorPixels[QUEST_GPU_BUFFERS]{};bool mirrorMapFailed=false;
+ uint64_t mirrorChecked=0,mirrorPublished=0,mirrorNext=0;uint32_t mirrorEyeWidth=0;std::vector<uint32_t> mirrorX;
  VkDevice device=VK_NULL_HANDLE;int socket=-1;QuestGpuHello hello{};VkFormat imageFormat=VK_FORMAT_UNDEFINED;VkImage images[QUEST_GPU_BUFFERS]{};VkDeviceMemory memory[QUEST_GPU_BUFFERS]{};uint32_t next=0;uint64_t frame=0,presented=0;std::mutex lock;std::condition_variable presentedCondition;
  uint32_t queueFamily=0;VkCommandPool pool=VK_NULL_HANDLE;VkCommandBuffer acquireCommands[QUEST_GPU_BUFFERS]{},releaseCommands[QUEST_GPU_BUFFERS]{};bool released[QUEST_GPU_BUFFERS]{};
  VkFence releaseFence=VK_NULL_HANDLE;
@@ -108,7 +114,81 @@ struct Swapchain {
   }
   return VK_SUCCESS;
  }
- ~Swapchain(){if(tracking)munmap(const_cast<QuestTracking*>(tracking),sizeof(QuestTracking));if(releaseFence)D(vkDestroyFence)(device,releaseFence,nullptr);if(pool)D(vkDestroyCommandPool)(device,pool,nullptr);if(socket>=0)close(socket);for(int i=0;i<QUEST_GPU_BUFFERS;i++){if(images[i])D(vkDestroyImage)(device,images[i],nullptr);if(memory[i])D(vkFreeMemory)(device,memory[i],nullptr);}}
+ void publishMirror(uint32_t slot){
+  uint64_t now=quest_share_now();
+  if(!mirror){if(now-mirrorChecked<250000000)return;mirrorChecked=now;mirror=quest_share_map(0);if(!mirror)return;}
+  uint64_t requested=__atomic_load_n(&mirror->requested_ns,__ATOMIC_ACQUIRE);
+  if(!requested||now<requested||now-requested>2000000000ull||now<mirrorNext||mirrorMapFailed)return;
+  if(!mirrorPixels[slot]){
+   VkResult result=D(vkMapMemory)(device,memory[slot],0,VK_WHOLE_SIZE,0,&mirrorPixels[slot]);
+   if(result!=VK_SUCCESS){mirrorPixels[slot]=nullptr;mirrorMapFailed=true;fprintf(stderr,"Quest sharing: GPU memory cannot be mapped (%d)\n",result);return;}
+  }
+  VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=memory[slot];range.size=VK_WHOLE_SIZE;
+  if(D(vkInvalidateMappedMemoryRanges)(device,1,&range)!=VK_SUCCESS)return;
+  const auto& buffer=hello.buffers[slot];uint32_t eyeWidth=buffer.width/2,eyeHeight=buffer.height;
+  if(!eyeWidth||!eyeHeight)return;
+  // Keep game views centered. The dashboard sits lower in the eye, so its
+  // spectator crop includes the bottom dock as well as the main panel.
+  uint32_t cropWidth=std::min(eyeWidth,(uint32_t)((uint64_t)eyeHeight*QUEST_SHARE_WIDTH/QUEST_SHARE_HEIGHT));
+  uint32_t cropHeight=std::min(eyeHeight,(uint32_t)((uint64_t)cropWidth*QUEST_SHARE_HEIGHT/QUEST_SHARE_WIDTH));
+  uint32_t sourceLeft=(eyeWidth-cropWidth)/2,sourceTop=(eyeHeight-cropHeight)/2;
+  if(__atomic_load_n(&mirror->reserved,__ATOMIC_ACQUIRE)&QUEST_SHARE_DASHBOARD)
+   sourceTop=std::min(eyeHeight-cropHeight,sourceTop+eyeHeight*12/100);
+  if(mirrorEyeWidth!=eyeWidth){mirrorX.resize(QUEST_SHARE_WIDTH);for(unsigned x=0;x<QUEST_SHARE_WIDTH;x++)mirrorX[x]=sourceLeft+(uint64_t)x*cropWidth/QUEST_SHARE_WIDTH;mirrorEyeWidth=eyeWidth;}
+  static const auto toSrgb=[]{std::vector<unsigned char> lut(256);for(int i=0;i<256;i++){double c=i/255.;lut[i]=(unsigned char)std::lround(255*(c<=0.0031308?12.92*c:1.055*std::pow(c,1./2.4)-0.055));}return lut;}();
+  bool bgra=imageFormat==VK_FORMAT_B8G8R8A8_UNORM||imageFormat==VK_FORMAT_B8G8R8A8_SRGB;
+  bool encoded=imageFormat==VK_FORMAT_B8G8R8A8_SRGB||imageFormat==VK_FORMAT_R8G8B8A8_SRGB;
+  uint32_t sequence=__atomic_load_n(&mirror->sequence,__ATOMIC_RELAXED)&~1u;
+  __atomic_store_n(&mirror->sequence,sequence+1,__ATOMIC_SEQ_CST);
+  __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  const auto* source=static_cast<const unsigned char*>(mirrorPixels[slot]);
+  for(uint32_t y=0;y<QUEST_SHARE_HEIGHT;y++){
+   const auto* row=source+(size_t)(sourceTop+(uint64_t)y*cropHeight/QUEST_SHARE_HEIGHT)*buffer.stride*4;
+   auto* destination=mirror->pixels+(size_t)y*QUEST_SHARE_WIDTH*4;
+   if(encoded&&bgra){
+    auto* words=reinterpret_cast<uint32_t*>(destination);const auto* pixels=reinterpret_cast<const uint32_t*>(row);
+    for(unsigned x=0;x<QUEST_SHARE_WIDTH;x++)words[x]=pixels[mirrorX[x]]|0xff000000u;
+    continue;
+   }
+   for(uint32_t x=0;x<QUEST_SHARE_WIDTH;x++){
+    const auto* pixel=row+(size_t)mirrorX[x]*4;
+    unsigned char r=pixel[bgra?2:0],g=pixel[1],b=pixel[bgra?0:2];
+    destination[0]=encoded?b:toSrgb[b];destination[1]=encoded?g:toSrgb[g];destination[2]=encoded?r:toSrgb[r];destination[3]=255;destination+=4;
+   }
+  }
+  __atomic_store_n(&mirror->frame,frame+1,__ATOMIC_RELAXED);__atomic_store_n(&mirror->sequence,sequence+2,__ATOMIC_RELEASE);
+  syscall(SYS_futex,&mirror->sequence,FUTEX_WAKE,INT32_MAX,nullptr,nullptr,0);
+  if(!mirrorPublished)fprintf(stderr,"QUEST_SHARE_MIRROR_READY %ux%u format=%d\n",QUEST_SHARE_WIDTH,QUEST_SHARE_HEIGHT,imageFormat);
+  mirrorNext=(!mirrorNext||now-mirrorNext>100000000)?now+33333333:mirrorNext+33333333;
+  mirrorPublished=now;
+ }
+ ~Swapchain(){if(mirror)munmap(mirror,sizeof(*mirror));if(tracking)munmap(const_cast<QuestTracking*>(tracking),sizeof(QuestTracking));if(releaseFence)D(vkDestroyFence)(device,releaseFence,nullptr);if(pool)D(vkDestroyCommandPool)(device,pool,nullptr);if(socket>=0)close(socket);for(int i=0;i<QUEST_GPU_BUFFERS;i++){if(mirrorPixels[i])D(vkUnmapMemory)(device,memory[i]);if(images[i])D(vkDestroyImage)(device,images[i],nullptr);if(memory[i])D(vkFreeMemory)(device,memory[i],nullptr);}}
+ VkResult initializeCapture(VkDevice value,const VkSwapchainCreateInfoKHR* info){
+  device=value;queueFamily=activeQueueFamily;imageFormat=info->imageFormat;offscreen=true;
+  VkPhysicalDeviceMemoryProperties properties{};I(vkGetPhysicalDeviceMemoryProperties)(activePhysical,&properties);
+  for(int slot=0;slot<QUEST_GPU_BUFFERS;slot++){
+   VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};image.imageType=VK_IMAGE_TYPE_2D;image.format=info->imageFormat;
+   image.extent={info->imageExtent.width,info->imageExtent.height,1};image.mipLevels=1;image.arrayLayers=info->imageArrayLayers;
+   image.samples=VK_SAMPLE_COUNT_1_BIT;image.tiling=VK_IMAGE_TILING_OPTIMAL;image.usage=info->imageUsage;
+   image.sharingMode=info->imageSharingMode;image.queueFamilyIndexCount=info->queueFamilyIndexCount;image.pQueueFamilyIndices=info->pQueueFamilyIndices;
+   if(info->flags&VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR){
+    image.flags=VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT|VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+    for(auto node=(const VkBaseInStructure*)info->pNext;node;node=node->pNext)if(node->sType==VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO){image.pNext=node;break;}
+   }
+   VkResult result=D(vkCreateImage)(device,&image,nullptr,&images[slot]);if(result!=VK_SUCCESS)return result;
+   VkMemoryRequirements requirements{};D(vkGetImageMemoryRequirements)(device,images[slot],&requirements);
+   uint32_t type=UINT32_MAX;
+   for(uint32_t i=0;i<properties.memoryTypeCount;i++)if(requirements.memoryTypeBits&(1u<<i)){
+    if(type==UINT32_MAX)type=i;if(properties.memoryTypes[i].propertyFlags&VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT){type=i;break;}
+   }
+   if(type==UINT32_MAX)return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+   VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};allocate.allocationSize=requirements.size;allocate.memoryTypeIndex=type;
+   result=D(vkAllocateMemory)(device,&allocate,nullptr,&memory[slot]);if(result!=VK_SUCCESS)return result;
+   result=D(vkBindImageMemory)(device,images[slot],memory[slot],0);if(result!=VK_SUCCESS)return result;
+  }
+  fprintf(stderr,"QUEST_STEAM_CAPTURE_SWAPCHAIN_READY %ux%u format=%d\n",info->imageExtent.width,info->imageExtent.height,info->imageFormat);
+  return VK_SUCCESS;
+ }
  VkResult initialize(VkDevice value,VkFormat format){device=value;queueFamily=activeQueueFamily;imageFormat=format;socket=::socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);sockaddr_un address{};address.sun_family=AF_UNIX;strcpy(address.sun_path,"/run/stearlight/quest/gpu.sock");int connected=-1;for(int attempt=0;attempt<200&&socket>=0;attempt++){connected=connect(socket,(sockaddr*)&address,sizeof(address));if(!connected)break;if(errno!=ECONNREFUSED&&errno!=ENOENT)break;usleep(50000);}if(socket<0||connected){fprintf(stderr,"Quest GPU socket connect: %s (%d)\n",strerror(errno),errno);return VK_ERROR_INITIALIZATION_FAILED;}timeval timeout{15,0};setsockopt(socket,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));int fds[QUEST_GPU_BUFFERS]={-1,-1,-1};char control[CMSG_SPACE(sizeof(fds))]{};iovec io{&hello,sizeof(hello)};msghdr message{};message.msg_iov=&io;message.msg_iovlen=1;message.msg_control=control;message.msg_controllen=sizeof(control);ssize_t received=recvmsg(socket,&message,MSG_CMSG_CLOEXEC);if(received!=sizeof(hello)||hello.magic!=QUEST_GPU_MAGIC||hello.version!=QUEST_GPU_VERSION||hello.count!=QUEST_GPU_BUFFERS){fprintf(stderr,"Quest GPU hello: bytes=%zd expected=%zu errno=%d magic=%x count=%u\n",received,sizeof(hello),errno,hello.magic,hello.count);return VK_ERROR_INITIALIZATION_FAILED;}cmsghdr* header=CMSG_FIRSTHDR(&message);if(!header||header->cmsg_level!=SOL_SOCKET||header->cmsg_type!=SCM_RIGHTS||header->cmsg_len!=CMSG_LEN(sizeof(fds)))return VK_ERROR_INITIALIZATION_FAILED;memcpy(fds,CMSG_DATA(header),sizeof(fds));
   for(int i=0;i<QUEST_GPU_BUFFERS;i++){
    const auto& buffer=hello.buffers[i];VkExternalMemoryImageCreateInfo external{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};external.handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};image.pNext=&external;image.imageType=VK_IMAGE_TYPE_2D;image.format=format;image.extent={buffer.stride,buffer.height,1};image.mipLevels=1;image.arrayLayers=1;image.samples=VK_SAMPLE_COUNT_1_BIT;image.tiling=VK_IMAGE_TILING_LINEAR;image.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;image.sharingMode=VK_SHARING_MODE_EXCLUSIVE;VkResult result=D(vkCreateImage)(device,&image,nullptr,&images[i]);if(result!=VK_SUCCESS)return result;VkImageSubresource sub{VK_IMAGE_ASPECT_COLOR_BIT,0,0};VkSubresourceLayout layout;D(vkGetImageSubresourceLayout)(device,images[i],&sub,&layout);VkMemoryRequirements requirement;D(vkGetImageMemoryRequirements)(device,images[i],&requirement);fprintf(stderr,"Quest DMA-BUF import image %d: row=%llu expected=%u bytes=%llu allocation=%llu\n",i,(unsigned long long)layout.rowPitch,buffer.stride*4,(unsigned long long)requirement.size,(unsigned long long)buffer.allocation_size);if(layout.rowPitch!=buffer.stride*4||layout.offset!=0||requirement.size>buffer.allocation_size)return VK_ERROR_FORMAT_NOT_SUPPORTED;
@@ -129,7 +209,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroySurfaceKHR(VkInstance,VkSurfaceKHR surface,c
 VKAPI_ATTR VkBool32 VKAPI_CALL vkGetPhysicalDeviceXcbPresentationSupportKHR(VkPhysicalDevice,uint32_t,xcb_connection_t*,xcb_visualid_t){return VK_TRUE;}
 VKAPI_ATTR VkBool32 VKAPI_CALL vkGetPhysicalDeviceXlibPresentationSupportKHR(VkPhysicalDevice,uint32_t,Display*,VisualID){return VK_TRUE;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceSupportKHR(VkPhysicalDevice,uint32_t,VkSurfaceKHR,VkBool32* supported){*supported=VK_TRUE;return VK_SUCCESS;}
-VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice,VkSurfaceKHR,VkSurfaceCapabilitiesKHR* caps){*caps={};caps->minImageCount=caps->maxImageCount=QUEST_GPU_BUFFERS;caps->currentExtent=caps->minImageExtent=caps->maxImageExtent=displayExtent();caps->maxImageArrayLayers=1;caps->supportedTransforms=caps->currentTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;caps->supportedCompositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;caps->supportedUsageFlags=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilitiesKHR(VkPhysicalDevice,VkSurfaceKHR,VkSurfaceCapabilitiesKHR* caps){*caps={};caps->minImageCount=caps->maxImageCount=QUEST_GPU_BUFFERS;caps->currentExtent=caps->minImageExtent=caps->maxImageExtent=displayExtent();if(isSteamCapture()){caps->currentExtent={UINT32_MAX,UINT32_MAX};caps->minImageExtent={1,1};caps->maxImageExtent={8192,8192};}caps->maxImageArrayLayers=1;caps->supportedTransforms=caps->currentTransform=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;caps->supportedCompositeAlpha=VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;caps->supportedUsageFlags=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceFormatsKHR(VkPhysicalDevice,VkSurfaceKHR,uint32_t* count,VkSurfaceFormatKHR* output){fprintf(stderr,"Quest surface formats capacity=%u output=%p\n",*count,(void*)output);const VkSurfaceFormatKHR formats[]={{VK_FORMAT_B8G8R8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},{VK_FORMAT_B8G8R8A8_SRGB,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},{VK_FORMAT_R8G8B8A8_UNORM,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR},{VK_FORMAT_R8G8B8A8_SRGB,VK_COLOR_SPACE_SRGB_NONLINEAR_KHR}};if(!output){*count=4;return VK_SUCCESS;}uint32_t n=std::min(*count,4u);memcpy(output,formats,n*sizeof(*output));*count=n;return n<4?VK_INCOMPLETE:VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfacePresentModesKHR(VkPhysicalDevice,VkSurfaceKHR,uint32_t* count,VkPresentModeKHR* modes){if(modes&&*count){modes[0]=VK_PRESENT_MODE_FIFO_KHR;*count=1;}else *count=1;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceDisplayPropertiesKHR(VkPhysicalDevice,uint32_t* count,VkDisplayPropertiesKHR* output){if(!output){*count=1;return VK_SUCCESS;}if(!*count)return VK_INCOMPLETE;output[0]={};output[0].display=(VkDisplayKHR)1;output[0].displayName="Stearlight Quest OpenXR bridge";output[0].physicalResolution=displayExtent();output[0].supportedTransforms=VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;output[0].persistentContent=VK_TRUE;*count=1;return VK_SUCCESS;}
@@ -143,7 +223,13 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireXlibDisplayEXT(VkPhysicalDevice,Display*
 VKAPI_ATTR VkResult VKAPI_CALL vkGetRandROutputDisplayEXT(VkPhysicalDevice,Display*,unsigned long,VkDisplayKHR* display){*display=(VkDisplayKHR)1;return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkReleaseDisplayEXT(VkPhysicalDevice,VkDisplayKHR){return VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetPhysicalDeviceSurfaceCapabilities2EXT(VkPhysicalDevice physical,VkSurfaceKHR surface,VkSurfaceCapabilities2EXT* output){VkSurfaceCapabilitiesKHR caps{};VkResult result=vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical,surface,&caps);output->minImageCount=caps.minImageCount;output->maxImageCount=caps.maxImageCount;output->currentExtent=caps.currentExtent;output->minImageExtent=caps.minImageExtent;output->maxImageExtent=caps.maxImageExtent;output->maxImageArrayLayers=caps.maxImageArrayLayers;output->supportedTransforms=caps.supportedTransforms;output->currentTransform=caps.currentTransform;output->supportedCompositeAlpha=caps.supportedCompositeAlpha;output->supportedUsageFlags=caps.supportedUsageFlags;output->supportedSurfaceCounters=0;return result;}
-VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateInfoKHR* info,const VkAllocationCallbacks*,VkSwapchainKHR* output){if(!program_invocation_short_name||(strcmp(program_invocation_short_name,"vrcompositor")&&strcmp(program_invocation_short_name,"vrcompositor.bin")&&strcmp(program_invocation_short_name,"gpu-probe"))){fprintf(stderr,"Quest display swapchain is reserved for vrcompositor (%s)\n",program_invocation_short_name?program_invocation_short_name:"unknown");return VK_ERROR_INITIALIZATION_FAILED;}fprintf(stderr,"Quest swapchain requested format=%d extent=%ux%u usage=%x flags=%x\n",info->imageFormat,info->imageExtent.width,info->imageExtent.height,info->imageUsage,info->flags);auto swap=new Swapchain;VkResult result=swap->initialize(device,info->imageFormat);if(result!=VK_SUCCESS){delete swap;return result;}*output=(VkSwapchainKHR)(uintptr_t)swap;return VK_SUCCESS;}
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device,const VkSwapchainCreateInfoKHR* info,const VkAllocationCallbacks*,VkSwapchainKHR* output){
+ bool capture=isSteamCapture();
+ if(!capture&&!isCompositor()&&(!program_invocation_short_name||strcmp(program_invocation_short_name,"gpu-probe"))){fprintf(stderr,"Quest display swapchain is reserved for vrcompositor (%s)\n",program_invocation_short_name?program_invocation_short_name:"unknown");return VK_ERROR_INITIALIZATION_FAILED;}
+ fprintf(stderr,"Quest swapchain requested format=%d extent=%ux%u usage=%x flags=%x\n",info->imageFormat,info->imageExtent.width,info->imageExtent.height,info->imageUsage,info->flags);
+ auto swap=new Swapchain;VkResult result=capture?swap->initializeCapture(device,info):swap->initialize(device,info->imageFormat);
+ if(result!=VK_SUCCESS){delete swap;return result;}*output=(VkSwapchainKHR)(uintptr_t)swap;return VK_SUCCESS;
+}
 VKAPI_ATTR void VKAPI_CALL vkDestroySwapchainKHR(VkDevice,VkSwapchainKHR swap,const VkAllocationCallbacks*){delete object<Swapchain>(swap);}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSwapchainImagesKHR(VkDevice,VkSwapchainKHR handle,uint32_t* count,VkImage* images){auto swap=object<Swapchain>(handle);if(!images){*count=QUEST_GPU_BUFFERS;return VK_SUCCESS;}uint32_t n=std::min(*count,(uint32_t)QUEST_GPU_BUFFERS);memcpy(images,swap->images,n*sizeof(VkImage));*count=n;return n<QUEST_GPU_BUFFERS?VK_INCOMPLETE:VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR handle,uint64_t,VkSemaphore semaphore,VkFence fence,uint32_t* index){
@@ -160,6 +246,23 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue,const VkPresentIn
  for(uint32_t i=0;i<info->swapchainCount;i++){
   auto swap=object<Swapchain>(info->pSwapchains[i]);VkDevice device=swap->device;
   std::lock_guard<std::mutex> guard(swap->lock);uint32_t slot=info->pImageIndices[i];
+  if(swap->offscreen){
+   // Steam's capture/conversion window owns ordinary GPU images. It must not
+   // connect to the compositor's Android display socket or replace its eyes.
+   std::vector<VkPipelineStageFlags> stages(info->waitSemaphoreCount,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.waitSemaphoreCount=info->waitSemaphoreCount;
+   submit.pWaitSemaphores=info->pWaitSemaphores;submit.pWaitDstStageMask=stages.data();
+   VkResult result=VK_SUCCESS;
+   if(!swap->releaseFence){VkFenceCreateInfo create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};result=D(vkCreateFence)(device,&create,nullptr,&swap->releaseFence);}
+   else result=D(vkResetFences)(device,1,&swap->releaseFence);
+   if(result==VK_SUCCESS)result=D(vkQueueSubmit)(queue,1,&submit,swap->releaseFence);
+   if(result==VK_SUCCESS)result=D(vkWaitForFences)(device,1,&swap->releaseFence,VK_TRUE,UINT64_MAX);
+   if(result==VK_SUCCESS){
+    for(auto node=(const VkBaseInStructure*)info->pNext;node;node=node->pNext)if(node->sType==VK_STRUCTURE_TYPE_PRESENT_ID_KHR){auto ids=(const VkPresentIdKHR*)node;if(i<ids->swapchainCount)swap->presented=std::max(swap->presented,ids->pPresentIds[i]);}
+    swap->presentedCondition.notify_all();
+   }
+   if(info->pResults)info->pResults[i]=result;if(result!=VK_SUCCESS)return result;continue;
+  }
   auto start=std::chrono::steady_clock::now();
   swap->cpuMs+=std::chrono::duration<double,std::milli>(start-swap->acquired[slot]).count();
   std::vector<VkPipelineStageFlags> stages(info->waitSemaphoreCount,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
@@ -176,6 +279,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue,const VkPresentIn
   auto rendered=std::chrono::steady_clock::now();
   swap->gpuMs+=std::chrono::duration<double,std::milli>(rendered-start).count();
   if(result==VK_SUCCESS){
+   swap->publishMirror(slot);
    swap->released[slot]=true;QuestGpuPresent present=swap->inputPoses[slot];
    present.magic=QUEST_GPU_MAGIC;present.slot=slot;present.frame_id=++swap->frame;
    present.vk_format=static_cast<uint32_t>(swap->imageFormat);QuestGpuRelease release{};

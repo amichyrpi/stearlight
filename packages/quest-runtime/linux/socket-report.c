@@ -19,6 +19,7 @@
  * rather than glibc headers' redirects to glibc-only C23 entry points. */
 extern int quest_fscanf(FILE*,const char*,...) __asm__("fscanf") __attribute__((format(scanf,2,3)));
 #include "network-interfaces.h"
+#include "steam-capture.h"
 /* Only USB subnet and scoped link-local sockets use the cable. Internet and Wi-Fi
  * sockets retain Android's normal route. Android binds the real descriptor,
  * so UDP/video traffic travels on NCM directly, without an ADB tunnel. */

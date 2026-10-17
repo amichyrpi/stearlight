@@ -166,6 +166,7 @@ class Manager:
         self.focus_at = 0
         self.focus_id = ''
         FOCUS.unlink(missing_ok=True)
+        Path('/run/stearlight/quest/desktop-shell.env').unlink(missing_ok=True)
         for service in Path('/run/stearlight/quest/desktop-services').glob('*.service'):
             service.unlink()
 

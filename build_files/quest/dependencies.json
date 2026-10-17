@@ -232,5 +232,27 @@
       "url": "https://deb.debian.org/debian/pool/main/o/openh264/libopenh264-8_2.6.0+dfsg-2_arm64.deb",
       "sha256": "dd40ffeeb006af3a610e015881340c704b8bb38627434a150b7d9e39e657dfbe"
     }
+  },
+  "desktop_cli": {
+    "libcurl": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/libcurl-8.23.0-r0.apk",
+      "sha256": "270a44c2b69463e910f13225c289d478242b86a92d0d570d0839a74549e82cd5"
+    },
+    "curl": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/curl-8.23.0-r0.apk",
+      "sha256": "31834a23bc6ca602b55a3be3070e228a13ab66a99c45d61bd8a22697b9f19503"
+    },
+    "git": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/git-2.56.0-r0.apk",
+      "sha256": "3ff37ddcc6eaf5aa12f52eff83c453fcc99d87ac018564b3b7b6e1f64753f994"
+    },
+    "git-init-template": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/git-init-template-2.56.0-r0.apk",
+      "sha256": "65e6bedb3545497060cb2faa5e36c64f7984f7c9e2b77804fb0c5ddac9bd1be2"
+    },
+    "nano": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/nano-9.2-r0.apk",
+      "sha256": "8d2a6b84af47d93638466245829561b3500ed7a98864a193c560eb8f159aa4cf"
+    }
   }
 }
