@@ -47,6 +47,10 @@ int main(int argc, char** argv) {
         pid_t dead = waitpid(-1, &status, 0);
         if (dead == primary) {
             result = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+            if (WIFSIGNALED(status))
+                fprintf(stderr, "Quest game exited on signal %d\n", WTERMSIG(status));
+            else if (result)
+                fprintf(stderr, "Quest game exited with status %d\n", result);
             break;
         }
         if (dead < 0 && errno != EINTR) break;

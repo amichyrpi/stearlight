@@ -9,7 +9,7 @@ def replace(path,old,new):
  path.write_text(text.replace(old,new))
 def patch(source):
  src=Path(source)/'src'
- for name in ['robust.c','robust.h','tracee-cache.h','syscall-fast-path.h']:
+ for name in ['robust.c','robust.h','tracee-cache.h','syscall-fast-path.h','mountinfo-cache.h']:
   shutil.copyfile(ROOT/'packages/quest-runtime/proot'/name,src/'tracee'/name)
  replace(src/'extension/ashmem_memfd/ashmem_memfd.c','#include <stdlib.h>','#include <stdlib.h>\n#include <string.h>')
  # All guest processes share this PRoot IPC namespace. Use anonymous memfd
@@ -29,6 +29,45 @@ def patch(source):
 \t}
 \treturn fd;'''+text[end:]
  path.write_text(text)
+ # Steam/SDL repeatedly open mountinfo while discovering controllers. Cache
+ # the immutable rewritten file per shared binding namespace. Binding edits
+ # and real kernel mount events invalidate it immediately.
+ replace(src/'path/binding.h','typedef CIRCLEQ_HEAD(bindings, binding) Bindings;', '''typedef struct bindings {
+ struct binding *cqh_first;
+ struct binding *cqh_last;
+ unsigned long long quest_mount_generation;
+ struct quest_mountinfo_cache *quest_mount_cache;
+} Bindings;''')
+ path=src/'path/binding.c'
+ for macro in ['CIRCLEQ_INSERT_AFTER_(tracee, previous, binding, side)',
+               'CIRCLEQ_INSERT_BEFORE_(tracee, next, binding, side)',
+               'CIRCLEQ_INSERT_HEAD_(tracee, binding, side)']:
+  text=path.read_text();start=text.index('#define '+macro);end=text.index('\n',start)
+  text=text[:end+1]+'\tHEAD(tracee, side)->quest_mount_generation++;\t\\\n'+text[end+1:]
+  path.write_text(text)
+ replace(path,'\tCIRCLEQ_REMOVE((tracee)->fs->bindings.name, binding, link.name);\\',
+              '\t(tracee)->fs->bindings.name->quest_mount_generation++;\t\\\n\tCIRCLEQ_REMOVE((tracee)->fs->bindings.name, binding, link.name);\\')
+ path=src/'extension/mountinfo/mountinfo.c'
+ replace(path,'#include <sys/queue.h>', '#include "tracee/mountinfo-cache.h"\n#include "tracee/reg.h"\n#include <sys/queue.h>')
+ replace(path,'if (target_tracee == NULL) {','if (target_tracee == NULL || target_tracee->terminated) {')
+ replace(path,'\t\t/* Check if our root is under "/data"  */', '''\t\tBindings *bindings = target_tracee->fs->bindings.guest;
+\t\tSysnum request = get_sysnum(tracee, ORIGINAL);
+\t\tword_t flags = peek_reg(tracee, ORIGINAL, request == PR_open ? SYSARG_2 : SYSARG_3);
+\t\tbool cache_read = (flags & O_ACCMODE) == O_RDONLY && !(flags & (O_CREAT | O_TRUNC | O_EXCL));
+\t\tconst char *cached = cache_read ? quest_mountinfo_cached(tracee->ctx, bindings) : NULL;
+\t\tif (cached) { strncpy(path, cached, PATH_MAX); return; }
+
+\t\t/* Check if our root is under "/data"  */''')
+ replace(path,'\t\tconst char *new_path = create_temp_file(tracee->ctx, "mountinfo");', '''\t\tstruct quest_mountinfo_cache *cache = cache_read ? quest_mountinfo_begin(bindings, fileno(real_mountinfo_fp)) : NULL;
+\t\tconst char *new_path = create_temp_file(cache ? (TALLOC_CTX *) cache : tracee->ctx, "mountinfo");
+\t\tif (!new_path) { if (cache) talloc_free(cache); fclose(real_mountinfo_fp); return; }''')
+ replace(path,'\t\tif (new_mountinfo_fp == NULL) {','\t\tif (new_mountinfo_fp == NULL) {\n\t\t\tif (cache) talloc_free(cache);')
+ replace(path,'\t\tfclose(new_mountinfo_fp);', '\t\tint write_failed = ferror(new_mountinfo_fp);\n\t\tif (fclose(new_mountinfo_fp)) write_failed = 1;')
+ replace(path,'\t\tfclose(real_mountinfo_fp);\n\n\t\t/* Redirect', '\t\tint read_failed = ferror(real_mountinfo_fp);\n\t\tfclose(real_mountinfo_fp);\n\n\t\t/* Redirect')
+ replace(path,'\t\tif (found_line) {\n\t\t\tstrncpy(path, new_path, PATH_MAX);\n\t\t}', '''\t\tif (found_line && !write_failed && !read_failed) {
+\t\t\tquest_mountinfo_publish(tracee->ctx, bindings, cache, new_path);
+\t\t\tstrncpy(path, new_path, PATH_MAX);
+\t\t} else if (cache) talloc_free(cache);''')
  replace(src/'tracee/event.c','\t\t\t\tPTRACE_O_TRACEEXIT);','\t\t\t\tPTRACE_O_TRACEEXIT | PTRACE_O_EXITKILL);')
  replace(src/'tracee/event.c','\t\tsignal(SIGPIPE, SIG_DFL);','\t\tsignal(SIGPIPE, SIG_DFL);\n\t\t/* ART worker masks must not become Linux process masks. */\n\t\tsigset_t empty_mask;\n\t\tsigemptyset(&empty_mask);\n\t\tsigprocmask(SIG_SETMASK, &empty_mask, NULL);')
  replace(src/'tracee/tracee.h','\t/* Unique tracee identifier. */','\tword_t quest_robust_head;\n\tbool quest_robust_retry;\n\n\t/* Unique tracee identifier. */')

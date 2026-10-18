@@ -38,7 +38,11 @@ int main(void) {
  assert(permitted(AUDIT_ARCH_AARCH64,29,0xc040094a));
  assert(permitted(AUDIT_ARCH_AARCH64,29,0x40080907));
  assert(!permitted(AUDIT_ARCH_AARCH64,29,0x40087703)); /* ashmem */
- assert(!permitted(AUDIT_ARCH_AARCH64,29,0x5401)); /* terminal */
+ assert(permitted(AUDIT_ARCH_AARCH64,29,0x5401)); /* TCGETS: read-only */
+ assert(!permitted(AUDIT_ARCH_AARCH64,29,0x5402)); /* TCSETS */
+ assert(!permitted(AUDIT_ARCH_AARCH64,29,0x802c542a)); /* TCGETS2 needs translation */
+ assert(!permitted(AUDIT_ARCH_ARM,29,0x5401));
+ assert(!permitted(AUDIT_ARCH_X86_64,29,0x5401));
  assert(!permitted(AUDIT_ARCH_AARCH64,30,0xc040094a));
  assert(!permitted(AUDIT_ARCH_ARM,29,0xc040094a));
  for(unsigned owner=0;owner<3;owner++) {

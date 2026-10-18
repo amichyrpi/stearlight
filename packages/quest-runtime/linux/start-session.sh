@@ -7,6 +7,12 @@ export STEARLIGHT_QUEST_RUNTIME=1
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 export DISPLAY=:0 XDG_RUNTIME_DIR=/tmp/stearlight-runtime
 export GLIBC_TUNABLES=glibc.pthread.rseq=0
+# Horizon owns physical USB/Bluetooth devices. SDL's Linux udev monitor is
+# denied by Android; retrying initialization on every Steam input poll wastes
+# CPU and repeatedly regenerates mountinfo. Keep HIDAPI's polling fallback.
+if [ "${STEARLIGHT_LINUX_HIDAPI:-0}" != 1 ];then
+ export SDL_HIDAPI_UDEV=0 SDL_HIDAPI_LIBUSB=0 SDL_HIDAPI_DISABLE_LIBUSB=1
+fi
 export MESA_VK_ENABLE_SUBMIT_THREAD=1
 export QUEST_SOCKET_REGISTRY=/run/stearlight/quest/socket-registry.sock
 # SteamVR creates a separate GLX context for browser texture sharing. Xvfb

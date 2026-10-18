@@ -2,6 +2,26 @@
 set -eu
 root=${STEARLIGHT_STEAM_ROOT:-/opt/steam}
 quest=${STEARLIGHT_QUEST_ROOT:-/opt/quest}
+if [ -f "$quest/prepare-fex.py" ];then
+ /usr/bin/python3 "$quest/prepare-fex.py"
+fi
+# Steam's desktop default marks games at 900, ahead of most cached Android
+# apps for memory reclamation. Keep the foreground app's inherited priority.
+wrapper="$root/linuxarm64/steam-launch-wrapper"
+adapter="$quest/game-launch-wrapper"
+if [ -f "$wrapper" ] && [ -f "$adapter" ] && ! cmp -s "$wrapper" "$adapter";then
+ if grep -aq 'quest-game-launch-wrapper' "$wrapper";then
+  [ -f "$wrapper.quest-real" ] || exit 1
+ elif [ "$(od -An -tx1 -N4 "$wrapper" | tr -d ' \n')" = 7f454c46 ];then
+  mv "$wrapper" "$wrapper.quest-real"
+ else
+  echo 'Quest game launcher adapter does not match this build.' >&2
+  exit 1
+ fi
+ cp "$adapter" "$wrapper.quest-next"
+ chmod 755 "$wrapper.quest-next" "$wrapper.quest-real"
+ mv "$wrapper.quest-next" "$wrapper"
+fi
 player="$root/steamrtarm64/fossilize_replay"
 launcher="$quest/shader-replay-launcher"
 if [ -f "$player" ] && [ -f "$launcher" ] && ! cmp -s "$player" "$launcher";then

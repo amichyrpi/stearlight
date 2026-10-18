@@ -66,6 +66,11 @@ It includes:
 For a better VR experience, you will need to disable battery-saving
 mode on your Quest. That means a smoother experience but shorter playtime.
 
+## Setup and troubleshooting
+
+See the [Quest setup guide](docs/quest-setup.md) for PC streaming, library
+filters, Touch gamepad input, text readability, and Chromium diagnostics.
+
 ## Development
 
 This project bundles a VM version of the OS and a Quest version of the OS.
