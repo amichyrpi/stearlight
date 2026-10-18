@@ -10,6 +10,7 @@ for folder in ('build_files/quest', 'post_process/quest', 'packages/quest-runtim
         ast.parse(file.read_text(), filename=str(file))
 PY
 python3 tests/quest-build-test.py
+python3 packages/quest-runtime/tests/clean-build.test.py
 python3 tests/recovery-test.py
 python3 packages/quest-runtime/tests/rootfs-archive.test.py
 python3 packages/quest-runtime/tests/audio-queue.test.py

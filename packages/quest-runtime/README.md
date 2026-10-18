@@ -399,6 +399,9 @@ Linux adapters, Mesa and Android APK on `ubuntu-24.04`. PRs and pushes to `main`
 produce the `stearlight-quest` workflow artifact. Only successful default-branch
 pushes publish to the `continuous` release. A manual run can also publish from
 the default branch using `publish_continuous`.
+Fork pushes build debug-signed test APKs without requiring a release key.
+To publish from a fork, configure its signing secret and explicitly select
+`publish_continuous` in a manual run.
 
 The download contains `stearlight-quest.apk`, its SHA-256, dependency sources,
 `BUILD.json`, this guide and the license. `SHA256SUMS` covers every download
@@ -413,8 +416,8 @@ To produce the initial build rootfs on Linux with Docker/Buildx, Python 3,
 ```sh
 git submodule update --init --recursive
 sudo bash build_files/quest/build-rootfs.sh build/rootfs-input
-mkdir -p build/quest-root
-tar --zstd -xf build/rootfs-input/frame-rootfs.tar.zst -C build/quest-root
+(cd build/rootfs-input && sha256sum -c SHA256SUMS)
+bash build_files/quest/extract-rootfs.sh build/rootfs-input/frame-rootfs.tar.zst build/quest-root
 ```
 
 The rootfs step mounts the checksum-pinned public Frame recovery read-only,
@@ -423,6 +426,9 @@ no VM disk. ARM64 Docker execution is required; CI uses a native ARM runner.
 Use `build/quest-root` as `--root` below; it already contains the staged desktop,
 so `--frame-desktop-root` can be omitted. Build directories need substantial
 free space; CI keeps the rootfs and APK stages on separate runners.
+The extraction helper gives the build user read/write access while retaining
+executable bits, including execute-only BusyBox hardlinks. Do not build
+against an installed headset's account data.
 
 ### Continuous signing
 
@@ -457,11 +463,19 @@ Use a mounted **clean** Stearlight ARM64 image as the input. On Ubuntu 24.04,
 install Python 3.12, the ARM64 GCC/G++ cross compilers, x86-64 GCC, CMake,
 Ninja, pkg-config,
 Bison, Flex, glslangValidator, zlib headers, dpkg-deb, patchelf, FFmpeg (including
-ffprobe), and libdbus-1, libdrm, libpam, libX11, and libXext development headers. Create a
+ffprobe), libvulkan development headers, and libdbus-1, libdrm, libpam, libX11,
+and libXext development headers. Create a
 Python environment with `build_files/quest/requirements.txt`. Mesa's code
 generators also need those Python modules visible to the Python interpreter
 selected by Meson. Install the Linux Android NDK as well; it compiles the
-patched PRoot against the pinned Termux headers and talloc library.
+patched PRoot and its matching loader from the same pinned source against the
+Termux talloc headers/library. No prebuilt Termux PRoot package is required.
+
+The workflow lists the full Ubuntu package prerequisites. In particular,
+install `python3-mako python3-yaml python3-packaging python3-venv libvulkan-dev`;
+Mesa's generators may select the system Python rather than the build venv.
+Use `packages: platform-tools` with `android-actions/setup-android@v3` to
+avoid its obsolete default `tools` package.
 
 ```sh
 python3 -m venv --system-site-packages /path/to/quest-tools
@@ -498,6 +512,15 @@ sudo apt-get install libglvnd-dev libx11-dev libx11-xcb-dev libxext-dev \
 
 The cross build uses these headers with the clean ARM64 rootfs's link
 libraries. Host libraries are excluded from the payload.
+
+Base container images are pinned by digest and Alpine release. Distribution
+package repositories still receive updates; the build is not bit-for-bit
+reproducible. Noto core, CJK and emoji fonts come from the checksum-pinned
+overlay packages, without Alpine's duplicate `font-noto-all` bundle. Keep
+these fonts for broad language coverage. The final APK must remain below
+2 GiB. Failed CI packaging uploads the raw APK, if one was produced, alongside
+the payload build log in `quest-build-logs`; this diagnostic artifact is not
+a verified release.
 
 To inspect the source display image, create `files/state/gpu-capture.request`
 with `adb shell run-as net.stearlight.quest touch`. The next Linux frame is

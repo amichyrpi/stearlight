@@ -20,8 +20,9 @@ def sha(path):
 
 
 def verify(apk):
-    if not 0 < apk.stat().st_size < LIMIT:
-        raise ValueError('Standalone APK must be nonempty and smaller than 2 GiB')
+    size = apk.stat().st_size
+    if not 0 < size < LIMIT:
+        raise ValueError(f'Standalone APK is {size / 1024**3:.3f} GiB; must be nonempty and smaller than 2 GiB')
     with zipfile.ZipFile(apk) as archive:
         for name in ('AndroidManifest.xml', 'classes.dex', 'assets/boot/clips.json',
                      'assets/quest-dependencies.json', 'lib/arm64-v8a/libstearlight_quest.so',

@@ -31,7 +31,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libtalloc-dev
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libtalloc-dev zstd
       - name: Check Quest sources and packaging
         run: bash build_files/quest/check.sh
 
@@ -75,16 +75,19 @@ jobs:
           sudo rm -rf /opt/ghc /usr/share/dotnet
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
-            cmake ninja-build pkg-config bison flex glslang-tools zlib1g-dev patchelf ffmpeg zstd \
+            cmake ninja-build pkg-config bison flex glslang-tools zlib1g-dev patchelf ffmpeg zstd libvulkan-dev \
             libdbus-1-dev libdrm-dev libpam0g-dev libglvnd-dev libx11-dev libx11-xcb-dev libxext-dev \
             libxrandr-dev libxxf86vm-dev libxcb-glx0-dev libxcb-shm0-dev libxcb-dri2-0-dev libxcb-dri3-dev \
             libxcb-randr0-dev libxcb-render0-dev libxcb-shape0-dev libxrender-dev \
-            libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev libxshmfence-dev python3-venv python3-packaging
+            libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev libxshmfence-dev \
+            python3-venv python3-packaging python3-mako python3-yaml
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - name: Install pinned Android tools
         run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.3.13750724' 'cmake;3.22.1'
       - uses: gradle/actions/setup-gradle@v4
@@ -102,8 +105,7 @@ jobs:
       - name: Extract the verified build rootfs
         run: |
           (cd rootfs-input && sha256sum -c SHA256SUMS)
-          mkdir quest-root
-          tar --zstd -xf rootfs-input/frame-rootfs.tar.zst -C quest-root
+          bash build_files/quest/extract-rootfs.sh rootfs-input/frame-rootfs.tar.zst quest-root
           rm rootfs-input/frame-rootfs.tar.zst
       - name: Build the Linux adapters, GPU drivers and complete payload
         run: |
@@ -113,7 +115,7 @@ jobs:
             --root "$PWD/quest-root" --work "$PWD/quest-work" \
             --android-ndk "$ANDROID_HOME/ndk/27.3.13750724" --output "$PWD/quest-payload"
       - name: Restore the continuous signing identity
-        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous))
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && ((github.event_name == 'push' && !github.event.repository.fork) || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous))
         env:
           QUEST_SIGNING_KEYSTORE_BASE64: ${{ secrets.QUEST_SIGNING_KEYSTORE_BASE64 }}
         run: |
@@ -146,14 +148,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: quest-build-logs
-          path: quest-work/quest-payload-build.log
+          path: |
+            quest-work/quest-payload-build.log
+            quest-apk-build/outputs/apk/debug/*.apk
+          compression-level: 0
           retention-days: 7
           if-no-files-found: ignore
 
   continuous-release:
     name: Continuous build release
     needs: quest-apk
-    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous))
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && ((github.event_name == 'push' && !github.event.repository.fork) || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous))
     runs-on: ubuntu-24.04
     permissions:
       contents: write

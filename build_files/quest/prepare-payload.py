@@ -477,12 +477,12 @@ def main():
     prefix = proot / "data/data/com.termux/files/usr"
     jni = output / "jniLibs/arm64-v8a"
     jni.mkdir(parents=True, exist_ok=True)
-    for source, name in [("bin/proot", "libproot_exec.so"), ("libexec/proot/loader", "libproot_loader.so"),
-                          ("lib/libtalloc.so.2.5.0", "libtalloc.so"), ("lib/libandroid-shmem.so", "libandroid-shmem.so")]:
+    for source, name in [("lib/libtalloc.so.2.5.0", "libtalloc.so"), ("lib/libandroid-shmem.so", "libandroid-shmem.so")]:
         shutil.copyfile(prefix / source, jni / name)
     run(sys.executable, REPO / "build_files/quest/build-proot.py",
         "--archive", fetch(LOCK["sources"]["proot"], downloads), "--prefix", prefix,
-        "--android-ndk", args.android_ndk.resolve(), "--output", jni / "libproot_exec.so")
+        "--android-ndk", args.android_ndk.resolve(), "--output", jni / "libproot_exec.so",
+        "--loader-output", jni / "libproot_loader.so")
     headers = output / "include/openxr"
     headers.mkdir(parents=True, exist_ok=True)
     for name, spec in LOCK["openxr"].items():
