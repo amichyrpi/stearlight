@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/amichyrpi/stearlight/releases/tag/temp-build"><strong>Install Stearlight OS</strong></a>
+  <a href="https://github.com/amichyrpi/stearlight/releases/tag/continuous"><strong>Install Stearlight OS</strong></a>
   ·
   <a href="https://github.com/amichyrpi/stearlight#known-issues">Known issues</a>
 </p>
