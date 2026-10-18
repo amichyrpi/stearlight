@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import sys
 
@@ -298,6 +299,15 @@ def main():
         os.execve(loader, compositor, environment)
         return
     print("Stearlight FEX: launching " + command[0], file=sys.stderr, flush=True)
+    # Steam can replace FEX between app launches. Adapt its verified build in
+    # this existing launcher, including after a runtime download, before exec.
+    adapter = Path("/opt/quest/prepare-fex.py")
+    if adapter.is_file():
+        try:
+            runpy.run_path(str(adapter))["prepare"](tool / "usr/bin/FEX",
+                environment.get("STEARLIGHT_FEX_SIGNAL_FIX", "1") == "0")
+        except (OSError, ValueError) as error:
+            print(f"Quest FEX signal adapter unavailable: {error}", file=sys.stderr)
     os.execve(tool / "usr/bin/FEX", [str(tool / "usr/bin/FEX"), *command], environment)
 
 

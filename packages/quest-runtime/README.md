@@ -281,6 +281,14 @@ GATT server or Linux Bluetooth audio stack is provided. Linux PulseAudio sends
 through AudioRecord as a 48 kHz mono source. Allow microphone access in the
 headset; denying it leaves speaker output available. Both streams stop when
 the app loses OpenXR or Android audio focus. No microphone recordings are saved.
+Speaker PCM is drained on its own audio-priority thread into a 60 ms queue;
+after a stall, excess old frames are discarded instead of accumulating delay.
+PulseAudio's output sink disables rewinds and caps idle bursts at 50 ms. The
+Android track is primed before playback, starts with 40 ms of buffering, and
+can grow to 80 ms after underruns (or the device minimum if larger). These
+are individual buffer limits, not a measured end-to-end sync guarantee.
+`adb logcat -s StearlightAudio` reports underruns, queue depth, dropped frames
+and the longest receiver gap every 30 seconds while audio is active.
 The native PCVR player uses PipeWire. Its speaker and microphone endpoints
 tunnel through the same PulseAudio bridge; WirePlumber links the streams on
 each launch without a host-side audio service.

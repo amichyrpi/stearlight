@@ -395,6 +395,7 @@ def main():
     gamescope_scripts.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(linux / "gamescope-local-games.lua", gamescope_scripts / "90-quest-local-games.lua")
     shutil.copyfile(linux / "prepare-game-runtime.sh", quest / "prepare-game-runtime.sh")
+    shutil.copyfile(linux / "prepare-fex.py", quest / "prepare-fex.py")
     shutil.copyfile(linux / "fex-game-launcher.py", quest / "fex-game-launcher.py")
     shutil.copyfile(linux / "prepare-gamepad-ui.py", quest / "prepare-gamepad-ui.py")
     for name in ("proton-game-launcher.py", "proton-runtime-entry.sh", "audio-namespace-launcher.sh"):
@@ -445,6 +446,9 @@ def main():
     shutil.copyfile(linux / "prepare-steam-client.sh", quest / "prepare-steam-client.sh")
     shutil.copyfile(linux / "steam-channel-args.sh", quest / "steam-channel-args.sh")
     shutil.copyfile(linux / "prepare-cef.sh", quest / "prepare-cef.sh")
+    shutil.copyfile(linux / "prepare-steam-input.py", quest / "prepare-steam-input.py")
+    run("aarch64-linux-gnu-gcc", "-O2", "-static", "-Wall", "-Wextra", "-Werror",
+        linux / "game-launch-wrapper.c", "-o", quest / "game-launch-wrapper")
     shutil.copyfile(linux / "prepare-frame-controls.sh", quest / "prepare-frame-controls.sh")
     shutil.copyfile(linux / "steamwebhelper-launcher.sh", quest / "steamwebhelper-launcher.sh")
     shutil.copyfile(linux / "cef-arguments.sh", quest / "cef-arguments.sh")

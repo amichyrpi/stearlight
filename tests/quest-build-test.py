@@ -30,6 +30,7 @@ class QuestBuildTest(unittest.TestCase):
                  'opt/quest/libquest_socket.so opt/quest/libquest_video.so opt/quest/libquest_streaming_drm.so '
                  'opt/quest/libquest_gamepad_aarch64.so opt/quest/libquest_gamepad_x86_64.so '
                  'opt/quest/fna3d/libFNA3D.so.0 opt/quest/prepare-flatpak.py '
+                 'opt/quest/prepare-steam-input.py opt/quest/game-launch-wrapper opt/quest/prepare-game-runtime.sh opt/quest/prepare-fex.py '
                  'opt/quest/stearlight-quest/bin/linuxarm64/driver_stearlight-quest.so '
                  'opt/stearlight-desktop/usr/bin/plasmashell opt/stearlight-desktop/usr/bin/dolphin '
                  'opt/stearlight-desktop/usr/bin/konsole opt/stearlight-browser/usr/lib/chromium/chromium').split()
@@ -74,6 +75,8 @@ class QuestBuildTest(unittest.TestCase):
             package.verify(self.apk(corrupt=True))
         with self.assertRaisesRegex(ValueError, 'Incomplete Quest runtime'):
             package.verify(self.apk(omit='opt/stearlight-desktop/usr/bin/plasmashell'))
+        with self.assertRaisesRegex(ValueError, 'Incomplete Quest runtime'):
+            package.verify(self.apk(omit='opt/quest/prepare-steam-input.py'))
 
     def test_fresh_base_and_separate_overlay_install(self):
         base, overlay = self.root / 'base', self.root / 'overlay'

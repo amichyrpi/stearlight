@@ -29,6 +29,7 @@ if ! grep -Fq '# STEARLIGHT_STEAM_CHANNEL' "$root/RUNSTEAM.sh";then
 fi
 /bin/sh "$quest/prepare-store-browser.sh"
 /bin/sh "$quest/prepare-cef.sh" || true
+/usr/bin/python3 "$quest/prepare-steam-input.py"
 /bin/sh "$quest/frame-steam-ipc" || true
 /bin/sh "$quest/prepare-streaming-client.sh"
 /bin/sh "$quest/prepare-game-runtime.sh"

@@ -60,7 +60,6 @@ It includes:
 ## Known-issues
 
 - [ ] Overall performance is really slow due to the emulation system.
-- [ ] Audio is laggy and stutters.
 
 ## Performance
 

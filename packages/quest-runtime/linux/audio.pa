@@ -1,6 +1,8 @@
 # Private PCM sockets connect Linux PulseAudio to Android AudioTrack/AudioRecord.
 load-module module-native-protocol-unix
-load-module module-null-sink sink_name=quest_output rate=48000 channels=2 format=s16le sink_properties=device.description=Quest_Speakers
+# The PCM socket cannot retract audio already delivered to Android. Disable
+# rewinds and cap idle sink bursts at PulseAudio's 50 ms norewinds limit.
+load-module module-null-sink sink_name=quest_output rate=48000 channels=2 format=s16le norewinds=true sink_properties=device.description=Quest_Speakers
 load-module module-null-sink sink_name=quest_capture rate=48000 channels=1 format=s16le sink_properties=device.description=Quest_Microphone_Input
 load-module module-remap-source master=quest_capture.monitor source_name=quest_microphone channels=1 source_properties="device.description=Quest_Microphone device.class=sound"
 set-default-sink quest_output
