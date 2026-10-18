@@ -22,10 +22,6 @@
     "sha256": "5296b88a0f1e012e2cb9ada150a2bbadf728ca81e5a4fb2ab43c83a4d2158606"
   },
   "android": {
-    "proot": {
-      "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.96_aarch64.deb",
-      "sha256": "8199dca06dccb693ec09fb1759e3e1ad08b4863f0c11c612f89c20bd9ecdc1a0"
-    },
     "talloc": {
       "url": "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.5.0_aarch64.deb",
       "sha256": "556591f43bb773ad8777e1a29522640866a55f95dab71914418b94a8c58ad5a7"
@@ -37,8 +33,8 @@
   },
   "linux": {
     "xvfb": {
-      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/xvfb-21.1.24-r0.apk",
-      "sha256": "c9329333d980fc60fb3ce1f55d048f231b2dbc0811e87202ae75ba757aa01426"
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/xvfb-21.1.25-r0.apk",
+      "sha256": "331d5b08ef3e7c1b9574e04ecb2e61aa4834b401e30f98ecb1b292e7c52ba488"
     },
     "xfont": {
       "url": "https://dl-cdn.alpinelinux.org/alpine/edge/community/aarch64/libxfont2-2.0.8-r0.apk",

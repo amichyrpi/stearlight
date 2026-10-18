@@ -78,6 +78,13 @@ class QuestBuildTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Incomplete Quest runtime'):
             package.verify(self.apk(omit='opt/quest/prepare-steam-input.py'))
 
+    def test_oversized_apk_is_rejected_with_actual_size(self):
+        path = self.root / 'oversized.apk'
+        with path.open('wb') as stream:
+            stream.truncate(package.LIMIT + 1)
+        with self.assertRaisesRegex(ValueError, r'2\.000 GiB.*smaller than 2 GiB'):
+            package.verify(path)
+
     def test_fresh_base_and_separate_overlay_install(self):
         base, overlay = self.root / 'base', self.root / 'overlay'
         for root in (base, overlay):

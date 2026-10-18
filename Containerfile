@@ -1,24 +1,27 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=$TARGETPLATFORM debian:bookworm AS glibc
+FROM --platform=$TARGETPLATFORM debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858 AS glibc
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2 libatk-bridge2.0-0 libcups2 libdbus-1-3 libdrm2 libegl1 \
     libgbm1 libgl1 libgles2 libgtk2.0-0 libibus-1.0-5 libnm0 libnss3 libva2 \
     libopenal1 libpulse0 libsdl2-2.0-0 libssh2-1 libssl3 libsystemd0 \
     libvulkan1 mesa-vulkan-drivers \
     libx11-6 libx11-xcb1 libxcomposite1 libxdamage1 libxfixes3 \
+    libxcb-shape0 libxcb-render0 libxcb-shm0 libxcb-glx0 libxcb-dri2-0 \
+    libxcb-dri3-0 libxcb-present0 libxcb-randr0 libxcb-sync1 libxcb-xfixes0 \
+    libxshmfence1 libxrender1 libxxf86vm1 libxext6 \
     libxrandr2 libxss1 libxtst6 && rm -rf /var/lib/apt/lists/*
 
 # Steam Frame's extracted Steam Runtime Vulkan loader requires GLIBC_2.38.
 # Keep the Debian Bookworm graphics package stage, but supply a newer glibc
 # runtime from Debian Trixie to the Alpine VM.
-FROM --platform=$TARGETPLATFORM debian:trixie-slim AS glibc-runtime
+FROM --platform=$TARGETPLATFORM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS glibc-runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libice6 libsm6 libpipewire-0.3-0t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # The Frame Gamescope process must load a glibc Vulkan ICD. Alpine's Venus
 # library uses musl and cannot be loaded into Valve's compositor.
-FROM --platform=$TARGETPLATFORM debian:trixie-slim AS venus
+FROM --platform=$TARGETPLATFORM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS venus
 COPY packages/stearlight-runtime/mesa/0001-complete-x11-software-presents.patch /tmp/mesa-wsi.patch
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl xz-utils patch meson ninja-build pkg-config \
@@ -44,7 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && printf '%s\n' '{"file_format_version":"1.0.0","ICD":{"library_path":"/opt/stearlight-vulkan/libvulkan_virtio.so","api_version":"1.3.256"}}' > /out/virtio_icd.json \
     && printf '%s\n' 'Mesa 26.1.6; Stearlight X11 software presentation completion patch' > /out/package-version.txt
 
-FROM --platform=$TARGETPLATFORM debian:bookworm AS fake-tracking
+FROM --platform=$TARGETPLATFORM debian:bookworm@sha256:2c037a04925515fdd6ea85ea14a682d0e79931f5e9f5d07b6dbfc6ba12f9e858 AS fake-tracking
 RUN apt-get update && apt-get install -y --no-install-recommends g++ libxcb1-dev libxcb-shm0-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=openvr-headers / /src/openvr/
@@ -69,17 +72,19 @@ RUN mkdir -p /out && g++ -std=c++17 -O2 -fPIC -shared \
 RUN gcc -std=c11 -O2 -Wall -Wextra -Werror -isystem /src/openvr \
     /src/dashboard_ready.c -ldl -o /out/dashboard-ready
 
-FROM --platform=$TARGETPLATFORM alpine:edge AS bluetooth-firmware
+FROM --platform=$TARGETPLATFORM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS bluetooth-firmware
 RUN apk add --no-cache linux-firmware-intel \
     && mkdir -p /out/intel \
     && cp /lib/firmware/intel/ibt-* /out/intel/
 
-FROM --platform=$TARGETPLATFORM alpine:edge AS rootfs
+FROM --platform=$TARGETPLATFORM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS rootfs
+# The Quest overlay supplies pinned Noto core, CJK and emoji fonts. Alpine's
+# font-noto-all duplicates them and grows with the repository's package set.
 # Valve identifies WebUI socket peers with lsof's field output (-F upnR).
 # BusyBox's lsof applet cannot supply that protocol and causes HTTP 403.
 RUN apk add --no-cache alpine-base bash coreutils curl git nano dbus dbus-x11 e2fsprogs \
     eudev eudev-openrc udev-init-scripts-openrc \
-    font-dejavu font-noto-all font-noto-cjk font-noto-emoji grim linux-firmware-none linux-lts bluez bluez-openrc linux-tools-usbip \
+    font-dejavu grim linux-firmware-none linux-lts bluez bluez-openrc linux-tools-usbip \
     lsof mesa-dri-gallium mesa-egl mesa-vulkan-virtio \
     mesa-vulkan-swrast mpv networkmanager networkmanager-cli networkmanager-openrc \
     pulseaudio pulseaudio-utils seatd util-linux-misc vulkan-loader xorg-server \
