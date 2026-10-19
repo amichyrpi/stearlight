@@ -16,5 +16,23 @@
     "name": "VTOL VR",
     "status": "playable",
     "notes": "Launches at 10–15 FPS."
+  },
+  {
+    "appid": 2386250,
+    "name": "It gets so lonely here",
+    "status": "playable",
+    "notes": "Story, controller input and music tested on Quest 2. Uses software rendering to avoid the OpenGL startup crash."
+  },
+  {
+    "appid": 1598780,
+    "name": "Silly Polly Beast",
+    "status": "unsupported",
+    "notes": "Standalone launch is unreliable on Quest 2: startup hangs or closes during scene loading."
+  },
+  {
+    "appid": 2530470,
+    "name": "Garden of Witches",
+    "status": "verified",
+    "notes": "Local gameplay, picture, Quest gamepad controls and music confirmed on Quest 2. Startup is slow."
   }
 ]

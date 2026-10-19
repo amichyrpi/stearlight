@@ -85,8 +85,8 @@ void reset(){
 }
 }
 extern "C" {
-int SDL_Init(uint32_t flags){if(!api.init)load(RTLD_NEXT);int result=api.init?api.init(flags):-1;if(result==0&&(flags&0x2200))feed();return result;}
-int SDL_InitSubSystem(uint32_t flags){if(!api.subsystem)load(RTLD_NEXT);int result=api.subsystem?api.subsystem(flags):-1;if(result==0&&(flags&0x2200))feed();return result;}
+int SDL_Init(uint32_t flags){if(const char* mode=getenv("STEARLIGHT_WINE_GAMEPAD");mode&&!strcmp(mode,"1"))flags&=~0x1000u;if(!api.init)load(RTLD_NEXT);int result=api.init?api.init(flags):-1;if(result==0&&(flags&0x2200))feed();return result;}
+int SDL_InitSubSystem(uint32_t flags){if(const char* mode=getenv("STEARLIGHT_WINE_GAMEPAD");mode&&!strcmp(mode,"1"))flags&=~0x1000u;if(!api.subsystem)load(RTLD_NEXT);int result=api.subsystem?api.subsystem(flags):-1;if(result==0&&(flags&0x2200))feed();return result;}
 void SDL_PumpEvents(){feed();if(api.pump)api.pump();}
 int SDL_PollEvent(void* event){feed();return api.poll?api.poll(event):0;}
 int SDL_WaitEventTimeout(void* event,int timeout){feed();return api.wait?api.wait(event,timeout):0;}

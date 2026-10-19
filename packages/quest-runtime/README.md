@@ -111,6 +111,16 @@ After the performance changes, the user confirmed that looking around its
 room/menu and moving both controllers felt smoother. Runtime platform aliases
 use relative links so Steam updates can move the platform without leaving
 PRoot hard-link aliases pointing at a removed version.
+Garden of Witches uses WineD3D through Zink/Turnip in a dedicated Gamescope
+window. Its launch adapter disables Unity graphics jobs and unused Wine
+services while retaining Explorer, RPC and the SDL/HID gamepad path. It
+exempts the virtual pad's `0000/0000` ID from Steam's controller filter;
+other filtered devices remain unchanged. Proton still prepares the prefix,
+then replaces its Python waiter to fit Quest's existing process limit.
+Linux shares the Quest's system clock. The APK copies the active timezone's
+TZif rules from Android's own database and updates `/etc/localtime` and
+`/etc/timezone` before Linux starts and when the headset timezone changes.
+This includes daylight-saving transitions without a separate clock service.
 Local Linux game panels use 960x540 at the game's 60 Hz, matching the 75%
 Quest profile and reducing shared-memory frame copies by 44% from 1280x720.
 The headset's display remains at 72 Hz. `STEARLIGHT_QUEST_GAME_PROFILE=0`
@@ -227,6 +237,11 @@ Mesa's X11 shared-memory presentation connects
 the emulated game to Gamescope's Xwayland display. FNA games default to Vulkan and SDL audio
 uses PulseAudio. Explicit game overrides are preserved. Shader pre-caching
 uses one replay worker to stay within Android's child-process limit.
+
+It gets so lonely here (2386250) uses Ren'Py's software renderer to avoid its
+OpenGL startup crash under FEX. Story, controller input and music have been
+tested on Quest 2. An explicit `RENPY_RENDERER` value is preserved, and
+`STEARLIGHT_QUEST_GAME_PROFILE=0` disables this game profile.
 
 Local Frame Android games are not supported yet. Steam launches VRChat's
 ARM64 APK through Lepton. Its Android container needs private namespaces and

@@ -13,11 +13,15 @@ python3 tests/quest-build-test.py
 python3 packages/quest-runtime/tests/clean-build.test.py
 python3 tests/recovery-test.py
 python3 packages/quest-runtime/tests/rootfs-archive.test.py
+python3 packages/quest-runtime/tests/clock-bridge.test.py
 python3 packages/quest-runtime/tests/audio-queue.test.py
 python3 packages/quest-runtime/tests/loading-boost.test.py
 python3 packages/quest-runtime/tests/mountinfo-cache.test.py
 python3 packages/quest-runtime/tests/steam-input.test.py
 python3 packages/quest-runtime/tests/game-launch-wrapper.test.py
+python3 packages/quest-runtime/tests/game-runtime.test.py
+python3 packages/quest-runtime/tests/proton-runtime.test.py
+python3 packages/quest-runtime/tests/game-reaper.test.py
 python3 packages/quest-runtime/tests/fex-signal.test.py
 test_binary=$(mktemp)
 trap 'rm -f -- "$test_binary"' EXIT

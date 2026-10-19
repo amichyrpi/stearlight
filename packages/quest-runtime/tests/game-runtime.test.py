@@ -15,6 +15,26 @@ spec.loader.exec_module(launcher)
 
 
 class GameRuntimeTest(unittest.TestCase):
+    def test_renpy_renderer_profile_is_scoped_and_preserves_overrides(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tool = Path(folder) / "FEX-Emu/fex-compat-tool"
+            platform = tool.parent.parent / "SteamLinuxRuntime_soldier/soldier_platform_test"
+            platform.mkdir(parents=True)
+            (platform / "usr-mtree.txt.gz").touch()
+            for appid, overrides, expected in (
+                ("2386250", {}, "sw"),
+                ("2386250", {"RENPY_RENDERER": "gl"}, "gl"),
+                ("2386250", {"STEARLIGHT_QUEST_GAME_PROFILE": "0"}, None),
+                ("123", {}, None),
+            ):
+                with self.subTest(appid=appid, overrides=overrides):
+                    environment = {"SteamAppId": appid, "STEAM_COMPAT_DATA_PATH": folder, **overrides}
+                    with patch.object(launcher.sys, "argv", [str(tool), "run", "/games/Game"]), patch.dict(os.environ, environment, clear=True), patch.object(launcher, "prepare_rootfs", return_value=Path(folder)), patch.object(launcher.os, "setsid"), patch.object(launcher.os, "execve") as execute:
+                        launcher.main()
+                    actual = execute.call_args.args[2]
+                    self.assertEqual(actual.get("RENPY_RENDERER"), expected)
+                    self.assertEqual(actual["SteamAppId"], appid)
+
     def test_gamepad_preload_is_scoped_to_the_fex_guest(self):
         with tempfile.TemporaryDirectory() as folder:
             library = Path(folder) / "libquest_gamepad_x86_64.so"

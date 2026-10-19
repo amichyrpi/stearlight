@@ -54,7 +54,7 @@ def main():
         '',
     ]
     for key, (label, icon) in BADGES.items():
-        lines.append(f'<img src="{STEAM_DOC_ICONS}{icon}" alt="{label}" height="24"> **{label}**  ')
+        lines.append(f'<img src="{STEAM_DOC_ICONS}{icon}" alt="{label}" height="24"> **{label}**<br>')
     lines += [
         '',
         '## Tested games',
@@ -86,7 +86,7 @@ def main():
         'If Steam is unreachable, the generator uses the optional `name` fallback.',
         '',
     ]
-    OUTPUT.write_text('\n'.join(lines), encoding='utf-8')
+    OUTPUT.write_bytes('\n'.join(lines).encode('utf-8'))
     print(f'Created {OUTPUT} ({len(games)} games)')
 
 if __name__ == '__main__':

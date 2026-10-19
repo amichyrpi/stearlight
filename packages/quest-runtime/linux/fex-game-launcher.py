@@ -272,6 +272,11 @@ def main():
     environment["MESA_SHADER_CACHE_MAX_SIZE"] = environment["MESA_GLSL_CACHE_MAX_SIZE"] = environment.get("STEARLIGHT_SHADER_CACHE_MAX_SIZE", "128M")
     environment.setdefault("FNA3D_FORCE_DRIVER", "Vulkan")
     environment.setdefault("SDL_AUDIODRIVER", "pulseaudio")
+    if environment.get("SteamAppId") == "2386250" and environment.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
+        # This game's Ren'Py 7.5 crashes while initializing its GL renderer
+        # under FEX. Its built-in software renderer keeps the visual novel
+        # playable; Gamescope and the headset compositor remain GPU rendered.
+        environment.setdefault("RENPY_RENDERER", "sw")
     if environment.get("STEARLIGHT_FEX_GAMESCOPE") != "1" and environment.get("SteamAppId"):
         app = environment["SteamAppId"]
         environment["STEARLIGHT_FEX_GAMESCOPE"] = "1"

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,12 +16,136 @@ spec.loader.exec_module(launcher)
 
 
 class ProtonRuntimeTest(unittest.TestCase):
+    def test_garden_boot_preserves_other_settings_and_original(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = Path(folder)
+            boot = game / "Garden of Witches_Data/boot.config"
+            boot.parent.mkdir()
+            original = "gfx-enable-gfx-jobs=1\ngfx-enable-native-gfx-jobs=1\nbuild-guid=keep\n"
+            boot.write_text(original)
+            launcher.prepare_garden_boot(game)
+            self.assertEqual(boot.read_text(), original.replace("jobs=1", "jobs=0"))
+            self.assertEqual(boot.with_name("boot.config.quest-original").read_text(), original)
+            launcher.prepare_garden_boot(game)
+            self.assertEqual(boot.with_name("boot.config.quest-original").read_text(), original)
+
+    def test_garden_prefix_retains_hid_drivers_and_rpc(self):
+        with tempfile.TemporaryDirectory() as folder:
+            compat = Path(folder)
+            registry = compat / "pfx/system.reg"
+            registry.parent.mkdir()
+            original = ''.join(
+                '[System\\\\ControlSet001\\\\Services\\\\' + name + '] 0\n' + value + '\n\n'
+                for name, value in [
+                    ("PlugPlay", '"Start"=dword:00000002'),
+                    ("Eventlog", '"Start"=dword:00000002'),
+                    ("RpcSs", '"Start"=dword:00000002'),
+                    ("winebus", '"Group"="WinePlugPlay"\n"Start"=dword:00000003'),
+                    ("winehid", '"Group"="WinePlugPlay"\n"Start"=dword:00000003'),
+                ])
+            registry.write_text(original)
+            launcher.prepare_garden_prefix(compat)
+            updated = registry.read_text()
+            self.assertIn('PlugPlay] 0\n"Start"=dword:00000004', updated)
+            self.assertIn('Eventlog] 0\n"Start"=dword:00000004', updated)
+            self.assertIn('RpcSs] 0\n"Start"=dword:00000002', updated)
+            self.assertEqual(updated.count('"Group"="System Bus Extender"\n"Start"=dword:00000003'), 2)
+            launcher.prepare_garden_prefix(compat)
+            self.assertEqual(registry.with_name("system.reg.quest-garden-original").read_text(), original)
+
+    def test_proton_exec_keeps_prefix_setup_imports_arguments_and_log(self):
+        class Executed(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as folder:
+            tool = Path(folder)
+            (tool / "quest_test_dependency.py").write_text("value = 42\n")
+            proton = tool / "proton"
+            proton.write_text('''import os, subprocess, sys
+import quest_test_dependency
+assert quest_test_dependency.value == 42
+assert subprocess.call(["wineserver", "-w"], env=dict(os.environ)) == 0
+with open(sys.argv[2], "w") as log:
+    subprocess.call(["/runtime/wine", r"c:\\windows\\system32\\steam.exe", sys.argv[3]],
+                    env=dict(os.environ), stdout=log, stderr=log)
+''')
+            environment = {"SteamAppId": "2530470", "PULSE_SERVER": "unix:/pulse"}
+            with patch.dict(os.environ, clear=True), patch.object(sys, "argv", []), \
+                 patch.object(sys, "path", list(sys.path)), \
+                 patch.object(launcher, "prepare_garden_prefix") as prepare, \
+                 patch.object(launcher.subprocess, "call", return_value=0) as call, \
+                 patch.object(launcher.os, "dup2") as duplicate, \
+                 patch.object(launcher.os, "execvpe", side_effect=Executed) as execute:
+                with self.assertRaises(Executed):
+                    launcher.exec_proton([str(proton), "waitforexitandrun", str(tool / "log"), "/game/two words.exe"], environment, tool)
+                self.assertIs(launcher.subprocess.call, call)
+                self.assertEqual(call.call_args.args[0], ["wineserver", "-w"])
+                prepare.assert_called_once_with(tool)
+                self.assertEqual(execute.call_args.args, ("/runtime/wine", ["/runtime/wine", r"c:\windows\system32\steam.exe", "/game/two words.exe"], environment))
+                self.assertEqual([c.args[1] for c in duplicate.call_args_list], [1, 2])
+            sys.modules.pop("quest_test_dependency", None)
+
+    def test_flat_panel_separates_wine_libraries_and_preserves_arguments(self):
+        environment = {"PATH": "/usr/bin", "LD_PRELOAD": "/wine-only.so", "LD_LIBRARY_PATH": "/wine",
+                       "MESA_VK_WSI_DEBUG": "sw", "PULSE_SERVER": "unix:/pulse", "SteamAppId": "2530470"}
+        with patch.object(launcher.os, "getpgrp", return_value=10), \
+             patch.object(launcher.os, "getpid", return_value=20), \
+             patch.object(launcher.os, "setsid") as isolate, \
+             patch.object(launcher.os, "execve") as execute:
+            arguments = ["--verb=waitforexitandrun", "--", "/Proton/proton", "waitforexitandrun", "/game/two words.exe"]
+            launcher.launch_flat_panel(Path("/runtime/entry"), arguments, environment, "2530470")
+        _, command, actual = execute.call_args.args
+        isolate.assert_called_once()
+        self.assertEqual(command[-len(arguments):], arguments)
+        self.assertIn("valve.steam.desktopgame.2530470", command)
+        self.assertNotIn("LD_PRELOAD", actual)
+        self.assertNotIn("LD_LIBRARY_PATH", actual)
+        self.assertNotIn("MESA_VK_WSI_DEBUG", actual)
+        self.assertEqual(actual["PULSE_SERVER"], environment["PULSE_SERVER"])
+        self.assertEqual(actual["STEARLIGHT_PROTON_DIRECT"], "1")
+
     def test_native_gamepad_adapter_is_scoped_to_wine_and_can_be_disabled(self):
         with patch.object(Path, "is_file", return_value=True):
             environment = launcher.launch_environment(Path("/runtime"), {"SteamAppId": "123"})
             self.assertIn("/opt/quest/libquest_gamepad_aarch64.so", environment["LD_PRELOAD"])
             disabled = launcher.launch_environment(Path("/runtime"), {"STEARLIGHT_STEAM_INPUT": "0"})
             self.assertNotIn("gamepad", disabled["LD_PRELOAD"])
+
+    def test_garden_retains_window_and_gamepad_services_without_changing_vtol(self):
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder)
+            platform = runtime / "steamrt4_platform_test"
+            platform.mkdir()
+            (platform / "usr-mtree.txt.gz").touch()
+            command = ["helper", str(runtime / "_v2-entry-point"), "--", "/Proton/proton",
+                       "waitforexitandrun", "/game/Game.exe"]
+            for appid in ("2530470", "667970"):
+                environment = {"SteamAppId": appid, "STEAM_COMPAT_DATA_PATH": "/prefix",
+                               "STEAM_COMPAT_INSTALL_PATH": "/game", "STEARLIGHT_PROTON_GAMESCOPE": "1",
+                               "SDL_GAMECONTROLLER_IGNORE_DEVICES": "0x28de/0x11ff,0x0000/0x0000,0X0000/0X0000",
+                               "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT": "0x045e/0x028e"}
+                with patch.object(launcher.sys, "argv", command), patch.dict(os.environ, environment, clear=True), \
+                     patch.object(launcher, "prepare_platform", return_value=platform / "files"), \
+                     patch.object(launcher.os, "open", return_value=50), patch.object(launcher.os, "dup2"), \
+                     patch.object(launcher.os, "close"), patch.object(launcher.os, "execve") as execute, \
+                     patch.object(launcher, "exec_proton") as proton, \
+                     patch.object(launcher, "prepare_garden_boot"), patch.object(launcher, "prepare_vtol_bindings"), \
+                     patch.object(launcher, "prepare_vtol_textures"), patch.object(launcher, "prepare_vtol_prefix"), \
+                     patch.object(launcher, "release_streaming_audio"):
+                    launcher.main()
+                actual = proton.call_args.args[1] if appid == "2530470" else execute.call_args.args[2]
+                overrides = actual["WINEDLLOVERRIDES"].split(";")
+                self.assertNotIn("explorer.exe=d", overrides)
+                self.assertNotIn("rpcss.exe=d", overrides)
+                if appid == "2530470":
+                    self.assertNotIn("winebus.sys=d", overrides)
+                    self.assertEqual(actual["STEARLIGHT_WINE_GAMEPAD"], "1")
+                    self.assertEqual(actual["PROTON_USE_WINED3D"], "1")
+                    self.assertEqual(actual["SDL_GAMECONTROLLER_IGNORE_DEVICES"], "0x28de/0x11ff")
+                    self.assertEqual(actual["SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"], "0x045e/0x028e,0x0000/0x0000")
+                else:
+                    self.assertIn("winebus.sys=d", overrides)
+                    self.assertNotIn("STEARLIGHT_WINE_GAMEPAD", actual)
+                    self.assertEqual(actual["SDL_GAMECONTROLLER_IGNORE_DEVICES"], environment["SDL_GAMECONTROLLER_IGNORE_DEVICES"])
 
     def test_migrated_proot_alias_retargets_current_canonical_file(self):
         with tempfile.TemporaryDirectory() as folder:

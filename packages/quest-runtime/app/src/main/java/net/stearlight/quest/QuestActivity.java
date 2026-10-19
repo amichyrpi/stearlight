@@ -34,6 +34,7 @@ public final class QuestActivity extends NativeActivity {
  private NetworkBridge networkBridge;
  private UsbNetworkBridge usbNetworkBridge;
  private DesktopAppBridge desktopAppBridge;
+ private ClockBridge clockBridge;
  native void setUsbNetwork(long handle);
  native int networkInterfaceIndex(String name);
  private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));batteryStatus=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=batteryStatus==BatteryManager.BATTERY_STATUS_CHARGING||batteryStatus==BatteryManager.BATTERY_STATUS_FULL;batteryPlugged=intent.getIntExtra(BatteryManager.EXTRA_PLUGGED,0);batteryVoltage=intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE,0);batteryTemperature=intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,0);}};
@@ -42,6 +43,7 @@ public final class QuestActivity extends NativeActivity {
   new File(getStateDirectory(),"gpu-capture.request").delete();
   new File(getStateDirectory(),"xr-eye-capture.request").delete();
   super.onCreate(state);
+  clockBridge=new ClockBridge(new File(getFilesDir(),"rootfs"));
   registerReceiver(batteryReceiver,new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
   audioBridge=new AudioBridge(this,new File(getStateDirectory()));
   List<String> missing=new ArrayList<>();for(String p:new String[]{Manifest.permission.BLUETOOTH_CONNECT,Manifest.permission.BLUETOOTH_SCAN,Manifest.permission.BLUETOOTH_ADVERTISE,Manifest.permission.RECORD_AUDIO})if(checkSelfPermission(p)!=PackageManager.PERMISSION_GRANTED)missing.add(p);
@@ -70,6 +72,7 @@ public final class QuestActivity extends NativeActivity {
  public boolean bootComplete(){if(bootAnimation==null)bootAnimation=new BootAnimation(getAssets());return bootAnimation.bootComplete();}
  private void writeDeviceState(){
   if(closing)return;
+  syncClock();
   try {
    JSONObject state=new JSONObject();state.put("battery_percent",batteryPercent);state.put("charging",charging);
    state.put("battery_status",batteryStatus);state.put("battery_plugged",batteryPlugged);state.put("battery_voltage_mv",batteryVoltage);state.put("battery_temperature_tenths_c",batteryTemperature);
@@ -83,6 +86,7 @@ public final class QuestActivity extends NativeActivity {
    if(link!=null){File root=new File(getFilesDir(),"rootfs"),resolv=new File(root,"etc/resolv.conf");if(resolv.exists()){StringBuilder text=new StringBuilder();for(java.net.InetAddress address:link.getDnsServers())text.append("nameserver ").append(address.getHostAddress()).append('\n');try(FileOutputStream out=new FileOutputStream(resolv)){out.write(text.toString().getBytes(StandardCharsets.US_ASCII));}}}
   }catch(Exception e){Log.w("StearlightQuest","Device state update failed",e);}
  }
+ private void syncClock(){try{clockBridge.sync(TimeZone.getDefault().getID());}catch(IOException e){Log.w("StearlightQuest","Timezone sync failed",e);}}
  private void status(String value) throws IOException {File dir=new File(getStateDirectory());try(FileOutputStream out=new FileOutputStream(new File(dir,"linux-status"))){out.write(value.getBytes(StandardCharsets.UTF_8));}Log.i("StearlightQuest",value);}
  private void startLinux(){
   // Quest can recreate the Activity in the same Android process. Keep the
@@ -143,6 +147,7 @@ public final class QuestActivity extends NativeActivity {
     try(InputStream in=getAssets().open("quest-overlay.bin")){RootfsArchive.extract(in,root,preserveRuntime);}
     java.nio.file.Files.write(overlayMarker.toPath(),overlayVersion.getBytes(StandardCharsets.US_ASCII));
    }
+   syncClock();
    File tmp=new File(getFilesDir(),"tmp"),shm=new File(getFilesDir(),"shm");
    removeTree(tmp,tmp);removeTree(shm,shm);tmp.mkdirs();shm.mkdirs();
    String nativeDir=getApplicationInfo().nativeLibraryDir;

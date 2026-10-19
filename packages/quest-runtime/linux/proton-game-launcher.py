@@ -1,6 +1,8 @@
 #!/usr/bin/python3
 """Run Valve's ARM64 Proton in the app's existing Linux filesystem."""
 import gzip
+import runpy
+import subprocess
 import hashlib
 import json
 import os
@@ -221,6 +223,92 @@ def release_streaming_audio():
     raise RuntimeError("Streaming audio did not release the local VR process budget")
 
 
+def prepare_garden_boot(game):
+    # Use the tested single-thread graphics path for this Unity build.
+    boot = game / "Garden of Witches_Data/boot.config"
+    data = boot.read_text()
+    updated = re.sub(r"(?m)^(gfx-enable-(?:native-)?gfx-jobs)=1$", r"\1=0", data)
+    if updated != data:
+        backup = boot.with_name(boot.name + ".quest-original")
+        if not backup.exists():
+            backup.write_text(data)
+        temporary = boot.with_name(boot.name + ".quest-next")
+        temporary.write_text(updated)
+        temporary.replace(boot)
+
+
+def prepare_garden_prefix(compat):
+    # Called after Proton has finished and waited for prefix initialization.
+    # Keep Wine's SDL/HID input and RPC; omit desktop-only autostart services.
+    registry = compat / "pfx/system.reg"
+    data = registry.read_text()
+    updated = data
+    for name in ("PlugPlay", "Eventlog"):
+        pattern = r'(\[System\\\\ControlSet001\\\\Services\\\\' + name + r'\][^\n]*\n)(.*?)(?=\n\[|\Z)'
+        updated = re.sub(pattern, lambda m: m[1] + re.sub(r'"Start"=dword:[0-9a-f]+', '"Start"=dword:00000004', m[2]), updated, flags=re.S | re.I)
+    for name in ("winebus", "winehid"):
+        pattern = r'(\[System\\\\ControlSet001\\\\Services\\\\' + name + r'\][^\n]*\n)(.*?)(?=\n\[|\Z)'
+        updated = re.sub(pattern, lambda m: m[1] + m[2].replace('"Group"="WinePlugPlay"', '"Group"="System Bus Extender"'), updated, flags=re.S | re.I)
+    if updated != data:
+        backup = registry.with_name(registry.name + ".quest-garden-original")
+        if not backup.exists():
+            backup.write_text(data)
+        temporary = registry.with_name(registry.name + ".quest-next")
+        temporary.write_text(updated)
+        temporary.replace(registry)
+
+
+def launch_flat_panel(entry, arguments, environment, appid):
+    env = dict(environment)
+    env["STEARLIGHT_PROTON_GAMESCOPE"] = "1"
+    env["STEARLIGHT_PROTON_DIRECT"] = "1"
+    env["XKB_CONFIG_ROOT"] = "/opt/frame-gamescope/share/X11/xkb"
+    env["PATH"] = "/opt/quest:" + env["PATH"]
+    env.pop("LD_PRELOAD", None)
+    env.pop("LD_LIBRARY_PATH", None)
+    env.pop("MESA_VK_WSI_DEBUG", None)
+    loader = "/opt/frame-gamescope/lib/ld-linux-aarch64.so.1"
+    width, height = (960, 540) if env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0" else (1280, 720)
+    command = [loader, "--preload", "/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so.0",
+               "--library-path", "/opt/frame-gamescope/lib:/usr/lib/aarch64-linux-gnu",
+               "/opt/frame-gamescope/bin/gamescope", "--backend", "openvr", "--expose-wayland",
+               "--xwayland-count", "1", "-w", str(width), "-h", str(height), "-W", str(width), "-H", str(height), "-r", "60",
+               "--steam", "--virtual-connector-strategy", "SingleApplication",
+               "--vr-overlay-key", "valve.steam.desktopgame." + appid,
+               "--vr-app-overlay-key", "valve.steam.desktopgame",
+               "--vr-overlay-show-immediately", "--vr-overlay-enable-control-bar", "--vr-overlay-enable-control-bar-keyboard",
+               "--", "/usr/bin/python3", "/opt/quest/proton-game-launcher.py", str(entry), *arguments]
+    if os.getpgrp() != os.getpid():
+        os.setsid()
+    os.execve(loader, command, env)
+
+
+def exec_proton(arguments, environment, compat):
+    # Steam's outer reaper and Gamescope already own the game's lifetime.
+    # Keep Valve's prefix setup, then replace the redundant Python waiter.
+    original = subprocess.call
+    def call(command, *extra, **options):
+        if (isinstance(command, (list, tuple)) and len(command) > 2
+                and Path(command[0]).name == "wine"
+                and command[1].lower() == r"c:\windows\system32\steam.exe"):
+            prepare_garden_prefix(compat)
+            for key, fd in (("stdout", 1), ("stderr", 2)):
+                target = options.get(key)
+                if target is not None:
+                    os.dup2(target.fileno(), fd)
+            os.execvpe(command[0], command, options.get("env", os.environ))
+        return original(command, *extra, **options)
+    subprocess.call = call
+    sys.argv = list(arguments)
+    sys.path.insert(0, str(Path(arguments[0]).parent))
+    os.environ.clear()
+    os.environ.update(environment)
+    try:
+        runpy.run_path(arguments[0], run_name="__main__")
+    finally:
+        subprocess.call = original
+
+
 def main():
     entry = Path(sys.argv[1])
     args = sys.argv[2:]
@@ -244,6 +332,25 @@ def main():
         os.close(fd)
     files = prepare_platform(platforms[-1].parent)
     env = launch_environment(files, os.environ)
+    if appid == "2530470":
+        if env.get("STEARLIGHT_PROTON_GAMESCOPE") != "1":
+            release_streaming_audio()
+            launch_flat_panel(entry, sys.argv[2:], env, appid)
+            return
+        prepare_garden_boot(Path(env["STEAM_COMPAT_INSTALL_PATH"]))
+        env.setdefault("PROTON_USE_WINED3D", "1")
+        env["STEARLIGHT_WINE_GAMEPAD"] = "1"
+        # SDL's virtual joystick has no USB vendor/product ID. Steam's list
+        # of controllers handled through Steam Input includes 0000/0000;
+        # Wine applies that list too, hiding our process-local virtual pad.
+        ignored = "SDL_GAMECONTROLLER_IGNORE_DEVICES"
+        env[ignored] = ",".join(pair for pair in env.get(ignored, "").split(",")
+                                if pair.strip().lower() != "0x0000/0x0000")
+        allowed = "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"
+        if allowed in env:
+            env[allowed] += ",0x0000/0x0000"
+        overrides = "plugplay.exe=d;wevtsvc=d;wineusb.sys=d;winebth.sys=d;UnityCrashHandler64.exe=d;tabtip.exe=d;winemenubuilder.exe=d;gameoverlayrenderer64=d;gameoverlayrenderer=d"
+        env["WINEDLLOVERRIDES"] = overrides + ";" + env.get("WINEDLLOVERRIDES", "")
     if appid == "667970" and env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
         game = Path(env["STEAM_COMPAT_INSTALL_PATH"])
         prepare_vtol_bindings(game)
@@ -252,9 +359,14 @@ def main():
         release_streaming_audio()
         overrides = "winebus.sys=d;wineusb.sys=d;winebth.sys=d;winemenubuilder.exe=d;tabtip.exe=d;UnityCrashHandler64.exe=d"
         env["WINEDLLOVERRIDES"] = overrides + ";" + env.get("WINEDLLOVERRIDES", "")
+    if appid == "2530470":
+        width, height = (960, 540) if env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0" else (1280, 720)
+        args += ["-force-gfx-direct", "-screen-fullscreen", "0", "-screen-width", str(width), "-screen-height", str(height)]
     # The official Proton Python script still owns Wine, Steam identity,
     # per-game prefixes, and game exit. No extra supervisor is kept alive.
-    if Path(args[0]).name == "proton":
+    if appid == "2530470" and Path(args[0]).name == "proton":
+        exec_proton(args, env, Path(env["STEAM_COMPAT_DATA_PATH"]))
+    elif Path(args[0]).name == "proton":
         os.execve("/usr/bin/python3", ["/usr/bin/python3", *args], env)
     else:
         os.execvpe(args[0], args, env)

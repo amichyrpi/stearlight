@@ -24,7 +24,13 @@ int main(int argc,char** argv){
  auto count=symbol<int(*)()>(sdl,"SDL_NumJoysticks");auto isController=symbol<int(*)(int)>(sdl,"SDL_IsGameController");
  auto open=symbol<void*(*)(int)>(sdl,"SDL_GameControllerOpen");auto button=symbol<uint8_t(*)(void*,int)>(sdl,"SDL_GameControllerGetButton");
  auto axis=symbol<int16_t(*)(void*,int)>(sdl,"SDL_GameControllerGetAxis");
- assert(init(0x2000)==0);assert(count()==1&&isController(0));void* controller=open(0);assert(controller);
+ bool wine=getenv("STEARLIGHT_WINE_GAMEPAD")&&!strcmp(getenv("STEARLIGHT_WINE_GAMEPAD"),"1");
+ auto initialized=symbol<uint32_t(*)(uint32_t)>(sdl,"SDL_WasInit");
+ assert(init(0x3000)==0);assert(bool(initialized(0x1000))!=wine);
+ symbol<void(*)(uint32_t)>(sdl,"SDL_QuitSubSystem")(0x1000);
+ assert(symbol<int(*)(uint32_t)>(sdl,"SDL_InitSubSystem")(0x1000)==0);
+ assert(bool(initialized(0x1000))!=wine);
+ assert(count()==1&&isController(0));void* controller=open(0);assert(controller);
  pump();assert(button(controller,0)&&button(controller,2));assert(axis(controller,1)<-24000);assert(axis(controller,5)==32767);
  publish(true,false);pump();assert(!button(controller,0)&&button(controller,2));assert(axis(controller,5)==0);
  input.session_focused=0;publish(true,true);pump();assert(!button(controller,2)&&axis(controller,1)==0);
