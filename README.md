@@ -59,7 +59,7 @@ It includes:
 
 ## Known-issues
 
-- [ ] Overall performance is really slow due to the emulation system.
+All clear for once! I hope it stays like this.
 
 ## Performance
 
