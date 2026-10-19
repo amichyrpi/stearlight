@@ -62,10 +62,13 @@ template<class T>T deviceFunction(VkDevice device,const char* name){if(!realDevi
 bool wsiExtension(const char* name){return !strcmp(name,"VK_KHR_surface")||!strcmp(name,"VK_KHR_xcb_surface")||!strcmp(name,"VK_KHR_xlib_surface")||!strcmp(name,"VK_KHR_display")||!strcmp(name,"VK_EXT_direct_mode_display")||!strcmp(name,"VK_EXT_acquire_xlib_display")||!strcmp(name,"VK_EXT_display_surface_counter")||!strcmp(name,"VK_KHR_swapchain")||!strcmp(name,"VK_KHR_present_id")||!strcmp(name,"VK_KHR_present_wait")||!strcmp(name,"VK_EXT_display_control");}
 VkResult appendExtensions(std::vector<VkExtensionProperties>& values,const char* const* names,size_t size,uint32_t* count,VkExtensionProperties* output){for(size_t i=0;i<size;i++){bool found=false;for(const auto& value:values)if(!strcmp(value.extensionName,names[i]))found=true;if(!found){VkExtensionProperties value{};strncpy(value.extensionName,names[i],VK_MAX_EXTENSION_NAME_SIZE-1);value.specVersion=1;values.push_back(value);}}if(!output){*count=values.size();return VK_SUCCESS;}uint32_t n=std::min(*count,(uint32_t)values.size());memcpy(output,values.data(),n*sizeof(*output));*count=n;return n<values.size()?VK_INCOMPLETE:VK_SUCCESS;}
 struct Surface {uint64_t magic=QUEST_GPU_MAGIC;};
+#include "mirror-readback.h"
 struct Swapchain {
  bool offscreen=false;
  QuestShareMirror* mirror=nullptr;void* mirrorPixels[QUEST_GPU_BUFFERS]{};bool mirrorMapFailed=false;
- uint64_t mirrorChecked=0,mirrorPublished=0,mirrorNext=0;uint32_t mirrorEyeWidth=0;std::vector<uint32_t> mirrorX;
+ uint64_t mirrorChecked=0,mirrorPublished=0,mirrorNext=0;uint32_t mirrorEyeWidth=0;std::vector<uint32_t> mirrorX,mirrorRow;
+ uint64_t mirrorReport=0,mirrorCopyNs=0;uint32_t mirrorCaptures=0;
+ MirrorReadback mirrorReadback;
  VkDevice device=VK_NULL_HANDLE;int socket=-1;QuestGpuHello hello{};VkFormat imageFormat=VK_FORMAT_UNDEFINED;VkImage images[QUEST_GPU_BUFFERS]{};VkDeviceMemory memory[QUEST_GPU_BUFFERS]{};uint32_t next=0;uint64_t frame=0,presented=0;std::mutex lock;std::condition_variable presentedCondition;
  uint32_t queueFamily=0;VkCommandPool pool=VK_NULL_HANDLE;VkCommandBuffer acquireCommands[QUEST_GPU_BUFFERS]{},releaseCommands[QUEST_GPU_BUFFERS]{};bool released[QUEST_GPU_BUFFERS]{};
  VkFence releaseFence=VK_NULL_HANDLE;
@@ -114,36 +117,61 @@ struct Swapchain {
   }
   return VK_SUCCESS;
  }
- void publishMirror(uint32_t slot){
+ bool mirrorDue(){
   uint64_t now=quest_share_now();
-  if(!mirror){if(now-mirrorChecked<250000000)return;mirrorChecked=now;mirror=quest_share_map(0);if(!mirror)return;}
+  if(!mirror){if(now-mirrorChecked<250000000)return false;mirrorChecked=now;mirror=quest_share_map(0);if(!mirror)return false;}
   uint64_t requested=__atomic_load_n(&mirror->requested_ns,__ATOMIC_ACQUIRE);
-  if(!requested||now<requested||now-requested>2000000000ull||now<mirrorNext||mirrorMapFailed)return;
+  return requested&&now>=requested&&now-requested<=2000000000ull&&now>=mirrorNext;
+ }
+ VkRect2D mirrorCrop(uint32_t slot){
+  const auto& buffer=hello.buffers[slot];uint32_t eyeWidth=buffer.width/2,eyeHeight=buffer.height;
+  // The dashboard crop includes its bottom dock; immersive games stay centered.
+  uint32_t width=std::min(eyeWidth,(uint32_t)((uint64_t)eyeHeight*QUEST_SHARE_WIDTH/QUEST_SHARE_HEIGHT));
+  uint32_t height=std::min(eyeHeight,(uint32_t)((uint64_t)width*QUEST_SHARE_HEIGHT/QUEST_SHARE_WIDTH));
+  uint32_t left=(eyeWidth-width)/2,top=(eyeHeight-height)/2;
+  if(__atomic_load_n(&mirror->reserved,__ATOMIC_ACQUIRE)&QUEST_SHARE_DASHBOARD)top=std::min(eyeHeight-height,top+eyeHeight*12/100);
+  return {{(int32_t)left,(int32_t)top},{width,height}};
+ }
+ bool recordMirror(uint32_t slot){
+  if(!mirrorDue())return false;
+  auto crop=mirrorCrop(slot);if(!crop.extent.width||!crop.extent.height)return false;
+  return mirrorReadback.initialize(device,queueFamily,imageFormat)&&
+   mirrorReadback.record(images[slot],crop.offset.x,crop.offset.y,crop.extent.width,crop.extent.height);
+ }
+ void publishMirror(uint32_t slot,bool copied){
+  if(!mirrorDue()||(!copied&&mirrorMapFailed))return;
+  uint64_t now=quest_share_now();
+  const uint32_t* cached=copied?mirrorReadback.read():nullptr;
+  if(copied&&!cached)return;
+  if(!copied){
   if(!mirrorPixels[slot]){
    VkResult result=D(vkMapMemory)(device,memory[slot],0,VK_WHOLE_SIZE,0,&mirrorPixels[slot]);
    if(result!=VK_SUCCESS){mirrorPixels[slot]=nullptr;mirrorMapFailed=true;fprintf(stderr,"Quest sharing: GPU memory cannot be mapped (%d)\n",result);return;}
   }
   VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};range.memory=memory[slot];range.size=VK_WHOLE_SIZE;
   if(D(vkInvalidateMappedMemoryRanges)(device,1,&range)!=VK_SUCCESS)return;
+  }
   const auto& buffer=hello.buffers[slot];uint32_t eyeWidth=buffer.width/2,eyeHeight=buffer.height;
   if(!eyeWidth||!eyeHeight)return;
-  // Keep game views centered. The dashboard sits lower in the eye, so its
-  // spectator crop includes the bottom dock as well as the main panel.
-  uint32_t cropWidth=std::min(eyeWidth,(uint32_t)((uint64_t)eyeHeight*QUEST_SHARE_WIDTH/QUEST_SHARE_HEIGHT));
-  uint32_t cropHeight=std::min(eyeHeight,(uint32_t)((uint64_t)cropWidth*QUEST_SHARE_HEIGHT/QUEST_SHARE_WIDTH));
-  uint32_t sourceLeft=(eyeWidth-cropWidth)/2,sourceTop=(eyeHeight-cropHeight)/2;
-  if(__atomic_load_n(&mirror->reserved,__ATOMIC_ACQUIRE)&QUEST_SHARE_DASHBOARD)
-   sourceTop=std::min(eyeHeight-cropHeight,sourceTop+eyeHeight*12/100);
-  if(mirrorEyeWidth!=eyeWidth){mirrorX.resize(QUEST_SHARE_WIDTH);for(unsigned x=0;x<QUEST_SHARE_WIDTH;x++)mirrorX[x]=sourceLeft+(uint64_t)x*cropWidth/QUEST_SHARE_WIDTH;mirrorEyeWidth=eyeWidth;}
+  auto crop=mirrorCrop(slot);uint32_t cropWidth=crop.extent.width,cropHeight=crop.extent.height,sourceLeft=crop.offset.x,sourceTop=crop.offset.y;
+  if(mirrorEyeWidth!=eyeWidth){mirrorX.resize(QUEST_SHARE_WIDTH);mirrorRow.resize(eyeWidth);for(unsigned x=0;x<QUEST_SHARE_WIDTH;x++)mirrorX[x]=sourceLeft+(uint64_t)x*cropWidth/QUEST_SHARE_WIDTH;mirrorEyeWidth=eyeWidth;}
   static const auto toSrgb=[]{std::vector<unsigned char> lut(256);for(int i=0;i<256;i++){double c=i/255.;lut[i]=(unsigned char)std::lround(255*(c<=0.0031308?12.92*c:1.055*std::pow(c,1./2.4)-0.055));}return lut;}();
   bool bgra=imageFormat==VK_FORMAT_B8G8R8A8_UNORM||imageFormat==VK_FORMAT_B8G8R8A8_SRGB;
   bool encoded=imageFormat==VK_FORMAT_B8G8R8A8_SRGB||imageFormat==VK_FORMAT_R8G8B8A8_SRGB;
   uint32_t sequence=__atomic_load_n(&mirror->sequence,__ATOMIC_RELAXED)&~1u;
   __atomic_store_n(&mirror->sequence,sequence+1,__ATOMIC_SEQ_CST);
   __atomic_thread_fence(__ATOMIC_SEQ_CST);
+  if(cached){
+   auto* destination=reinterpret_cast<uint32_t*>(mirror->pixels);
+   for(size_t pixel=0;pixel<(size_t)QUEST_SHARE_WIDTH*QUEST_SHARE_HEIGHT;pixel++)destination[pixel]=cached[pixel]|0xff000000u;
+  }else{
   const auto* source=static_cast<const unsigned char*>(mirrorPixels[slot]);
   for(uint32_t y=0;y<QUEST_SHARE_HEIGHT;y++){
-   const auto* row=source+(size_t)(sourceTop+(uint64_t)y*cropHeight/QUEST_SHARE_HEIGHT)*buffer.stride*4;
+   const auto* gpuRow=source+(size_t)(sourceTop+(uint64_t)y*cropHeight/QUEST_SHARE_HEIGHT)*buffer.stride*4;
+   // Imported display memory is expensive for individual CPU reads. Read a
+   // contiguous row once, then crop/convert from ordinary cached memory.
+   memcpy(mirrorRow.data(),gpuRow,(size_t)eyeWidth*4);
+   const auto* row=reinterpret_cast<const unsigned char*>(mirrorRow.data());
    auto* destination=mirror->pixels+(size_t)y*QUEST_SHARE_WIDTH*4;
    if(encoded&&bgra){
     auto* words=reinterpret_cast<uint32_t*>(destination);const auto* pixels=reinterpret_cast<const uint32_t*>(row);
@@ -156,11 +184,15 @@ struct Swapchain {
     destination[0]=encoded?b:toSrgb[b];destination[1]=encoded?g:toSrgb[g];destination[2]=encoded?r:toSrgb[r];destination[3]=255;destination+=4;
    }
   }
+  }
   __atomic_store_n(&mirror->frame,frame+1,__ATOMIC_RELAXED);__atomic_store_n(&mirror->sequence,sequence+2,__ATOMIC_RELEASE);
   syscall(SYS_futex,&mirror->sequence,FUTEX_WAKE,INT32_MAX,nullptr,nullptr,0);
   if(!mirrorPublished)fprintf(stderr,"QUEST_SHARE_MIRROR_READY %ux%u format=%d\n",QUEST_SHARE_WIDTH,QUEST_SHARE_HEIGHT,imageFormat);
   mirrorNext=(!mirrorNext||now-mirrorNext>100000000)?now+33333333:mirrorNext+33333333;
   mirrorPublished=now;
+  mirrorCopyNs+=quest_share_now()-now;++mirrorCaptures;
+  if(!mirrorReport)mirrorReport=now;
+  if(now-mirrorReport>=5000000000ull){fprintf(stderr,"Quest sharing mirror: %.2f ms/capture, %.1f fps\n",mirrorCopyNs/1e6/mirrorCaptures,mirrorCaptures*1e9/(now-mirrorReport));mirrorReport=now;mirrorCopyNs=0;mirrorCaptures=0;}
  }
  ~Swapchain(){if(mirror)munmap(mirror,sizeof(*mirror));if(tracking)munmap(const_cast<QuestTracking*>(tracking),sizeof(QuestTracking));if(releaseFence)D(vkDestroyFence)(device,releaseFence,nullptr);if(pool)D(vkDestroyCommandPool)(device,pool,nullptr);if(socket>=0)close(socket);for(int i=0;i<QUEST_GPU_BUFFERS;i++){if(mirrorPixels[i])D(vkUnmapMemory)(device,memory[i]);if(images[i])D(vkDestroyImage)(device,images[i],nullptr);if(memory[i])D(vkFreeMemory)(device,memory[i],nullptr);}}
  VkResult initializeCapture(VkDevice value,const VkSwapchainCreateInfoKHR* info){
@@ -268,7 +300,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue,const VkPresentIn
   std::vector<VkPipelineStageFlags> stages(info->waitSemaphoreCount,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
   VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};submit.waitSemaphoreCount=info->waitSemaphoreCount;
   submit.pWaitSemaphores=info->pWaitSemaphores;submit.pWaitDstStageMask=stages.data();
-  submit.commandBufferCount=1;submit.pCommandBuffers=&swap->releaseCommands[slot];
+  bool mirrorCopied=swap->recordMirror(slot);
+  VkCommandBuffer commands[2]={mirrorCopied?swap->mirrorReadback.command:swap->releaseCommands[slot],swap->releaseCommands[slot]};
+  submit.commandBufferCount=mirrorCopied?2:1;submit.pCommandBuffers=commands;
   VkResult result=VK_SUCCESS;
   if(!swap->releaseFence){VkFenceCreateInfo create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};result=D(vkCreateFence)(device,&create,nullptr,&swap->releaseFence);}
   else result=D(vkResetFences)(device,1,&swap->releaseFence);
@@ -279,7 +313,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue,const VkPresentIn
   auto rendered=std::chrono::steady_clock::now();
   swap->gpuMs+=std::chrono::duration<double,std::milli>(rendered-start).count();
   if(result==VK_SUCCESS){
-   swap->publishMirror(slot);
+   swap->publishMirror(slot,mirrorCopied);
    swap->released[slot]=true;QuestGpuPresent present=swap->inputPoses[slot];
    present.magic=QUEST_GPU_MAGIC;present.slot=slot;present.frame_id=++swap->frame;
    present.vk_format=static_cast<uint32_t>(swap->imageFormat);QuestGpuRelease release{};

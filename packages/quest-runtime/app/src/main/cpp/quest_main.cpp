@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <ctime>
 #include <chrono>
+#include <fstream>
 #include "quest_bridge.h"
 #include "play_space.h"
 #include "gpu_bridge.h"
@@ -59,6 +60,9 @@ struct Runtime {
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
  LoadingBoost loadingBoost;
  bool cpuBoosted=false;
+ bool cpuThermalLimited=false;
+ double boostPollAt=0,boostRetryAt=0;
+ timespec boostStamp[2]{};uint32_t boostMenu=0;
  float requestedRate=72;
  bool bootFinished=false;
  int hapticSocket=-1;
@@ -172,6 +176,12 @@ struct Runtime {
    tracking->session_visible=visible;tracking->session_focused=focused;
    __atomic_add_fetch(&tracking->sequence,1,__ATOMIC_RELEASE);
    if(state.state==XR_SESSION_STATE_EXITING||state.state==XR_SESSION_STATE_LOSS_PENDING)return false;
+  }else if(event.type==XR_TYPE_EVENT_DATA_PERF_SETTINGS_EXT){
+   auto& performance=*reinterpret_cast<XrEventDataPerfSettingsEXT*>(&event);
+   if(performance.domain==XR_PERF_SETTINGS_DOMAIN_CPU_EXT&&performance.subDomain==XR_PERF_SETTINGS_SUB_DOMAIN_THERMAL_EXT){
+    cpuThermalLimited=performance.toLevel!=XR_PERF_SETTINGS_NOTIF_LEVEL_NORMAL_EXT;
+    LOG("CPU thermal boost limit %d",cpuThermalLimited);
+   }
   }else if(event.type==XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB){auto& rate=*reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(&event);tracking->refresh_hz=rate.toDisplayRefreshRate;LOG("Display refresh changed to %.0f Hz",rate.toDisplayRefreshRate);}else if(event.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED){for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size=0;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d interaction profile %s",i,name);}}event={XR_TYPE_EVENT_DATA_BUFFER};}return true;
  }
  float value(XrAction action,int i){XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};info.action=action;info.subactionPath=hands[i];XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};XR(xrGetActionStateFloat(session,&info,&state));return state.isActive?state.currentState:0;}
@@ -234,12 +244,27 @@ struct Runtime {
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   if(!bootFinished)bootFinished=bootComplete();
   bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootFinished;
-  struct stat boostRequest{};
-  bool gameLoading=stat((directory+"/performance-boost.request").c_str(),&boostRequest)==0&&time(nullptr)-boostRequest.st_mtime<15;
-  bool boost=loadingBoost.update(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),loading||gameLoading,focused);
-  if(setPerformance&&boost!=cpuBoosted){
+  double boostNow=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  uint32_t menu=sample.buttons[0]&QUEST_MENU;
+  if(menu&&!boostMenu)loadingBoost.request(boostNow,2);
+  boostMenu=menu;
+  if(boostNow>=boostPollAt){
+   boostPollAt=boostNow+.1;
+   const char* signals[]={"/performance-boost.request","/interaction-boost.request"};
+   for(int i=0;i<2;i++){
+    std::string path=directory+signals[i];struct stat request{};
+    if(stat(path.c_str(),&request)||
+       (request.st_mtim.tv_sec==boostStamp[i].tv_sec&&request.st_mtim.tv_nsec==boostStamp[i].tv_nsec))continue;
+    boostStamp[i]=request.st_mtim;double deadline=0;std::ifstream input(path);input>>deadline;
+    if(std::isfinite(deadline)&&deadline>boostNow)loadingBoost.request(boostNow,deadline-boostNow);
+   }
+  }
+  bool boost=loadingBoost.update(boostNow,loading,focused&&!cpuThermalLimited);
+  if(setPerformance&&boost!=cpuBoosted&&boostNow>=boostRetryAt){
    XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,boost?XR_PERF_SETTINGS_LEVEL_BOOST_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
-   LOG("Loading CPU boost %d result %d",boost,result);cpuBoosted=boost;
+   LOG("Activity CPU boost %d result %d",boost,result);
+   if(XR_SUCCEEDED(result))cpuBoosted=boost;
+   boostRetryAt=XR_SUCCEEDED(result)?boostNow:boostNow+2;
   }
   bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;
   if(!loading&&visible&&compositionReady)camera.update();else camera.suspend();

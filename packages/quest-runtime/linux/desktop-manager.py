@@ -29,6 +29,8 @@ SHADOW = Path('/etc/shadow')
 MODE = Path('/run/stearlight/quest/desktop-mode.active')
 READY = Path('/run/stearlight/quest/desktop-mode.ready')
 FOCUS = Path('/run/stearlight/quest/desktop-focus.request')
+BOOST = Path('/run/stearlight/quest/performance-boost.request')
+INTERACTION_BOOST = Path('/run/stearlight/quest/interaction-boost.request')
 PORT = 27771
 
 
@@ -395,6 +397,9 @@ param={STATE}/xorg.%s.log
     def call(self, operation, args):
         if operation == 'status':
             return self.status()
+        if operation == 'performance-boost':
+            atomic(INTERACTION_BOOST, f'{time.monotonic() + 2:.6f}\n')
+            return {}
         if operation == 'client-channel':
             steam_channels.select_client(args['channel'])
             return steam_channels.status()
@@ -409,6 +414,7 @@ param={STATE}/xorg.%s.log
                 raise ValueError('Plasma desktop is not installed')
             if operation == 'start' and self.remote:
                 raise ValueError('Close the Remote Desktop session before opening the headset desktop')
+            atomic(BOOST, f'{time.monotonic() + 15:.6f}\n')
             if operation == 'start':
                 # Leave room for applications within Android's child-process
                 # budget. SSH remains usable; RDP resumes in Gaming Mode.

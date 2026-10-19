@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "performance-boost.h"
 
 /* quest-game-launch-wrapper: retain Android's inherited process priority.
  * Build statically: Steam supplies mixed-architecture overlay preloads that
@@ -31,6 +32,7 @@ int main(int argc, char **argv) {
         if (options && !strcmp(argv[i], "--oom-score-adjust=900")) continue;
         arguments[count++] = argv[i];
     }
+    quest_request_loading_boost();
     execv(path, arguments);
     perror("Quest game launcher exec");
     return 127;
