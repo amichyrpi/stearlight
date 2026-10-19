@@ -1,0 +1,20 @@
+[
+  {
+    "appid": 438100,
+    "name": "VRChat",
+    "status": "unsupported",
+    "notes": "Game will not launch due to anti-cheat / Lepton compatibility issues."
+  },
+  {
+    "appid": 504230,
+    "name": "Celeste",
+    "status": "verified",
+    "notes": "Runs at a stable 60 FPS."
+  },
+  {
+    "appid": 667970,
+    "name": "VTOL VR",
+    "status": "playable",
+    "notes": "Launches at 10–15 FPS."
+  }
+]

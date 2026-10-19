@@ -57,6 +57,11 @@ It includes:
 - Desktop mode
 - Hand tracking
 
+## Supported games
+
+You can find a list of all games tested on Stearlight OS, along with their
+compatibility ratings and known issues, in the [Standalone Compatibility](STANDALONE_COMPATIBILITY.md) file.
+
 ## Known-issues
 
 - [ ] Overall performance is really slow due to the emulation system.
