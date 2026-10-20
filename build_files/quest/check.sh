@@ -19,6 +19,7 @@ python3 packages/quest-runtime/tests/loading-boost.test.py
 python3 packages/quest-runtime/tests/mountinfo-cache.test.py
 python3 packages/quest-runtime/tests/steam-input.test.py
 python3 packages/quest-runtime/tests/sdl-gamepad.test.py
+python3 packages/quest-runtime/tests/video-queue.test.py
 python3 packages/quest-runtime/tests/game-launch-wrapper.test.py
 python3 packages/quest-runtime/tests/game-runtime.test.py
 python3 packages/quest-runtime/tests/proton-runtime.test.py
@@ -26,6 +27,8 @@ python3 packages/quest-runtime/tests/game-reaper.test.py
 python3 packages/quest-runtime/tests/fex-signal.test.py
 test_binary=$(mktemp)
 trap 'rm -f -- "$test_binary"' EXIT
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp -isystem packages/openvr/headers packages/quest-runtime/tests/hand-skeleton.test.cpp -o "$test_binary"
+"$test_binary"
 cc -std=c11 -Wall -Wextra -Werror packages/quest-runtime/tests/syscall-fast-path.test.c -o "$test_binary"
 "$test_binary"
 cc -O2 -std=c11 -Wall -Wextra -Werror packages/quest-runtime/tests/capture-matrix.test.c -o "$test_binary"

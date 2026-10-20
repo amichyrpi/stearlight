@@ -315,8 +315,8 @@ def main():
         loader = "/opt/frame-gamescope/lib/ld-linux-aarch64.so.1"
         libraries = "/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so.0"
         preload = ["--preload", libraries]
-        # Match the Quest scene's 75% profile. Celeste's 320x180 artwork still
-        # scales by a whole factor of three, with fewer readback/copy pixels.
+        # Keep local panels compact independently of the eye-buffer size.
+        # Celeste's 320x180 artwork scales by three with fewer copy pixels.
         width, height = (960, 540) if environment.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0" else (1280, 720)
         compositor = [loader, *preload, "--library-path", "/opt/frame-gamescope/lib:/usr/lib/aarch64-linux-gnu",
                       "/opt/frame-gamescope/bin/gamescope", "--backend", "openvr", "--expose-wayland",

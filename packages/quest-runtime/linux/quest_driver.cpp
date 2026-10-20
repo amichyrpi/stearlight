@@ -4,6 +4,7 @@
 #include "controller_pose.h"
 #include "controller_input.h"
 #include "gamepad_state.h"
+#include "hand_skeleton.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -22,6 +23,13 @@
 
 namespace {
 QuestTracking state{};const QuestTracking* shared=nullptr;
+QuestHands handState{};const QuestHands* sharedHands=nullptr;
+void openHands(){
+ int fd=open("/run/stearlight/quest/hands",O_RDONLY|O_CLOEXEC);if(fd<0)return;
+ struct stat info{};if(!fstat(fd,&info)&&info.st_size==sizeof(QuestHands)){
+  void* mapping=mmap(nullptr,sizeof(QuestHands),PROT_READ,MAP_SHARED,fd,0);if(mapping!=MAP_FAILED)sharedHands=static_cast<QuestHands*>(mapping);
+ }close(fd);
+}
 bool readTracking(){if(!shared)return false;for(int attempt=0;attempt<8;attempt++){uint32_t before=__atomic_load_n(&shared->sequence,__ATOMIC_ACQUIRE);if(before&1)continue;memcpy(&state,shared,sizeof(state));uint32_t after=__atomic_load_n(&shared->sequence,__ATOMIC_ACQUIRE);if(before==after)return state.magic==QUEST_BRIDGE_MAGIC&&state.version==QUEST_BRIDGE_VERSION;}return false;}
 vr::DriverPose_t trackedPose(const QuestPose& source){vr::DriverPose_t p{};p.qWorldFromDriverRotation.w=p.qDriverFromHeadRotation.w=1;p.qRotation={source.orientation[3],source.orientation[0],source.orientation[1],source.orientation[2]};for(int i=0;i<3;i++)p.vecPosition[i]=source.position[i];if(state.predicted_monotonic_ns){timespec now{};clock_gettime(CLOCK_MONOTONIC,&now);double seconds=static_cast<double>(now.tv_sec)+now.tv_nsec*1e-9;p.poseTimeOffset=static_cast<double>(state.predicted_monotonic_ns)*1e-9-seconds;}p.poseIsValid=(source.flags&3)==3;p.deviceIsConnected=state.session_visible&&source.flags!=0;p.result=p.poseIsValid?vr::TrackingResult_Running_OK:vr::TrackingResult_Running_OutOfRange;return p;}
 vr::HmdQuaternion_t multiply(vr::HmdQuaternion_t a,vr::HmdQuaternion_t b){return {a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z,a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w};}
@@ -85,6 +93,7 @@ public:
 };
 class Controller final:public Device {
  int hand;std::array<vr::VRInputComponentHandle_t,7> clicks{};vr::VRInputComponentHandle_t trigger=0,squeeze=0,x=0,y=0,touch=0,haptic=0;
+ vr::VRInputComponentHandle_t skeleton=0;bool skeletonReported=false;
  bool haveInputs=false,gripped=false,handMode=false;vr::VRInputComponentHandle_t gripClick=0,bumper=0,menu=0;bool previousMenu=false;std::array<bool,8> previousClicks{};std::array<float,4> previousScalars{};
 public:
  explicit Controller(int value):hand(value){}
@@ -92,10 +101,13 @@ public:
  bool acceptsHaptic(const vr::VREvent_HapticVibration_t& event)const{return haptic&&event.componentHandle==haptic&&event.containerHandle==properties;}
  vr::EVRInitError Activate(uint32_t id)override{
   haveInputs=false;gripped=false;previousMenu=false;handMode=false;
+  skeleton=0;skeletonReported=false;
   base(id,serial(),hand?"Oculus Quest2 (Right Controller)":"Oculus Quest2 (Left Controller)");auto* p=vr::VRProperties();p->SetStringProperty(properties,vr::Prop_RenderModelName_String,hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"frame_controller");p->SetStringProperty(properties,vr::Prop_InputProfilePath_String,"{frame_controller}/input/frame_controller_profile.json");p->SetStringProperty(properties,vr::Prop_ControllerType_String,"frame_controller");p->SetInt32Property(properties,vr::Prop_ControllerRoleHint_Int32,hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);p->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,false);
   // SteamVR 2.18's Frame profile gates its gamepad mode on property 2117.
   // This property is present in Valve's runtime, ahead of our public SDK.
   p->SetBoolProperty(properties,static_cast<vr::ETrackedDeviceProperty>(2117),true);
+  auto error=sharedHands?vr::VRDriverInput()->CreateSkeletonComponent(properties,hand?"/input/skeleton/right":"/input/skeleton/left",hand?"/skeleton/hand/right":"/skeleton/hand/left","/pose/raw",vr::VRSkeletalTracking_Full,nullptr,0,&skeleton):vr::VRInputError_None;
+  if(error!=vr::VRInputError_None)skeleton=0;
   vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/bumper/click",&bumper);
   vr::VRDriverInput()->CreateBooleanComponent(properties,hand?"/input/menu/click":"/input/view/click",&menu);
   const char* paths[]={"/input/a/click","/input/b/click","/input/x/click","/input/y/click","/input/thumbstick/click","/input/system/click","/input/trigger/click"};for(int i=0;i<7;i++)vr::VRDriverInput()->CreateBooleanComponent(properties,paths[i],&clicks[i]);vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/grip/click",&gripClick);vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/trigger/touch",&touch);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/trigger/value",&trigger,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/grip/value",&squeeze,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/x",&x,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/y",&y,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateHapticComponent(properties,"/output/haptic",&haptic);return vr::VRInitError_None;
@@ -110,6 +122,15 @@ public:
    handMode=nextHand;
   }
   vr::VRServerDriverHost()->TrackedDevicePoseUpdated(index,GetPose(),sizeof(vr::DriverPose_t));
+  if(handMode&&skeleton){
+   vr::VRBoneTransform_t bones[31];
+   if(quest::handSkeleton(handState.hands[hand],state.grip[hand],hand,bones)){
+    auto* input=vr::VRDriverInput();
+    auto result=input->UpdateSkeletonComponent(skeleton,vr::VRSkeletalMotionRange_WithoutController,bones,31);
+    input->UpdateSkeletonComponent(skeleton,vr::VRSkeletalMotionRange_WithController,bones,31);
+    if(result==vr::VRInputError_None&&!skeletonReported){vr::VRDriverLog()->Log(hand?"Quest right hand: real 31-bone skeleton active":"Quest left hand: real 31-bone skeleton active");skeletonReported=true;}
+   }
+  }
   const auto input=quest::controllerInput(state,hand),left=quest::controllerInput(state,0);
   uint32_t mapped=quest::frameButtons(input,left,hand);
   std::array<bool,8> buttons{};for(int i=0;i<6;i++)buttons[i]=(mapped&(1u<<i))!=0;
@@ -142,8 +163,8 @@ class Provider final:public vr::IServerTrackedDeviceProvider {
  bool havePublished=false;uint32_t publishedSequence=0;
  std::chrono::steady_clock::time_point measuredSince=std::chrono::steady_clock::now();
 public:
- vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;if(!vr::VRServerDriverHost()->TrackedDeviceAdded("STEARLIGHT-QUEST2-HMD",vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
- void Cleanup()override{head.Deactivate();left.Deactivate();right.Deactivate();if(gamepad){quest::publishGamepad(gamepad,QuestGamepadState{});munmap(gamepad,sizeof(*gamepad));gamepad=nullptr;}if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
+ vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;openHands();if(!vr::VRServerDriverHost()->TrackedDeviceAdded("STEARLIGHT-QUEST2-HMD",vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
+ void Cleanup()override{head.Deactivate();left.Deactivate();right.Deactivate();if(gamepad){quest::publishGamepad(gamepad,QuestGamepadState{});munmap(gamepad,sizeof(*gamepad));gamepad=nullptr;}if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;if(sharedHands)munmap(const_cast<QuestHands*>(sharedHands),sizeof(QuestHands));sharedHands=nullptr;handState={};VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
  const char* const* GetInterfaceVersions()override{return vr::k_InterfaceVersions;}
  void RunFrame()override{
   ++measuredCalls;
@@ -163,6 +184,9 @@ public:
    // OpenXR writes at the headset rate. Re-reading a sample must not repeat
    // SteamVR property/input work, but haptics below are polled on every call.
    if(!havePublished||publishedSequence!=state.sequence){
+    if(!questReadHands(sharedHands,handState))handState={};
+    uint64_t ns=std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    if(handState.predicted_monotonic_ns>ns+100000000||ns>handState.predicted_monotonic_ns+250000000)handState={};
     // Android owns presentation. Forward each observed OpenXR display tick
     // so Frame's renderer does not wait for an unavailable Linux display IRQ.
     if(state.session_visible&&state.predicted_monotonic_ns&&state.refresh_hz>0)

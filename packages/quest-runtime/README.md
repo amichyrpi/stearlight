@@ -10,8 +10,8 @@ between Linux processes. Steam's browser also initializes ANGLE with the real
 Turnip Vulkan renderer. SteamVR's separate OpenGL context uses the matching
 Mesa 26.1.6 Zink loader over Turnip. A GPU probe verifies opaque-fd image
 sharing by rendering in OpenGL and reading every pixel back through Vulkan.
-The eye buffers are 1374 x 1440 each: 75% of the Quest 2's native dimensions,
-reducing scene pixels by 43.75%. The Vulkan display modes and startup GPU
+The eye buffers request the Quest 2's native 1832 x 1920 dimensions, clamped
+to the OpenXR runtime's limits. The Vulkan display modes and startup GPU
 probe use the actual OpenXR buffer size. The app requests 72 Hz when supported,
 and otherwise keeps the runtime's active refresh rate. Scene rendering still falls below 72 FPS
 under load; the display refresh rate is not the scene update rate.
@@ -59,8 +59,10 @@ The non-dominant hand's menu gesture toggles the dashboard when Horizon supplies
 that event. Horizon keeps its system gestures. Tracking or focus loss releases
 pinch input, and a hand must open before clicking again. Picking up Touch
 controllers restores their models, buttons, sticks and gamepad input. Hands do
-not synthesize gamepad buttons or sticks; game-specific skeletal hand input is
-not forwarded. No hand-tracking history is recorded.
+not synthesize gamepad buttons or sticks. An optional shared mapping carries
+the 26 tracked OpenXR joints to the Linux driver, which publishes SteamVR's
+31-bone skeleton for each hand. Forwarding and presentation in streamed games
+still need headset verification. No hand-tracking history is recorded.
 The streaming player uses the matching Mesa 26.1.6 EGL vendor with a
 surfaceless display. EGL/Vulkan pixel sharing is checked on the Quest;
 the older rootfs EGL driver produces black shared images. Its V4L2 decoder
@@ -76,6 +78,12 @@ dashboard, both docks, lasers, move/resize controls and passthrough also
 passed that reopen check. Other PCVR games remain unverified.
 The separate `vrlink` PCVR player uses the same decoder through its stateful
 V4L2 interface, including source-change events and epoll notifications.
+New APKs transfer decoded NV12 pixels through shared memory instead of sending
+the full image over a socket. Older APKs retain the socket fallback. Capture
+buffers are presented in completion order; when rendering falls behind, only
+completed buffers still owned by the decoder can be replaced. Encoded reference
+packets remain intact. The Quest launcher removes Frame's additional 6 ms
+submission delay; `STEARLIGHT_VRLINK_SUBMIT_DELAY_US=6000` restores it for comparison.
 The Quest compositor adapter converts the shipped spatial-video final-pass
 shader's reconstructed RGB to linear light before its sRGB output. It matches
 that shader exactly and leaves packed depth, motion and tracking data intact;
@@ -121,8 +129,8 @@ Linux shares the Quest's system clock. The APK copies the active timezone's
 TZif rules from Android's own database and updates `/etc/localtime` and
 `/etc/timezone` before Linux starts and when the headset timezone changes.
 This includes daylight-saving transitions without a separate clock service.
-Local Linux game panels use 960x540 at the game's 60 Hz, matching the 75%
-Quest profile and reducing shared-memory frame copies by 44% from 1280x720.
+Local Linux game panels use 960x540 at the game's 60 Hz, independently of the
+eye buffers, reducing shared-memory frame copies by 44% from 1280x720.
 The headset's display remains at 72 Hz. `STEARLIGHT_QUEST_GAME_PROFILE=0`
 restores the original panel size as well as Celeste's original renderer.
 Mesa's compiled shader cache is enabled for repeat game launches. Its default

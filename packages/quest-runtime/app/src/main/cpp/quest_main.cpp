@@ -119,14 +119,14 @@ struct Runtime {
   haveStage=std::find(spaces.begin(),spaces.end(),XR_REFERENCE_SPACE_TYPE_STAGE)!=spaces.end();
   XrReferenceSpaceCreateInfo reference{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};reference.poseInReferenceSpace=identity();reference.referenceSpaceType=haveStage?XR_REFERENCE_SPACE_TYPE_STAGE:XR_REFERENCE_SPACE_TYPE_LOCAL;XR(xrCreateReferenceSpace(session,&reference,&stage));reference.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;XR(xrCreateReferenceSpace(session,&reference,&head));
   actionsSetup();
-  handTracking.initialize(instance,system,session,handSupport,handMesh);handRender.initialize(handTracking);
+  handTracking.initialize(instance,system,session,handSupport,handMesh,directory);handRender.initialize(handTracking);
   uint32_t viewsCount=0;XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,0,&viewsCount,nullptr));if(viewsCount!=2)throw std::runtime_error("Expected stereo view configuration");
   std::vector<XrViewConfigurationView> views(viewsCount,{XR_TYPE_VIEW_CONFIGURATION_VIEW});XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,viewsCount,&viewsCount,views.data()));
   uint32_t formatCount;XR(xrEnumerateSwapchainFormats(session,0,&formatCount,nullptr));std::vector<int64_t> formats(formatCount);XR(xrEnumerateSwapchainFormats(session,formatCount,&formatCount,formats.data()));int64_t format=GL_SRGB8_ALPHA8;if(std::find(formats.begin(),formats.end(),format)==formats.end())format=GL_RGBA8;
   for(int i=0;i<2;i++){
-   // Cap each scene dimension at 75% of the Quest 2 panel resolution.
-   // OpenXR scales the completed projection to the physical display.
-   Eye& eye=eyes[i];eye.width=std::min(1374u,views[i].maxImageRectWidth);eye.height=std::min(1440u,views[i].maxImageRectHeight);
+   // Preserve the Quest 2's native display detail through the final projection.
+   // A 75% projection softens PCVR even when the encoded stream is sharper.
+   Eye& eye=eyes[i];eye.width=std::min(1832u,views[i].maxImageRectWidth);eye.height=std::min(1920u,views[i].maxImageRectHeight);
    LOG("Eye %d requested %ux%u; recommended %ux%u; maximum %ux%u",i,eye.width,eye.height,views[i].recommendedImageRectWidth,views[i].recommendedImageRectHeight,views[i].maxImageRectWidth,views[i].maxImageRectHeight);
    XrSwapchainCreateInfo swap{XR_TYPE_SWAPCHAIN_CREATE_INFO};swap.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;swap.format=format;swap.sampleCount=1;swap.width=eye.width;swap.height=eye.height;swap.faceCount=1;swap.arraySize=1;swap.mipCount=1;XR(xrCreateSwapchain(session,&swap,&eye.chain));uint32_t count=0;XR(xrEnumerateSwapchainImages(eye.chain,0,&count,nullptr));eye.images.resize(count,{XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});XR(xrEnumerateSwapchainImages(eye.chain,count,&count,reinterpret_cast<XrSwapchainImageBaseHeader*>(eye.images.data())));
   }
@@ -239,7 +239,7 @@ struct Runtime {
    XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));sample.thumbstick[i][0]=stick.isActive?stick.currentState.x:0;sample.thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
    }
    handTracking.update(sample,i,physical,stage,state.predictedDisplayTime);
-  }questPublishTracking(tracking,sample);
+  }handTracking.publish(sample);questPublishTracking(tracking,sample);
   publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   if(!bootFinished)bootFinished=bootComplete();

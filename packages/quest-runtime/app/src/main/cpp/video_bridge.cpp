@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 #include <poll.h>
 #include <cstring>
@@ -19,7 +20,14 @@ bool transfer(int fd,void* data,size_t bytes,bool sendData){
 }
 struct Decoder {
  AMediaCodec* codec=nullptr;int width=0,height=0,stride=0,slice=0,color=0;
- ~Decoder(){reset();}
+ void* shared=MAP_FAILED;size_t capacity=0;
+ ~Decoder(){reset();if(shared!=MAP_FAILED)munmap(shared,capacity);}
+ bool outputMemory(int fd){
+  struct stat info{};
+  if(fd<0||fstat(fd,&info)||!S_ISREG(info.st_mode)||info.st_size<=0||uint64_t(info.st_size)>QUEST_VIDEO_MAX_FRAME)return false;
+  void* memory=mmap(nullptr,info.st_size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);if(memory==MAP_FAILED)return false;
+  if(shared!=MAP_FAILED)munmap(shared,capacity);shared=memory;capacity=info.st_size;return true;
+ }
  void reset(){if(codec){AMediaCodec_stop(codec);AMediaCodec_delete(codec);codec=nullptr;}}
  bool configure(const QuestVideoRequest& r){
   reset();if(r.width<128||r.height<128||r.width>QUEST_VIDEO_MAX_DIMENSION||r.height>QUEST_VIDEO_MAX_DIMENSION||uint64_t(r.width)*r.height>QUEST_VIDEO_MAX_PIXELS||(r.codec!=4&&r.codec!=5))return false;
@@ -55,14 +63,17 @@ struct Decoder {
   size_t luma=valid?size_t(stride)*slice:0;
   valid=valid&&data&&info.offset>=0&&size>=size_t(info.offset)+luma*3/2&&(color==21||color==19||color==0x7fa30c04);
   if(valid){
-   data+=info.offset;frame.resize(size_t(width)*height*3/2);
-   for(int y=0;y<height;y++)memcpy(frame.data()+size_t(y)*width,data+size_t(y)*stride,width);
-   auto uv=frame.data()+size_t(width)*height;
+   size_t bytes=size_t(width)*height*3/2;
+   if(shared!=MAP_FAILED&&bytes>capacity){AMediaCodec_releaseOutputBuffer(codec,index,false);return false;}
+   data+=info.offset;if(shared==MAP_FAILED)frame.resize(bytes);
+   auto output=shared==MAP_FAILED?frame.data():static_cast<unsigned char*>(shared);
+   for(int y=0;y<height;y++)memcpy(output+size_t(y)*width,data+size_t(y)*stride,width);
+   auto uv=output+size_t(width)*height;
    for(int y=0;y<height/2;y++){
     if(color!=19)memcpy(uv+size_t(y)*width,data+luma+size_t(y)*stride,width);
     else for(int x=0;x<width/2;x++){uv[size_t(y)*width+2*x]=data[luma+size_t(y)*(stride/2)+x];uv[size_t(y)*width+2*x+1]=data[luma+luma/4+size_t(y)*(stride/2)+x];}
    }
-   response.status=0;response.width=width;response.height=height;response.bytes=frame.size();response.color=21;response.timestamp=info.presentationTimeUs;
+   response.status=0;response.width=width;response.height=height;response.bytes=bytes;response.color=21;response.timestamp=info.presentationTimeUs;
   }else LOG("Unsupported streaming output: color=%d size=%zu offset=%d stride=%d slice=%d",color,size,info.offset,stride,slice);
   AMediaCodec_releaseOutputBuffer(codec,index,false);return valid;
  }
@@ -86,17 +97,28 @@ void VideoBridge::serve(){
 void VideoBridge::serveClient(int connection){
   Decoder decoder;std::vector<unsigned char> packet,frame;unsigned frames=0;
   while(!stopping){
-   QuestVideoRequest r{};if(!transfer(connection,&r,sizeof(r),false))break;
+   QuestVideoRequest r{};int outputFd=-1;char ancillary[CMSG_SPACE(sizeof(int))]{};
+   iovec io{&r,sizeof(r)};msghdr message{};message.msg_iov=&io;message.msg_iovlen=1;message.msg_control=ancillary;message.msg_controllen=sizeof(ancillary);
+   ssize_t received;do received=recvmsg(connection,&message,MSG_WAITALL|MSG_CMSG_CLOEXEC);while(received<0&&errno==EINTR);
+   if(received<=0)break;
+   for(cmsghdr* header=CMSG_FIRSTHDR(&message);header;header=CMSG_NXTHDR(&message,header))if(header->cmsg_level==SOL_SOCKET&&header->cmsg_type==SCM_RIGHTS){
+    size_t count=(header->cmsg_len-CMSG_LEN(0))/sizeof(int);auto fds=reinterpret_cast<int*>(CMSG_DATA(header));
+    for(size_t i=0;i<count;i++){if(outputFd<0)outputFd=fds[i];else close(fds[i]);}
+   }
+   if((message.msg_flags&MSG_CTRUNC)||(size_t(received)<sizeof(r)&&!transfer(connection,reinterpret_cast<char*>(&r)+received,sizeof(r)-received,false))){if(outputFd>=0)close(outputFd);break;}
+   bool outputMemory=r.operation==QUEST_VIDEO_SHARED_OUTPUT&&!r.bytes&&decoder.outputMemory(outputFd);
+   if(outputFd>=0)close(outputFd);
    if(r.magic!=QUEST_VIDEO_MAGIC||r.bytes>QUEST_VIDEO_MAX_PACKET)break;
    packet.resize(r.bytes);if(r.bytes&&!transfer(connection,packet.data(),r.bytes,false))break;
    QuestVideoResponse response{};response.magic=QUEST_VIDEO_MAGIC;response.status=1;frame.clear();
    bool valid=false;
-   if(r.operation==QUEST_VIDEO_CONFIGURE)valid=decoder.configure(r);
+   if(r.operation==QUEST_VIDEO_SHARED_OUTPUT)valid=outputMemory;
+   else if(r.operation==QUEST_VIDEO_CONFIGURE)valid=decoder.configure(r);
    else if(decoder.codec&&(r.operation==QUEST_VIDEO_PACKET||r.operation==QUEST_VIDEO_POLL)){
     valid=r.operation==QUEST_VIDEO_POLL||decoder.submit(r,packet);if(valid)valid=decoder.output(response,frame);
    }
    if(!valid)response.status=-1;
-   if(!transfer(connection,&response,sizeof(response),true)||(response.bytes&&!transfer(connection,frame.data(),response.bytes,true)))break;
+   if(!transfer(connection,&response,sizeof(response),true)||(response.bytes&&decoder.shared==MAP_FAILED&&!transfer(connection,frame.data(),response.bytes,true)))break;
    if(response.status==0&&++frames%300==1)LOG("Streaming decoded frames=%u %ux%u",frames,response.width,response.height);
   }
   {std::lock_guard<std::mutex> guard(lock);close(connection);clients.erase(connection);}
