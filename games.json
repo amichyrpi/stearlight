@@ -38,6 +38,7 @@
   {
     "appid": 4122860,
     "name": "Z.A.T.O. // I Love the World and Everything In It",
+    "artwork_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/4122860/8f691d5b98ceec7c22bc2c15fe926f93f41df5b4/library_capsule.jpg",
     "status": "playable",
     "notes": "Story, Quest controller input and music work with native ARM64 Ren'Py and Adreno GPU rendering. Menus and transitions remain slow."
   }
