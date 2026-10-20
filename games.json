@@ -1,0 +1,45 @@
+[
+  {
+    "appid": 438100,
+    "name": "VRChat",
+    "status": "unsupported",
+    "notes": "Game will not launch due to anti-cheat / Lepton compatibility issues."
+  },
+  {
+    "appid": 504230,
+    "name": "Celeste",
+    "status": "verified",
+    "notes": "Runs at a stable 60 FPS."
+  },
+  {
+    "appid": 667970,
+    "name": "VTOL VR",
+    "status": "playable",
+    "notes": "Launches at 10â€“15 FPS."
+  },
+  {
+    "appid": 2386250,
+    "name": "It gets so lonely here",
+    "status": "verified",
+    "notes": "Story, Quest controller input and music tested on Quest 2 with native ARM64 Ren'Py and Adreno GPU rendering."
+  },
+  {
+    "appid": 1598780,
+    "name": "Silly Polly Beast",
+    "status": "unsupported",
+    "notes": "Standalone launch is unreliable on Quest 2: startup hangs or closes during scene loading."
+  },
+  {
+    "appid": 2530470,
+    "name": "Garden of Witches",
+    "status": "verified",
+    "notes": "Local gameplay, picture, Quest gamepad controls and music confirmed on Quest 2. Startup is slow."
+  },
+  {
+    "appid": 4122860,
+    "name": "Z.A.T.O. // I Love the World and Everything In It",
+    "artwork_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/4122860/8f691d5b98ceec7c22bc2c15fe926f93f41df5b4/library_capsule.jpg",
+    "status": "playable",
+    "notes": "Story, Quest controller input and music work with native ARM64 Ren'Py and Adreno GPU rendering. Menus and transitions remain slow."
+  }
+]

@@ -222,25 +222,53 @@ def guest_gamepad(rootfs, library=Path("/opt/quest/libquest_gamepad_x86_64.so"))
     return ["LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libquest_gamepad.so"]
 
 
+def native_renpy(command, environment, runtimes=Path("/opt/quest/renpy")):
+    # Keep the game's scripts, assets and saves. Only replace the x86 engine
+    # with the official ARM64 build of exactly the same Ren'Py release.
+    profiles = {"2386250": ("7.5.3", "Itgetssolonelyhere.py", "py2-linux-aarch64"),
+                "4122860": ("8.0.3", "ZATO.py", "py3-linux-aarch64")}
+    profile = profiles.get(environment.get("SteamAppId"))
+    if not profile or environment.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") == "0":
+        return None
+    version, filename, architecture = profile
+    game = Path(environment.get("STEAM_COMPAT_INSTALL_PATH", str(Path(command[0]).parent)))
+    python = runtimes / version / "lib" / architecture / "python"
+    try:
+        source = (game / "renpy/__init__.py").read_text()
+    except (OSError, UnicodeError):
+        return None
+    signature = "version_tuple = (" + ", ".join(version.split(".")) + ","
+    if not python.is_file() or not (game / filename).is_file() or signature not in source:
+        return None
+    return python, game / filename, runtimes / version
+
+
 def main():
     if len(sys.argv) < 3 or sys.argv[1] not in ("run", "waitforexitandrun"):
         raise ValueError("Unsupported FEX launch command")
     tool = Path(sys.argv[0]).resolve().parent
     common = tool.parent
+    command = unwrap(sys.argv[2:])
+    native = native_renpy(command, os.environ)
     runtime = common / "SteamLinuxRuntime_soldier"
     for argument in sys.argv[2:]:
         path = Path(argument)
         if path.name == "_v2-entry-point" and path.parent.name.startswith("SteamLinuxRuntime_"):
             runtime = path.parent
             break
-    candidates = sorted(runtime.glob("*_platform_*/usr-mtree.txt.gz"))
-    if not candidates:
-        raise RuntimeError(f"{runtime.name} must finish downloading before launching this game")
-    data = Path(os.environ.get("STEAM_COMPAT_DATA_PATH", str(Path.home() / ".local/share/stearlight/fex")))
-    rootfs = prepare_rootfs(candidates[-1].parent, data / "quest-rootfs")
-    config = data / "quest-fex.json"
-    guest = guest_gamepad(rootfs) if os.environ.get("SteamAppId") and os.environ.get("STEARLIGHT_STEAM_INPUT", "1") != "0" else []
-    config.write_text(json.dumps({"Config": {}, "ThunksDB": {"GL": 1, "Vulkan": 1}}))
+    renpy = os.environ.get("SteamAppId") in ("2386250", "4122860") and os.environ.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0"
+    # The same in-process SDL adapter also protects Ren'Py's GL startup.
+    # Keep that part when input is disabled; the adapter leaves the pad off.
+    guest = []
+    if not native:
+        candidates = sorted(runtime.glob("*_platform_*/usr-mtree.txt.gz"))
+        if not candidates:
+            raise RuntimeError(f"{runtime.name} must finish downloading before launching this game")
+        data = Path(os.environ.get("STEAM_COMPAT_DATA_PATH", str(Path.home() / ".local/share/stearlight/fex")))
+        rootfs = prepare_rootfs(candidates[-1].parent, data / "quest-rootfs")
+        config = data / "quest-fex.json"
+        guest = guest_gamepad(rootfs) if os.environ.get("SteamAppId") and (renpy or os.environ.get("STEARLIGHT_STEAM_INPUT", "1") != "0") else []
+        config.write_text(json.dumps({"Config": {}, "ThunksDB": {"GL": 1, "Vulkan": 1}}))
     environment = dict(os.environ)
     # Native glibc needs rseq disabled in PRoot, but soldier's older x86
     # glibc cannot parse that tunable while initializing its allocator.
@@ -248,11 +276,14 @@ def main():
         environment.pop(key, None)
     if guest:
         environment["FEX_ENV"] = guest[0]
+    if not native:
+        environment.update({
+            "FEX_PORTABLE": "1", "FEX_ROOTFS": str(rootfs), "FEX_APP_CONFIG": str(config),
+            "FEX_THUNKHOSTLIBS": str(tool / "usr/lib/aarch64-linux-gnu/fex-emu/HostThunks"),
+            "FEX_THUNKGUESTLIBS": str(tool / "usr/share/fex-emu/GuestThunks"),
+            "FEX_THUNKCONFIG": str(config),
+        })
     environment.update({
-        "FEX_PORTABLE": "1", "FEX_ROOTFS": str(rootfs), "FEX_APP_CONFIG": str(config),
-        "FEX_THUNKHOSTLIBS": str(tool / "usr/lib/aarch64-linux-gnu/fex-emu/HostThunks"),
-        "FEX_THUNKGUESTLIBS": str(tool / "usr/share/fex-emu/GuestThunks"),
-        "FEX_THUNKCONFIG": str(config),
         "PATH": str(tool / "usr/bin") + ":" + environment.get("PATH", "/usr/bin:/bin"),
         "VK_ICD_FILENAMES": "/opt/quest/turnip_icd.json",
         "VK_DRIVER_FILES": "/opt/quest/turnip_icd.json",
@@ -262,7 +293,6 @@ def main():
         "GALLIUM_DRIVER": "zink", "MESA_LOADER_DRIVER_OVERRIDE": "zink",
         "LIBGL_KOPPER_DISABLE": "true", "LIBGL_KOPPER_DRI2": "1",
     })
-    command = unwrap(sys.argv[2:])
     if environment.get("SteamAppId") == "504230" and environment.get("STEAM_COMPAT_INSTALL_PATH"):
         prepare_celeste_memory(Path(environment["STEAM_COMPAT_INSTALL_PATH"]), environment.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0")
     binary = prepare_game_script(command)
@@ -272,6 +302,9 @@ def main():
     environment["MESA_SHADER_CACHE_MAX_SIZE"] = environment["MESA_GLSL_CACHE_MAX_SIZE"] = environment.get("STEARLIGHT_SHADER_CACHE_MAX_SIZE", "128M")
     environment.setdefault("FNA3D_FORCE_DRIVER", "Vulkan")
     environment.setdefault("SDL_AUDIODRIVER", "pulseaudio")
+    if renpy:
+        environment.setdefault("RENPY_RENDERER", "gl2")
+        environment["STEARLIGHT_RENPY_SDL"] = "1"
     if environment.get("STEARLIGHT_FEX_GAMESCOPE") != "1" and environment.get("SteamAppId"):
         app = environment["SteamAppId"]
         environment["STEARLIGHT_FEX_GAMESCOPE"] = "1"
@@ -282,8 +315,8 @@ def main():
         loader = "/opt/frame-gamescope/lib/ld-linux-aarch64.so.1"
         libraries = "/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so.0"
         preload = ["--preload", libraries]
-        # Match the Quest scene's 75% profile. Celeste's 320x180 artwork still
-        # scales by a whole factor of three, with fewer readback/copy pixels.
+        # Keep local panels compact independently of the eye-buffer size.
+        # Celeste's 320x180 artwork scales by three with fewer copy pixels.
         width, height = (960, 540) if environment.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0" else (1280, 720)
         compositor = [loader, *preload, "--library-path", "/opt/frame-gamescope/lib:/usr/lib/aarch64-linux-gnu",
                       "/opt/frame-gamescope/bin/gamescope", "--backend", "openvr", "--expose-wayland",
@@ -298,7 +331,21 @@ def main():
             os.setsid()
         os.execve(loader, compositor, environment)
         return
+    if native:
+        python, script, engine = native
+        environment.pop("FEX_ENV", None)
+        environment["LD_PRELOAD"] = "/opt/quest/libquest_gamepad_aarch64.so"
+        environment.setdefault("SDL_DYNAMIC_API", environment["LD_PRELOAD"])
+        environment["PYTHONHOME"] = str(engine)
+        environment["LD_LIBRARY_PATH"] = str(python.parent) + ":/usr/lib/aarch64-linux-gnu"
+        environment["GLIBC_TUNABLES"] = "glibc.pthread.rseq=0"
+        os.chdir(script.parent)
+        print("Stearlight: native ARM64 Ren'Py " + engine.name, file=sys.stderr, flush=True)
+        os.execve(python, [str(python), str(script), *command[1:]], environment)
+        return
     print("Stearlight FEX: launching " + command[0], file=sys.stderr, flush=True)
+    if renpy and guest:
+        environment.setdefault("SDL_DYNAMIC_API", guest[0].partition("=")[2])
     # Steam can replace FEX between app launches. Adapt its verified build in
     # this existing launcher, including after a runtime download, before exec.
     adapter = Path("/opt/quest/prepare-fex.py")

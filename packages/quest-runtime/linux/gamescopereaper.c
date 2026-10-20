@@ -24,6 +24,14 @@ int main(int argc, char** argv) {
     int command = 1;
     while (command < argc && strcmp(argv[command], "--")) ++command;
     if (++command >= argc) return 64;
+    const char* direct = getenv("STEARLIGHT_PROTON_DIRECT");
+    if (direct && !strcmp(direct, "1")) {
+        setsid();
+        prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
+        execvp(argv[command], argv + command);
+        perror("Quest direct Proton launch");
+        return 127;
+    }
     pid_t parent = getppid();
     struct sigaction action = {0};
     action.sa_handler = stop;

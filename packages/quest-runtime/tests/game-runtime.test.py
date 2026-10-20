@@ -15,6 +15,106 @@ spec.loader.exec_module(launcher)
 
 
 class GameRuntimeTest(unittest.TestCase):
+    def test_native_renpy_requires_the_matching_game_and_engine(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            game = root / "game with spaces"
+            (game / "renpy").mkdir(parents=True)
+            for appid, version, script, architecture in (
+                ("2386250", "7.5.3", "Itgetssolonelyhere.py", "py2-linux-aarch64"),
+                ("4122860", "8.0.3", "ZATO.py", "py3-linux-aarch64"),
+            ):
+                with self.subTest(appid=appid):
+                    python = root / version / "lib" / architecture / "python"
+                    python.parent.mkdir(parents=True)
+                    python.touch()
+                    (game / script).write_text("original game bootstrap")
+                    source = "version_tuple = (" + ", ".join(version.split(".")) + ", vc_version)"
+                    (game / "renpy/__init__.py").write_text(source)
+                    environment = {"SteamAppId": appid, "STEAM_COMPAT_INSTALL_PATH": str(game)}
+                    self.assertEqual(launcher.native_renpy([str(game / "Game.sh")], environment, root),
+                                     (python, game / script, root / version))
+                    self.assertIsNone(launcher.native_renpy(["Game.sh"], {**environment, "STEARLIGHT_QUEST_GAME_PROFILE": "0"}, root))
+                    (game / "renpy/__init__.py").write_text("version_tuple = (9, 0, 0, vc_version)")
+                    self.assertIsNone(launcher.native_renpy(["Game.sh"], environment, root))
+                    self.assertEqual((game / script).read_text(), "original game bootstrap")
+
+    def test_native_renpy_needs_no_fex_runtime_and_scopes_native_preloads(self):
+        python = Path("/engine/8.0.3/lib/py3-linux-aarch64/python")
+        script = Path("/game with spaces/ZATO.py")
+        for inner in (False, True):
+            with self.subTest(inner=inner):
+                environment = {"SteamAppId": "4122860", "STEARLIGHT_STEAM_INPUT": "0"}
+                if inner:
+                    environment["STEARLIGHT_FEX_GAMESCOPE"] = "1"
+                with patch.object(launcher.sys, "argv", ["/missing/FEX-Emu/fex-compat-tool", "run", str(script.with_suffix(".sh")), "argument"]), \
+                     patch.dict(os.environ, environment, clear=True), \
+                     patch.object(launcher, "native_renpy", return_value=(python, script, Path("/engine/8.0.3"))), \
+                     patch.object(launcher, "prepare_rootfs") as prepare, \
+                     patch.object(launcher.os, "chdir"), patch.object(launcher.os, "setsid"), \
+                     patch.object(launcher.os, "execve") as execute:
+                    launcher.main()
+                prepare.assert_not_called()
+                executable, arguments, actual = execute.call_args.args
+                self.assertNotIn("FEX_ROOTFS", actual)
+                self.assertNotIn("FEX_ENV", actual)
+                if inner:
+                    self.assertEqual(executable, python)
+                    self.assertEqual(arguments, [str(python), str(script), "argument"])
+                    self.assertEqual(actual["SDL_DYNAMIC_API"], "/opt/quest/libquest_gamepad_aarch64.so")
+                    self.assertEqual(actual["LD_PRELOAD"], actual["SDL_DYNAMIC_API"])
+                    self.assertEqual(actual["PYTHONHOME"], "/engine/8.0.3")
+                else:
+                    self.assertIn("gamescope", " ".join(arguments))
+                    for key in ("SDL_DYNAMIC_API", "LD_PRELOAD", "PYTHONHOME"):
+                        self.assertNotIn(key, actual)
+
+    def test_renpy_renderer_profile_is_scoped_and_preserves_overrides(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tool = Path(folder) / "FEX-Emu/fex-compat-tool"
+            platform = tool.parent.parent / "SteamLinuxRuntime_soldier/soldier_platform_test"
+            platform.mkdir(parents=True)
+            (platform / "usr-mtree.txt.gz").touch()
+            for appid, overrides, expected in (
+                ("2386250", {}, "gl2"),
+                ("4122860", {}, "gl2"),
+                ("2386250", {"RENPY_RENDERER": "gl"}, "gl"),
+                ("2386250", {"RENPY_RENDERER": "sw"}, "sw"),
+                ("2386250", {"STEARLIGHT_QUEST_GAME_PROFILE": "0"}, None),
+                ("4122860", {"STEARLIGHT_QUEST_GAME_PROFILE": "0"}, None),
+                ("123", {}, None),
+            ):
+                with self.subTest(appid=appid, overrides=overrides):
+                    environment = {"SteamAppId": appid, "STEAM_COMPAT_DATA_PATH": folder, **overrides}
+                    with patch.object(launcher.sys, "argv", [str(tool), "run", "/games/Game"]), patch.dict(os.environ, environment, clear=True), patch.object(launcher, "prepare_rootfs", return_value=Path(folder)), patch.object(launcher.os, "setsid"), patch.object(launcher.os, "execve") as execute:
+                        launcher.main()
+                    actual = execute.call_args.args[2]
+                    self.assertEqual(actual.get("RENPY_RENDERER"), expected)
+                    self.assertEqual(actual["SteamAppId"], appid)
+                    self.assertEqual(actual.get("STEARLIGHT_RENPY_SDL"), "1" if expected is not None else None)
+                    self.assertNotIn("SDL_DYNAMIC_API", actual)  # Never inject an x86 SDL API into Gamescope.
+
+    def test_renpy_keeps_the_graphics_adapter_when_gamepad_input_is_disabled(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tool = Path(folder) / "FEX-Emu/fex-compat-tool"
+            platform = tool.parent.parent / "SteamLinuxRuntime_soldier/soldier_platform_test"
+            platform.mkdir(parents=True)
+            (platform / "usr-mtree.txt.gz").touch()
+            environment = {"SteamAppId": "4122860", "STEAM_COMPAT_DATA_PATH": folder,
+                           "STEARLIGHT_STEAM_INPUT": "0", "STEARLIGHT_FEX_GAMESCOPE": "1"}
+            with patch.object(launcher.sys, "argv", [str(tool), "run", "/games/Game"]), \
+                 patch.dict(os.environ, environment, clear=True), \
+                 patch.object(launcher, "prepare_rootfs", return_value=Path(folder)), \
+                 patch.object(launcher, "guest_gamepad", return_value=["LD_PRELOAD=/guest/adapter.so"]) as adapter, \
+                 patch.object(launcher.os, "setsid"), patch.object(launcher.os, "execve") as execute:
+                launcher.main()
+            adapter.assert_called_once()
+            actual = execute.call_args.args[2]
+            self.assertEqual(actual["FEX_ENV"], "LD_PRELOAD=/guest/adapter.so")
+            self.assertEqual(actual["STEARLIGHT_STEAM_INPUT"], "0")
+            self.assertEqual(actual["STEARLIGHT_RENPY_SDL"], "1")
+            self.assertEqual(actual["SDL_DYNAMIC_API"], "/guest/adapter.so")
+
     def test_gamepad_preload_is_scoped_to_the_fex_guest(self):
         with tempfile.TemporaryDirectory() as folder:
             library = Path(folder) / "libquest_gamepad_x86_64.so"

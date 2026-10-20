@@ -33,7 +33,12 @@ template<class T>T next(const char* name){return reinterpret_cast<T>(dlsym(RTLD_
 int rawClose(int fd){static auto fn=next<int(*)(int)>("close");return fn(fd);}
 constexpr unsigned Slots=16,InputSize=QUEST_VIDEO_MAX_PACKET;
 struct Packet {unsigned index;timeval stamp;std::vector<unsigned char> data;};
-struct Capture {bool queued=false,ready=false;unsigned fd=0,length=0,offset=0;timeval stamp{};};
+struct Capture {
+ bool queued=false,ready=false;unsigned fd=0,length=0,offset=0,sequence=0;timeval stamp{};
+ void* mapping=MAP_FAILED;unsigned mappedLength=0;dev_t device=0;ino_t inode=0;
+ void unmap(){if(mapping!=MAP_FAILED)munmap(mapping,mappedLength);mapping=MAP_FAILED;mappedLength=0;}
+ ~Capture(){unmap();}
+};
 struct Device {
  int fd,socket=-1;unsigned width=1280,height=720,stride=1280,codec=4,count=Slots;
  bool stateful=false,sourceKnown=false,sourceChange=false;int signalFd=-1;
@@ -41,13 +46,15 @@ struct Device {
  std::mutex mutex;std::condition_variable wake;std::thread worker;
  std::deque<Packet> packets;std::deque<unsigned> completed;std::map<uint64_t,timeval> pending;
  Capture capture[Slots];
+ int frameFd=-1;void* frameMemory=MAP_FAILED;bool sharedOutput=false;
  explicit Device(int f):fd(f){stateful=getenv("QUEST_VIDEO_STATEFUL")!=nullptr;if(stateful){width=height=stride=128;signalFd=eventfd(0,EFD_CLOEXEC|EFD_NONBLOCK);}}
- ~Device(){stop();if(signalFd>=0)rawClose(signalFd);}
+ ~Device(){stop();if(signalFd>=0)rawClose(signalFd);if(frameMemory!=MAP_FAILED)munmap(frameMemory,QUEST_VIDEO_MAX_FRAME);if(frameFd>=0)rawClose(frameFd);}
  unsigned ready(){unsigned flags=failed?EPOLLERR:0;if(sourceChange)flags|=EPOLLPRI;if(!completed.empty())flags|=EPOLLOUT;for(auto& c:capture)if(c.ready){flags|=EPOLLIN;break;}return flags;}
  void signal(){if(signalFd<0)return;uint64_t value=1;if(ready()){ssize_t result;do result=write(signalFd,&value,sizeof(value));while(result<0&&errno==EINTR);if(result<0&&errno!=EAGAIN)fprintf(stderr,"Quest video: event notification: %s\n",strerror(errno));}else while(read(signalFd,&value,sizeof(value))>0){}}
  void stop(){ {std::lock_guard<std::mutex> guard(mutex);stopping=true;wake.notify_all();if(socket>=0)::shutdown(socket,SHUT_RDWR);}
   if(worker.joinable())worker.join();if(socket>=0){rawClose(socket);socket=-1;}}
  void run();
+ bool shareOutput();
  bool exchange(const QuestVideoRequest& r,const void* payload,QuestVideoResponse& response,std::vector<unsigned char>& data);
 };
 std::mutex devicesLock;std::map<int,std::shared_ptr<Device>> devices;
@@ -59,7 +66,22 @@ bool transfer(int fd,void* data,size_t size,bool sendData){auto p=static_cast<un
 bool Device::exchange(const QuestVideoRequest& r,const void* payload,QuestVideoResponse& response,std::vector<unsigned char>& data){
  if(!transfer(socket,const_cast<QuestVideoRequest*>(&r),sizeof(r),true)||(r.bytes&&!transfer(socket,const_cast<void*>(payload),r.bytes,true))||!transfer(socket,&response,sizeof(response),false))return false;
  if(response.magic!=QUEST_VIDEO_MAGIC||response.status<0||response.width>QUEST_VIDEO_MAX_DIMENSION||response.height>QUEST_VIDEO_MAX_DIMENSION||uint64_t(response.width)*response.height>QUEST_VIDEO_MAX_PIXELS||response.bytes>QUEST_VIDEO_MAX_FRAME)return false;
+ if(sharedOutput)return true;
  data.resize(response.bytes);return !response.bytes||transfer(socket,data.data(),data.size(),false);
+}
+bool Device::shareOutput(){
+ frameFd=memfd_create("quest-video-decoded",MFD_CLOEXEC);if(frameFd<0||ftruncate(frameFd,QUEST_VIDEO_MAX_FRAME))return true;
+ frameMemory=mmap(nullptr,QUEST_VIDEO_MAX_FRAME,PROT_READ,MAP_SHARED,frameFd,0);if(frameMemory==MAP_FAILED)return true;
+ QuestVideoRequest request{QUEST_VIDEO_MAGIC,QUEST_VIDEO_SHARED_OUTPUT,0,0,0,0,0};
+ char ancillary[CMSG_SPACE(sizeof(int))]{};iovec io{&request,sizeof(request)};msghdr message{};
+ message.msg_iov=&io;message.msg_iovlen=1;message.msg_control=ancillary;message.msg_controllen=sizeof(ancillary);
+ auto header=CMSG_FIRSTHDR(&message);header->cmsg_level=SOL_SOCKET;header->cmsg_type=SCM_RIGHTS;header->cmsg_len=CMSG_LEN(sizeof(int));memcpy(CMSG_DATA(header),&frameFd,sizeof(frameFd));
+ ssize_t sent;do sent=sendmsg(socket,&message,MSG_NOSIGNAL);while(sent<0&&errno==EINTR);
+ if(sent<=0||size_t(sent)>sizeof(request)||!transfer(socket,reinterpret_cast<char*>(&request)+sent,sizeof(request)-sent,true))return false;
+ QuestVideoResponse response{};if(!transfer(socket,&response,sizeof(response),false)||response.magic!=QUEST_VIDEO_MAGIC||response.bytes)return false;
+ // Old APKs reject the optional operation but keep the connection alive.
+ sharedOutput=response.status>=0;
+ fprintf(stderr,"Quest video: decoded frame transport=%s\n",sharedOutput?"shared memory":"legacy socket");return true;
 }
 void Device::run(){
  {std::lock_guard<std::mutex> guard(mutex);socket=::socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);}
@@ -67,6 +89,7 @@ void Device::run(){
  QuestVideoResponse response{};std::vector<unsigned char> frame;
  QuestVideoRequest config{QUEST_VIDEO_MAGIC,QUEST_VIDEO_CONFIGURE,0,width,height,codec,0};
  bool ok=socket>=0&&!connect(socket,reinterpret_cast<sockaddr*>(&address),sizeof(address))&&exchange(config,nullptr,response,frame);
+ if(ok)ok=shareOutput();
  fprintf(stderr,"Quest video: decoder %ux%u codec=%u connected=%d\n",width,height,codec,ok);
  while(ok){
   Packet packet{};bool submit=false;
@@ -84,20 +107,34 @@ void Device::run(){
     wake.wait(guard,[&]{return stopping||captureOn;});if(stopping)break;
    }
    if(response.bytes!=size_t(response.width)*response.height*3/2||response.width>width||response.height>height){ok=false;break;}
-   auto available=[&]{for(unsigned i=0;i<count;i++)if(capture[i].queued&&!capture[i].ready)return int(i);return -1;};
-   wake.wait(guard,[&]{return stopping||available()>=0;});if(stopping)break;
-   auto& c=capture[available()];size_t size=size_t(stride)*height*3/2;
+   // Keep decoding reference frames when presentation falls behind. Replace
+   // only a completed buffer still owned by the driver; never touch a buffer
+   // already dequeued by Steam. This bounds latency without dropping encoded
+   // reference packets or waiting behind the renderer with a full input queue.
+   int available=-1,oldest=-1;
+   for(unsigned i=0;i<count;i++)if(capture[i].queued){
+    if(!capture[i].ready){available=i;break;}
+    if(oldest<0||int32_t(capture[i].sequence-capture[oldest].sequence)<0)oldest=i;
+   }
+   uint32_t outputSequence=++sequence;
+   if(available<0)available=oldest;
+   if(available<0){pending.erase(response.timestamp);continue;}
+   auto& c=capture[available];size_t size=size_t(stride)*height*3/2;
    if(c.length<size+c.offset){fprintf(stderr,"Quest video: capture buffer too small: %u need=%zu\n",c.length,size+c.offset);ok=false;break;}
-   void* mapped=mmap(nullptr,c.length,PROT_READ|PROT_WRITE,MAP_SHARED,c.fd,0);
-   if(mapped==MAP_FAILED){fprintf(stderr,"Quest video: capture map fd=%u size=%u: %s\n",c.fd,c.length,strerror(errno));ok=false;break;}
+   if(c.mapping==MAP_FAILED){c.mapping=mmap(nullptr,c.length,PROT_READ|PROT_WRITE,MAP_SHARED,c.fd,0);c.mappedLength=c.length;}
+   if(c.mapping==MAP_FAILED){fprintf(stderr,"Quest video: capture map fd=%u size=%u: %s\n",c.fd,c.length,strerror(errno));ok=false;break;}
    dma_buf_sync sync{DMA_BUF_SYNC_START|DMA_BUF_SYNC_WRITE};static auto ioctlReal=next<int(*)(int,unsigned long,...)>("ioctl");ioctlReal(c.fd,DMA_BUF_IOCTL_SYNC,&sync);
-   auto dst=static_cast<unsigned char*>(mapped)+c.offset;memset(dst,16,size_t(stride)*height);memset(dst+size_t(stride)*height,128,size_t(stride)*height/2);
-   for(unsigned y=0;y<response.height;y++)memcpy(dst+size_t(y)*stride,frame.data()+size_t(y)*response.width,response.width);
-   for(unsigned y=0;y<response.height/2;y++)memcpy(dst+size_t(stride)*height+size_t(y)*stride,frame.data()+size_t(response.width)*response.height+size_t(y)*response.width,response.width);
-   sync.flags=DMA_BUF_SYNC_END|DMA_BUF_SYNC_WRITE;ioctlReal(c.fd,DMA_BUF_IOCTL_SYNC,&sync);munmap(mapped,c.length);
+   auto pixels=sharedOutput?static_cast<const unsigned char*>(frameMemory):frame.data();
+   auto dst=static_cast<unsigned char*>(c.mapping)+c.offset;
+   if(stride==response.width&&height==response.height){memcpy(dst,pixels,size);}else{
+   memset(dst,16,size_t(stride)*height);memset(dst+size_t(stride)*height,128,size_t(stride)*height/2);
+   for(unsigned y=0;y<response.height;y++)memcpy(dst+size_t(y)*stride,pixels+size_t(y)*response.width,response.width);
+   for(unsigned y=0;y<response.height/2;y++)memcpy(dst+size_t(stride)*height+size_t(y)*stride,pixels+size_t(response.width)*response.height+size_t(y)*response.width,response.width);
+   }
+   sync.flags=DMA_BUF_SYNC_END|DMA_BUF_SYNC_WRITE;ioctlReal(c.fd,DMA_BUF_IOCTL_SYNC,&sync);
    auto it=pending.find(response.timestamp);c.stamp=it==pending.end()?timeval{long(response.timestamp/1000000),long(response.timestamp%1000000)}:it->second;
-   if(it!=pending.end())pending.erase(it);c.ready=true;signal();wake.notify_all();
-   if(++sequence%300==1)fprintf(stderr,"Quest video: frames=%u %ux%u capture stride=%u\n",sequence,response.width,response.height,stride);
+   if(it!=pending.end())pending.erase(it);c.sequence=outputSequence;c.ready=true;signal();wake.notify_all();
+   if(sequence%300==1)fprintf(stderr,"Quest video: frames=%u %ux%u capture stride=%u\n",sequence,response.width,response.height,stride);
   }
  }
  {std::lock_guard<std::mutex> guard(mutex);failed=!stopping;signal();wake.notify_all();if(!ok&&!stopping)fprintf(stderr,"Quest video: decoder transport/output failed\n");}
@@ -174,12 +211,20 @@ extern "C" int ioctl(int fd,unsigned long request,...){
    // allocation size and return it as the driver would, retaining the FD.
    if(!p.length)p.length=std::min<uint64_t>(allocation.st_size,UINT32_MAX);
    if(p.length<required||p.length>uint64_t(allocation.st_size))return invalid();
-   auto& c=d->capture[b->index];c.fd=p.m.fd;c.length=p.length;c.offset=p.data_offset;c.queued=true;c.ready=false;
+   auto& c=d->capture[b->index];
+   // An fd number can be reused after a resolution change. Retain mappings
+   // only for the same allocation, and never allocate/map on each frame.
+   if(c.fd!=unsigned(p.m.fd)||c.mappedLength!=p.length||c.device!=allocation.st_dev||c.inode!=allocation.st_ino)c.unmap();
+   c.fd=p.m.fd;c.length=p.length;c.offset=p.data_offset;c.device=allocation.st_dev;c.inode=allocation.st_ino;c.queued=true;c.ready=false;
   }
   else return invalid();d->wake.notify_all();return 0;}
  case VIDIOC_DQBUF:{auto b=static_cast<v4l2_buffer*>(arg);if(!b->m.planes||b->length<1)return invalid();b->flags=V4L2_BUF_FLAG_TIMESTAMP_COPY;b->field=V4L2_FIELD_NONE;b->length=1;
   if(b->type==V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE){if(d->completed.empty())return invalid(d->failed?EIO:EAGAIN);b->index=d->completed.front();d->completed.pop_front();b->m.planes[0].length=InputSize;d->signal();return 0;}
-  if(b->type!=V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)return invalid();for(unsigned i=0;i<d->count;i++){auto& c=d->capture[i];if(!c.ready)continue;b->index=i;b->timestamp=c.stamp;b->sequence=d->sequence;b->m.planes[0].bytesused=d->stride*d->height*3/2;b->m.planes[0].length=c.length;b->m.planes[0].data_offset=c.offset;b->m.planes[0].m.fd=c.fd;c.ready=false;c.queued=false;d->signal();return 0;}return invalid(d->failed?EIO:EAGAIN);}
+  if(b->type!=V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)return invalid();
+  int oldest=-1;
+  for(unsigned i=0;i<d->count;i++)if(d->capture[i].ready&&(oldest<0||int32_t(d->capture[i].sequence-d->capture[oldest].sequence)<0))oldest=i;
+  if(oldest<0)return invalid(d->failed?EIO:EAGAIN);
+  auto& c=d->capture[oldest];b->index=oldest;b->timestamp=c.stamp;b->sequence=c.sequence;b->m.planes[0].bytesused=d->stride*d->height*3/2;b->m.planes[0].length=c.length;b->m.planes[0].data_offset=c.offset;b->m.planes[0].m.fd=c.fd;c.ready=false;c.queued=false;d->signal();return 0;}
  case VIDIOC_STREAMON:{auto type=*static_cast<int*>(arg);if(type==V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)d->outputOn=true;else if(type==V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)d->captureOn=true;else return invalid();if(d->outputOn&&(d->captureOn||d->stateful)&&!d->worker.joinable())d->worker=std::thread(&Device::run,d.get());d->wake.notify_all();return 0;}
  case VIDIOC_STREAMOFF:{auto type=*static_cast<int*>(arg);if(type==V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE){d->outputOn=false;d->packets.clear();d->completed.clear();}else {d->captureOn=false;for(auto& c:d->capture)c.queued=c.ready=false;}return 0;}
  case VIDIOC_SUBSCRIBE_EVENT:case VIDIOC_UNSUBSCRIBE_EVENT:return 0;

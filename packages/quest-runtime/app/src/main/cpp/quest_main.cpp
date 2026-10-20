@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <ctime>
 #include <chrono>
+#include <fstream>
 #include "quest_bridge.h"
 #include "play_space.h"
 #include "gpu_bridge.h"
@@ -59,6 +60,9 @@ struct Runtime {
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
  LoadingBoost loadingBoost;
  bool cpuBoosted=false;
+ bool cpuThermalLimited=false;
+ double boostPollAt=0,boostRetryAt=0;
+ timespec boostStamp[2]{};uint32_t boostMenu=0;
  float requestedRate=72;
  bool bootFinished=false;
  int hapticSocket=-1;
@@ -115,14 +119,14 @@ struct Runtime {
   haveStage=std::find(spaces.begin(),spaces.end(),XR_REFERENCE_SPACE_TYPE_STAGE)!=spaces.end();
   XrReferenceSpaceCreateInfo reference{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};reference.poseInReferenceSpace=identity();reference.referenceSpaceType=haveStage?XR_REFERENCE_SPACE_TYPE_STAGE:XR_REFERENCE_SPACE_TYPE_LOCAL;XR(xrCreateReferenceSpace(session,&reference,&stage));reference.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;XR(xrCreateReferenceSpace(session,&reference,&head));
   actionsSetup();
-  handTracking.initialize(instance,system,session,handSupport,handMesh);handRender.initialize(handTracking);
+  handTracking.initialize(instance,system,session,handSupport,handMesh,directory);handRender.initialize(handTracking);
   uint32_t viewsCount=0;XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,0,&viewsCount,nullptr));if(viewsCount!=2)throw std::runtime_error("Expected stereo view configuration");
   std::vector<XrViewConfigurationView> views(viewsCount,{XR_TYPE_VIEW_CONFIGURATION_VIEW});XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,viewsCount,&viewsCount,views.data()));
   uint32_t formatCount;XR(xrEnumerateSwapchainFormats(session,0,&formatCount,nullptr));std::vector<int64_t> formats(formatCount);XR(xrEnumerateSwapchainFormats(session,formatCount,&formatCount,formats.data()));int64_t format=GL_SRGB8_ALPHA8;if(std::find(formats.begin(),formats.end(),format)==formats.end())format=GL_RGBA8;
   for(int i=0;i<2;i++){
-   // Cap each scene dimension at 75% of the Quest 2 panel resolution.
-   // OpenXR scales the completed projection to the physical display.
-   Eye& eye=eyes[i];eye.width=std::min(1374u,views[i].maxImageRectWidth);eye.height=std::min(1440u,views[i].maxImageRectHeight);
+   // Preserve the Quest 2's native display detail through the final projection.
+   // A 75% projection softens PCVR even when the encoded stream is sharper.
+   Eye& eye=eyes[i];eye.width=std::min(1832u,views[i].maxImageRectWidth);eye.height=std::min(1920u,views[i].maxImageRectHeight);
    LOG("Eye %d requested %ux%u; recommended %ux%u; maximum %ux%u",i,eye.width,eye.height,views[i].recommendedImageRectWidth,views[i].recommendedImageRectHeight,views[i].maxImageRectWidth,views[i].maxImageRectHeight);
    XrSwapchainCreateInfo swap{XR_TYPE_SWAPCHAIN_CREATE_INFO};swap.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;swap.format=format;swap.sampleCount=1;swap.width=eye.width;swap.height=eye.height;swap.faceCount=1;swap.arraySize=1;swap.mipCount=1;XR(xrCreateSwapchain(session,&swap,&eye.chain));uint32_t count=0;XR(xrEnumerateSwapchainImages(eye.chain,0,&count,nullptr));eye.images.resize(count,{XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});XR(xrEnumerateSwapchainImages(eye.chain,count,&count,reinterpret_cast<XrSwapchainImageBaseHeader*>(eye.images.data())));
   }
@@ -172,6 +176,12 @@ struct Runtime {
    tracking->session_visible=visible;tracking->session_focused=focused;
    __atomic_add_fetch(&tracking->sequence,1,__ATOMIC_RELEASE);
    if(state.state==XR_SESSION_STATE_EXITING||state.state==XR_SESSION_STATE_LOSS_PENDING)return false;
+  }else if(event.type==XR_TYPE_EVENT_DATA_PERF_SETTINGS_EXT){
+   auto& performance=*reinterpret_cast<XrEventDataPerfSettingsEXT*>(&event);
+   if(performance.domain==XR_PERF_SETTINGS_DOMAIN_CPU_EXT&&performance.subDomain==XR_PERF_SETTINGS_SUB_DOMAIN_THERMAL_EXT){
+    cpuThermalLimited=performance.toLevel!=XR_PERF_SETTINGS_NOTIF_LEVEL_NORMAL_EXT;
+    LOG("CPU thermal boost limit %d",cpuThermalLimited);
+   }
   }else if(event.type==XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB){auto& rate=*reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(&event);tracking->refresh_hz=rate.toDisplayRefreshRate;LOG("Display refresh changed to %.0f Hz",rate.toDisplayRefreshRate);}else if(event.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED){for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size=0;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d interaction profile %s",i,name);}}event={XR_TYPE_EVENT_DATA_BUFFER};}return true;
  }
  float value(XrAction action,int i){XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};info.action=action;info.subactionPath=hands[i];XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};XR(xrGetActionStateFloat(session,&info,&state));return state.isActive?state.currentState:0;}
@@ -229,17 +239,32 @@ struct Runtime {
    XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));sample.thumbstick[i][0]=stick.isActive?stick.currentState.x:0;sample.thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
    }
    handTracking.update(sample,i,physical,stage,state.predictedDisplayTime);
-  }questPublishTracking(tracking,sample);
+  }handTracking.publish(sample);questPublishTracking(tracking,sample);
   publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   if(!bootFinished)bootFinished=bootComplete();
   bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootFinished;
-  struct stat boostRequest{};
-  bool gameLoading=stat((directory+"/performance-boost.request").c_str(),&boostRequest)==0&&time(nullptr)-boostRequest.st_mtime<15;
-  bool boost=loadingBoost.update(std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(),loading||gameLoading,focused);
-  if(setPerformance&&boost!=cpuBoosted){
+  double boostNow=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  uint32_t menu=sample.buttons[0]&QUEST_MENU;
+  if(menu&&!boostMenu)loadingBoost.request(boostNow,2);
+  boostMenu=menu;
+  if(boostNow>=boostPollAt){
+   boostPollAt=boostNow+.1;
+   const char* signals[]={"/performance-boost.request","/interaction-boost.request"};
+   for(int i=0;i<2;i++){
+    std::string path=directory+signals[i];struct stat request{};
+    if(stat(path.c_str(),&request)||
+       (request.st_mtim.tv_sec==boostStamp[i].tv_sec&&request.st_mtim.tv_nsec==boostStamp[i].tv_nsec))continue;
+    boostStamp[i]=request.st_mtim;double deadline=0;std::ifstream input(path);input>>deadline;
+    if(std::isfinite(deadline)&&deadline>boostNow)loadingBoost.request(boostNow,deadline-boostNow);
+   }
+  }
+  bool boost=loadingBoost.update(boostNow,loading,focused&&!cpuThermalLimited);
+  if(setPerformance&&boost!=cpuBoosted&&boostNow>=boostRetryAt){
    XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,boost?XR_PERF_SETTINGS_LEVEL_BOOST_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
-   LOG("Loading CPU boost %d result %d",boost,result);cpuBoosted=boost;
+   LOG("Activity CPU boost %d result %d",boost,result);
+   if(XR_SUCCEEDED(result))cpuBoosted=boost;
+   boostRetryAt=XR_SUCCEEDED(result)?boostNow:boostNow+2;
   }
   bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;
   if(!loading&&visible&&compositionReady)camera.update();else camera.suspend();

@@ -8,7 +8,13 @@
 int main(int argc,char** argv){
  (void)argc;char path[PATH_MAX],preload[PATH_MAX];ssize_t n=readlink("/proc/self/exe",path,sizeof(path)-1);
  if(n<0||(size_t)n>=sizeof(path)-6){perror("streaming launcher path");return 127;}path[n]=0;strcat(path,".real");
- if(!strcmp(strrchr(path,'/')+1,"vrlink.real"))setenv("QUEST_VIDEO_STATEFUL","1",1);
+ if(!strcmp(strrchr(path,'/')+1,"vrlink.real")){
+  setenv("QUEST_VIDEO_STATEFUL","1",1);
+  // Valve's Frame script adds 6 ms before submission. Android/OpenXR already
+  // schedules and reprojects our output; do not stack that extra delay here.
+  const char* delay=getenv("STEARLIGHT_VRLINK_SUBMIT_DELAY_US");
+  setenv("VRLINK_SUBMIT_DELAY_US",delay?delay:"0",1);
+ }
  const char* inherited=getenv("LD_PRELOAD");int length=snprintf(preload,sizeof(preload),"/opt/quest/libquest_video.so%s%s",inherited&&*inherited?":":"",inherited?inherited:"");
  if(length<0||(size_t)length>=sizeof(preload)){fputs("streaming preload path too long\n",stderr);return 127;}
  setenv("LD_PRELOAD",preload,1);setenv("EGL_PLATFORM","surfaceless",1);

@@ -13,6 +13,27 @@
     if (!response.ok) throw new Error("Desktop service unavailable");
     return response.json();
   }
+  // Notify the existing owner before expensive UI work. The native owner
+  // shares a bounded boost budget with game and Plasma startup.
+  if (!globalThis.__stearlightInteractionBoost) {
+    globalThis.__stearlightInteractionBoost = true;
+    let nextBoost = 0;
+    const boost = () => {
+      if (document.hidden || performance.now() < nextBoost) return;
+      nextBoost = performance.now() + 750;
+      call('performance-boost').catch(() => {});
+    };
+    for (const name of ['click', 'keydown', 'focusin']) document.addEventListener(name, boost, true);
+    for (const name of ['popstate', 'hashchange']) globalThis.addEventListener(name, boost);
+    document.addEventListener('visibilitychange', boost);
+    for (const name of ['pushState', 'replaceState']) {
+      const original = history[name];
+      history[name] = function (...args) {
+        if (args[2] != null && new URL(args[2], location.href).href !== location.href) boost();
+        return original.apply(this, args);
+      };
+    }
+  }
   // Frame's facet dashboard switches through SteamClient rather than the
   // legacy IVROverlay ShowDashboard path. Also raise an existing desktop
   // when its native launcher is selected again from the + menu.

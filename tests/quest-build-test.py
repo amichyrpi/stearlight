@@ -29,6 +29,12 @@ class QuestBuildTest(unittest.TestCase):
         names = ('opt/quest/start-session.sh opt/quest/runtime-monitor opt/quest/libquest_vulkan.so '
                  'opt/quest/libquest_socket.so opt/quest/libquest_video.so opt/quest/libquest_streaming_drm.so '
                  'opt/quest/libquest_gamepad_aarch64.so opt/quest/libquest_gamepad_x86_64.so '
+                 'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python '
+                 'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so '
+                 'opt/quest/renpy/7.5.3/lib/python2.7/encodings/__init__.pyc opt/quest/renpy/7.5.3/LICENSE.txt '
+                 'opt/quest/renpy/8.0.3/lib/py3-linux-aarch64/python '
+                 'opt/quest/renpy/8.0.3/lib/py3-linux-aarch64/librenpython.so '
+                 'opt/quest/renpy/8.0.3/lib/python3.9/encodings/__init__.pyc opt/quest/renpy/8.0.3/LICENSE.txt '
                  'opt/quest/fna3d/libFNA3D.so.0 opt/quest/prepare-flatpak.py '
                  'opt/quest/prepare-steam-input.py opt/quest/game-launch-wrapper opt/quest/prepare-game-runtime.sh opt/quest/prepare-fex.py '
                  'opt/quest/stearlight-quest/bin/linuxarm64/driver_stearlight-quest.so '
@@ -77,6 +83,11 @@ class QuestBuildTest(unittest.TestCase):
             package.verify(self.apk(omit='opt/stearlight-desktop/usr/bin/plasmashell'))
         with self.assertRaisesRegex(ValueError, 'Incomplete Quest runtime'):
             package.verify(self.apk(omit='opt/quest/prepare-steam-input.py'))
+        for missing in ('opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python',
+                        'opt/quest/renpy/8.0.3/lib/py3-linux-aarch64/librenpython.so',
+                        'opt/quest/renpy/8.0.3/lib/python3.9/encodings/__init__.pyc'):
+            with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, 'Incomplete Quest runtime'):
+                package.verify(self.apk(omit=missing))
 
     def test_oversized_apk_is_rejected_with_actual_size(self):
         path = self.root / 'oversized.apk'

@@ -10,8 +10,8 @@ between Linux processes. Steam's browser also initializes ANGLE with the real
 Turnip Vulkan renderer. SteamVR's separate OpenGL context uses the matching
 Mesa 26.1.6 Zink loader over Turnip. A GPU probe verifies opaque-fd image
 sharing by rendering in OpenGL and reading every pixel back through Vulkan.
-The eye buffers are 1374 x 1440 each: 75% of the Quest 2's native dimensions,
-reducing scene pixels by 43.75%. The Vulkan display modes and startup GPU
+The eye buffers request the Quest 2's native 1832 x 1920 dimensions, clamped
+to the OpenXR runtime's limits. The Vulkan display modes and startup GPU
 probe use the actual OpenXR buffer size. The app requests 72 Hz when supported,
 and otherwise keeps the runtime's active refresh rate. Scene rendering still falls below 72 FPS
 under load; the display refresh rate is not the scene update rate.
@@ -59,8 +59,10 @@ The non-dominant hand's menu gesture toggles the dashboard when Horizon supplies
 that event. Horizon keeps its system gestures. Tracking or focus loss releases
 pinch input, and a hand must open before clicking again. Picking up Touch
 controllers restores their models, buttons, sticks and gamepad input. Hands do
-not synthesize gamepad buttons or sticks; game-specific skeletal hand input is
-not forwarded. No hand-tracking history is recorded.
+not synthesize gamepad buttons or sticks. An optional shared mapping carries
+the 26 tracked OpenXR joints to the Linux driver, which publishes SteamVR's
+31-bone skeleton for each hand. Forwarding and presentation in streamed games
+still need headset verification. No hand-tracking history is recorded.
 The streaming player uses the matching Mesa 26.1.6 EGL vendor with a
 surfaceless display. EGL/Vulkan pixel sharing is checked on the Quest;
 the older rootfs EGL driver produces black shared images. Its V4L2 decoder
@@ -76,6 +78,12 @@ dashboard, both docks, lasers, move/resize controls and passthrough also
 passed that reopen check. Other PCVR games remain unverified.
 The separate `vrlink` PCVR player uses the same decoder through its stateful
 V4L2 interface, including source-change events and epoll notifications.
+New APKs transfer decoded NV12 pixels through shared memory instead of sending
+the full image over a socket. Older APKs retain the socket fallback. Capture
+buffers are presented in completion order; when rendering falls behind, only
+completed buffers still owned by the decoder can be replaced. Encoded reference
+packets remain intact. The Quest launcher removes Frame's additional 6 ms
+submission delay; `STEARLIGHT_VRLINK_SUBMIT_DELAY_US=6000` restores it for comparison.
 The Quest compositor adapter converts the shipped spatial-video final-pass
 shader's reconstructed RGB to linear light before its sRGB output. It matches
 that shader exactly and leaves packed depth, motion and tracking data intact;
@@ -111,8 +119,18 @@ After the performance changes, the user confirmed that looking around its
 room/menu and moving both controllers felt smoother. Runtime platform aliases
 use relative links so Steam updates can move the platform without leaving
 PRoot hard-link aliases pointing at a removed version.
-Local Linux game panels use 960x540 at the game's 60 Hz, matching the 75%
-Quest profile and reducing shared-memory frame copies by 44% from 1280x720.
+Garden of Witches uses WineD3D through Zink/Turnip in a dedicated Gamescope
+window. Its launch adapter disables Unity graphics jobs and unused Wine
+services while retaining Explorer, RPC and the SDL/HID gamepad path. It
+exempts the virtual pad's `0000/0000` ID from Steam's controller filter;
+other filtered devices remain unchanged. Proton still prepares the prefix,
+then replaces its Python waiter to fit Quest's existing process limit.
+Linux shares the Quest's system clock. The APK copies the active timezone's
+TZif rules from Android's own database and updates `/etc/localtime` and
+`/etc/timezone` before Linux starts and when the headset timezone changes.
+This includes daylight-saving transitions without a separate clock service.
+Local Linux game panels use 960x540 at the game's 60 Hz, independently of the
+eye buffers, reducing shared-memory frame copies by 44% from 1280x720.
 The headset's display remains at 72 Hz. `STEARLIGHT_QUEST_GAME_PROFILE=0`
 restores the original panel size as well as Celeste's original renderer.
 Mesa's compiled shader cache is enabled for repeat game launches. Its default
@@ -227,6 +245,19 @@ Mesa's X11 shared-memory presentation connects
 the emulated game to Gamescope's Xwayland display. FNA games default to Vulkan and SDL audio
 uses PulseAudio. Explicit game overrides are preserved. Shader pre-caching
 uses one replay worker to stay within Android's child-process limit.
+
+It gets so lonely here (2386250) and Z.A.T.O. (4122860) run their original
+scripts and assets with the official ARM64 Ren'Py 7.5.3 and 8.0.3 engines,
+respectively. They render on Adreno through Zink/Turnip without FEX CPU
+translation. The APK includes only the matching engines, Python libraries
+and licenses from checksum-pinned SDKs. An engine-version check preserves
+Steam updates that change the game's Ren'Py version.
+
+Their embedded SDL2 libraries use an in-process dynamic API adapter for the
+Quest virtual gamepad and a 60 Hz frame limit for the Gamescope panel.
+Explicit `RENPY_RENDERER` and `SDL_DYNAMIC_API` values are preserved;
+`STEARLIGHT_QUEST_GAME_PROFILE=0` disables these profiles. Z.A.T.O. remains
+slow in menus and transitions on Quest 2.
 
 Local Frame Android games are not supported yet. Steam launches VRChat's
 ARM64 APK through Lepton. Its Android container needs private namespaces and

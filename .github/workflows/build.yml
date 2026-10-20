@@ -12,6 +12,10 @@ on:
         description: Update the Continuous build release from the default branch
         type: boolean
         default: false
+      sign_test_apk:
+        description: Sign this manual test APK with the continuous identity without publishing
+        type: boolean
+        default: false
 
 concurrency:
   group: quest-apk-${{ github.workflow }}-${{ github.ref }}
@@ -26,12 +30,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          submodules: true
           persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libtalloc-dev zstd
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libtalloc-dev libsdl2-2.0-0 zstd
       - name: Check Quest sources and packaging
         run: bash build_files/quest/check.sh
 
@@ -115,11 +120,11 @@ jobs:
             --root "$PWD/quest-root" --work "$PWD/quest-work" \
             --android-ndk "$ANDROID_HOME/ndk/27.3.13750724" --output "$PWD/quest-payload"
       - name: Restore the continuous signing identity
-        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && ((github.event_name == 'push' && !github.event.repository.fork) || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous))
+        if: (github.event_name == 'workflow_dispatch' && inputs.sign_test_apk && !github.event.repository.fork) || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && ((github.event_name == 'push' && !github.event.repository.fork) || (github.event_name == 'workflow_dispatch' && inputs.publish_continuous)))
         env:
           QUEST_SIGNING_KEYSTORE_BASE64: ${{ secrets.QUEST_SIGNING_KEYSTORE_BASE64 }}
         run: |
-          test -n "$QUEST_SIGNING_KEYSTORE_BASE64" || { echo '::error::Configure QUEST_SIGNING_KEYSTORE_BASE64 before publishing continuous builds.'; exit 1; }
+          test -n "$QUEST_SIGNING_KEYSTORE_BASE64" || { echo '::error::Configure QUEST_SIGNING_KEYSTORE_BASE64 before signing continuous or manual test builds.'; exit 1; }
           printf '%s' "$QUEST_SIGNING_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/quest-continuous.keystore"
           chmod 600 "$RUNNER_TEMP/quest-continuous.keystore"
           echo "QUEST_SIGNING_STORE=$RUNNER_TEMP/quest-continuous.keystore" >> "$GITHUB_ENV"

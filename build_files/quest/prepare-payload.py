@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import urllib.request
 import zipfile
 
@@ -213,6 +214,28 @@ def stage_fonts(overlay, downloads, work):
     shutil.copyfile(REPO / "system_files" / config, overlay / config)
 
 
+def stage_renpy(overlay, downloads):
+    # Ship the matching ARM64 engines and Python libraries, without the SDK
+    # launcher, sample games or executables for other architectures.
+    for version, spec in LOCK["renpy"].items():
+        prefix = f"renpy-{version}-sdkarm/"
+        engine = f"lib/{spec['architecture']}/"
+        library = f"lib/{spec['stdlib']}/"
+        with tempfile.TemporaryDirectory() as directory:
+            with tarfile.open(fetch(spec, downloads)) as archive:
+                members = [m for m in archive if m.name.startswith(prefix) and
+                           (m.name[len(prefix):] == "LICENSE.txt" or
+                            m.name[len(prefix):].startswith(library) or
+                            m.name[len(prefix):] in (engine + "python", engine + "librenpython.so"))]
+                archive.extractall(directory, members=members, filter="data")
+            source = Path(directory) / prefix
+            python = source / engine / "python"
+            header = python.read_bytes()[:20]
+            if header[:6] != b"\x7fELF\x02\x01" or header[18:20] != b"\xb7\x00":
+                raise RuntimeError(f"Ren'Py {version} must supply an ARM64 Linux executable")
+            shutil.copytree(source, overlay / "opt/quest/renpy" / version, dirs_exist_ok=True)
+
+
 def stage_update_helpers(overlay, downloads):
     for spec in LOCK["updates"].values():
         run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
@@ -280,6 +303,7 @@ def main():
     overlay = work / "quest-overlay"
     overlay.mkdir(exist_ok=True)
     stage_fonts(overlay, downloads, work)
+    stage_renpy(overlay, downloads)
     stage_update_helpers(overlay, downloads)
     run(sys.executable, REPO / "build_files/quest/patch-gamescope.py",
         root / "opt/frame-gamescope/bin/gamescope", overlay / "opt/frame-gamescope/bin/gamescope")
@@ -490,6 +514,7 @@ def main():
     source_files = [fetch(spec, downloads) for spec in LOCK["sources"].values()]
     source_files.append(fetch(LOCK["mesa"], downloads))
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fna3d"].values())
+    source_files.extend(fetch(spec, downloads) for spec in LOCK["renpy"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["fonts"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["audio"].values())
     source_files.extend(fetch(spec, downloads) for spec in LOCK["updates"].values())

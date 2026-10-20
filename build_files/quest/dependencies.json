@@ -250,5 +250,19 @@
       "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/nano-9.2-r0.apk",
       "sha256": "8d2a6b84af47d93638466245829561b3500ed7a98864a193c560eb8f159aa4cf"
     }
+  },
+  "renpy": {
+    "7.5.3": {
+      "url": "https://www.renpy.org/dl/7.5.3/renpy-7.5.3-sdkarm.tar.bz2",
+      "sha256": "6e5da3388b083d05f9d43991310776ff394b04bbb5541ee6216484ebd3d5a567",
+      "architecture": "py2-linux-aarch64",
+      "stdlib": "python2.7"
+    },
+    "8.0.3": {
+      "url": "https://www.renpy.org/dl/8.0.3/renpy-8.0.3-sdkarm.tar.bz2",
+      "sha256": "e2c5992231c2d0d346ce88ab962b614e130a45f821e356a66482b0075c95106d",
+      "architecture": "py3-linux-aarch64",
+      "stdlib": "python3.9"
+    }
   }
 }

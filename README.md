@@ -59,7 +59,7 @@ It includes:
 
 ## Known-issues
 
-- [ ] Overall performance is really slow due to the emulation system.
+All clear for once! I hope it stays like this.
 
 ## Performance
 
@@ -83,6 +83,11 @@ Every game is different and therefore has different issues. In this
 project, we have added patches for standalone gaming, but they are not perfect,
 and some games still don't run. If you want to run a game and you have patched
 the project for your game, your changes will be merged.
+
+**Supported games**
+
+You can find a list of all games tested on Stearlight OS, along with their
+compatibility ratings and known issues, in the [Standalone Compatibility](STANDALONE_COMPATIBILITY.md) file.
 
 ## Build the Quest APK
 

@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <thread>
 #include "share-mirror.h"
+#include "performance-boost.h"
 extern "C" int quest_services_run();
 extern "C" void quest_services_stop();
 class QuestServices {
@@ -268,9 +269,7 @@ int main(int argc, char** argv) {
         }
         vr::VREvent_t event;
         while (system->PollNextEvent(&event, sizeof(event))) {
-            if (event.eventType == vr::VREvent_ProcessConnected) {
-                if (FILE* request = std::fopen("/run/stearlight/quest/performance-boost.request", "w")) std::fclose(request);
-            }
+            if (event.eventType == vr::VREvent_ProcessConnected) quest_request_loading_boost();
             if (event.eventType == vr::VREvent_Quit) {
                 system->AcknowledgeQuit_Exiting();
                 stopping = 1;

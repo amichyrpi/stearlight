@@ -24,13 +24,52 @@ int main(int argc,char** argv){
  auto count=symbol<int(*)()>(sdl,"SDL_NumJoysticks");auto isController=symbol<int(*)(int)>(sdl,"SDL_IsGameController");
  auto open=symbol<void*(*)(int)>(sdl,"SDL_GameControllerOpen");auto button=symbol<uint8_t(*)(void*,int)>(sdl,"SDL_GameControllerGetButton");
  auto axis=symbol<int16_t(*)(void*,int)>(sdl,"SDL_GameControllerGetAxis");
- assert(init(0x2000)==0);assert(count()==1&&isController(0));void* controller=open(0);assert(controller);
+ bool wine=getenv("STEARLIGHT_WINE_GAMEPAD")&&!strcmp(getenv("STEARLIGHT_WINE_GAMEPAD"),"1");
+ auto initialized=symbol<uint32_t(*)(uint32_t)>(sdl,"SDL_WasInit");
+ bool pacing=getenv("STEARLIGHT_RENPY_SDL")&&!strcmp(getenv("STEARLIGHT_RENPY_SDL"),"1");
+ // Without a GL context the real SDL call fails; only the scoped Ren'Py
+ // adapter may acknowledge it without calling the broken GLX thunk.
+ assert(symbol<int(*)(int)>(sdl,"SDL_GL_SetSwapInterval")(1)==(pacing?0:-1));
+ assert(symbol<int(*)()>(sdl,"SDL_GL_GetSwapInterval")()==(pacing?1:0));
+ void* libc=dlopen("libc.so.6",RTLD_NOW);assert(libc);
+ auto realLookup=symbol<void*(*)(void*,const char*)>(libc,"dlsym");
+ bool dynapi=pacing&&getenv("SDL_DYNAMIC_API");
+ // Embedded Ren'Py calls SDL internally, bypassing dlsym interposition.
+ // Exercise those public SDK stubs directly, including shutdown/reinit.
+ auto dispatch=[&](const char* name){return dynapi?realLookup(sdl,name):dlsym(sdl,name);};
+ init=reinterpret_cast<decltype(init)>(dispatch("SDL_Init"));
+ pump=reinterpret_cast<decltype(pump)>(dispatch("SDL_PumpEvents"));
+ auto quit=reinterpret_cast<void(*)()>(dispatch("SDL_Quit"));
+ auto quitSubsystem=reinterpret_cast<void(*)(uint32_t)>(dispatch("SDL_QuitSubSystem"));
+ auto initSubsystem=reinterpret_cast<int(*)(uint32_t)>(dispatch("SDL_InitSubSystem"));
+ assert(init(0x3000)==0);assert(bool(initialized(0x1000))!=wine);
+ quitSubsystem(0x1000);
+ assert(initSubsystem(0x1000)==0);
+ assert(bool(initialized(0x1000))!=wine);
+ auto internalSwap=reinterpret_cast<int(*)(int)>(realLookup(sdl,"SDL_GL_SetSwapInterval"));assert(internalSwap);
+ assert(internalSwap(1)==(dynapi?0:-1));
+ if(dynapi){
+  auto swap=reinterpret_cast<void(*)(void*)>(realLookup(sdl,"SDL_GL_SwapWindow"));assert(swap);
+  // The dummy driver returns immediately. Pacing must still yield between
+  // frames without requiring a GPU, display server, or privileged clock.
+  timespec before{},after{};clock_gettime(CLOCK_MONOTONIC,&before);
+  swap(nullptr);swap(nullptr);swap(nullptr);clock_gettime(CLOCK_MONOTONIC,&after);
+  assert((after.tv_sec-before.tv_sec)*1000000000LL+after.tv_nsec-before.tv_nsec>=30000000);
+  assert(internalSwap(0)==0);
+  assert(symbol<int(*)()>(sdl,"SDL_GL_GetSwapInterval")()==0);
+  assert(internalSwap(1)==0);
+ }
+ if(getenv("STEARLIGHT_STEAM_INPUT")&&!strcmp(getenv("STEARLIGHT_STEAM_INPUT"),"0")){
+  assert(count()==0);quit();
+  munmap(shared,sizeof(QuestGamepadState));unlink(path);puts("SDL2 graphics adapter preserves gamepad opt-out");return 0;
+ }
+ assert(count()==1&&isController(0));void* controller=open(0);assert(controller);
  pump();assert(button(controller,0)&&button(controller,2));assert(axis(controller,1)<-24000);assert(axis(controller,5)==32767);
  publish(true,false);pump();assert(!button(controller,0)&&button(controller,2));assert(axis(controller,5)==0);
  input.session_focused=0;publish(true,true);pump();assert(!button(controller,2)&&axis(controller,1)==0);
  input.session_focused=1;publish(true,true);pump();assert(button(controller,0));
  quest::publishGamepad(shared,QuestGamepadState{});pump();assert(!button(controller,0)&&axis(controller,5)==0);
- symbol<void(*)(void*)>(sdl,"SDL_GameControllerClose")(controller);symbol<void(*)()>(sdl,"SDL_Quit")();
- assert(init(0x2000)==0&&count()==1);symbol<void(*)()>(sdl,"SDL_Quit")();
+ symbol<void(*)(void*)>(sdl,"SDL_GameControllerClose")(controller);quit();
+ assert(init(0x2000)==0&&count()==1);quit();
  munmap(shared,sizeof(QuestGamepadState));unlink(path);puts("SDL2 gamepad buttons, axes, mode gates and release passed");
 }
