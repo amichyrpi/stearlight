@@ -31,9 +31,14 @@ struct API {
  int(*axis)(void*,int,int16_t)=nullptr;int(*button)(void*,int,uint8_t)=nullptr;
  void(*quit)()=nullptr;void(*quitSubsystem)(uint32_t)=nullptr;
  uint32_t(*wasInit)(uint32_t)=nullptr;
+ int(*swapInterval)(int)=nullptr;int(*getSwapInterval)()=nullptr;void(*swapWindow)(void*)=nullptr;
+ int(*dynapi)(uint32_t,void*,uint32_t)=nullptr;
 } api;
 const QuestGamepadState* shared=nullptr;void* joystick=nullptr;
 thread_local bool busy=false;
+thread_local int frameInterval=0;
+thread_local uint64_t previousFrame=0;
+bool framePacing(){const char* mode=getenv("STEARLIGHT_RENPY_SDL");return mode&&!strcmp(mode,"1");}
 void load(void* library){
  auto fn=lookup();if(!fn||api.init)return;
 #define LOAD(field,name) api.field=reinterpret_cast<decltype(api.field)>(fn(library,name))
@@ -42,6 +47,8 @@ void load(void* library){
  LOAD(update,"SDL_JoystickUpdate");LOAD(controllerUpdate,"SDL_GameControllerUpdate");
  LOAD(open,"SDL_JoystickOpen");LOAD(axis,"SDL_JoystickSetVirtualAxis");LOAD(button,"SDL_JoystickSetVirtualButton");
  LOAD(quit,"SDL_Quit");LOAD(quitSubsystem,"SDL_QuitSubSystem");LOAD(wasInit,"SDL_WasInit");
+ LOAD(swapInterval,"SDL_GL_SetSwapInterval");LOAD(getSwapInterval,"SDL_GL_GetSwapInterval");
+ LOAD(dynapi,"SDL_DYNAPI_entry");LOAD(swapWindow,"SDL_GL_SwapWindow");
 #undef LOAD
  // The common entry points remain transparent for an SDL3-only process.
  // Its virtual-joystick ABI differs; only attach through the SDL2 contract.
@@ -58,6 +65,7 @@ bool map(){
  shared=static_cast<const QuestGamepadState*>(mapping);return true;
 }
 void feed(){
+ if(const char* enabled=getenv("STEARLIGHT_STEAM_INPUT");enabled&&!strcmp(enabled,"0"))return;
  if(busy||!api.attach||!api.open||!api.axis||!api.button||!map())return;
  busy=true;
  if(!joystick){int index=api.attach(1,6,15,0);if(index>=0){joystick=api.open(index);if(joystick){const char message[]="Quest SDL gamepad attached\n";[[maybe_unused]] auto written=write(STDERR_FILENO,message,sizeof(message)-1);}}}
@@ -85,6 +93,35 @@ void reset(){
 }
 }
 extern "C" {
+// Ren'Py's GL context works through FEX, but setting its GLX swap interval
+// crashes the thunk. Pace its producer to the dedicated 60 Hz Gamescope panel.
+int SDL_GL_SetSwapInterval(int interval){
+ if(framePacing()){frameInterval=std::clamp(interval,-4,4);previousFrame=0;return 0;}
+ if(!api.swapInterval)load(RTLD_NEXT);
+ return api.swapInterval?api.swapInterval(interval):-1;
+}
+int SDL_GL_GetSwapInterval(){
+ if(framePacing())return frameInterval;
+ if(!api.getSwapInterval)load(RTLD_NEXT);
+ return api.getSwapInterval?api.getSwapInterval():0;
+}
+void SDL_GL_SwapWindow(void* window){
+ if(!api.swapWindow)load(RTLD_NEXT);
+ if(api.swapWindow)api.swapWindow(window);
+ if(!framePacing()||!frameInterval)return;
+ timespec now{};clock_gettime(CLOCK_MONOTONIC,&now);
+ uint64_t ns=uint64_t(now.tv_sec)*1000000000+now.tv_nsec;
+ uint64_t period=16666667u*uint64_t(std::abs(frameInterval));
+ if(previousFrame&&ns<previousFrame+period){
+  uint64_t remaining=previousFrame+period-ns;
+  timespec delay{time_t(remaining/1000000000),long(remaining%1000000000)};
+  // A signal must not postpone input processing by restarting the whole wait.
+  nanosleep(&delay,nullptr);
+  clock_gettime(CLOCK_MONOTONIC,&now);ns=uint64_t(now.tv_sec)*1000000000+now.tv_nsec;
+ }
+ // Missed frames do not accumulate a presentation backlog.
+ previousFrame=ns;
+}
 int SDL_Init(uint32_t flags){if(const char* mode=getenv("STEARLIGHT_WINE_GAMEPAD");mode&&!strcmp(mode,"1"))flags&=~0x1000u;if(!api.init)load(RTLD_NEXT);int result=api.init?api.init(flags):-1;if(result==0&&(flags&0x2200))feed();return result;}
 int SDL_InitSubSystem(uint32_t flags){if(const char* mode=getenv("STEARLIGHT_WINE_GAMEPAD");mode&&!strcmp(mode,"1"))flags&=~0x1000u;if(!api.subsystem)load(RTLD_NEXT);int result=api.subsystem?api.subsystem(flags):-1;if(result==0&&(flags&0x2200))feed();return result;}
 void SDL_PumpEvents(){feed();if(api.pump)api.pump();}
@@ -94,14 +131,43 @@ void SDL_JoystickUpdate(){feed();if(api.update)api.update();}
 void SDL_GameControllerUpdate(){feed();if(api.controllerUpdate)api.controllerUpdate();}
 void SDL_Quit(){reset();bool previous=busy;busy=true;if(api.quit)api.quit();busy=previous;}
 void SDL_QuitSubSystem(uint32_t flags){bool previous=busy;busy=true;if(api.quitSubsystem)api.quitSubsystem(flags);busy=previous;if((flags&0x2200)&&api.wasInit&&!api.wasInit(0x200))reset();}
+int SDL_DYNAPI_entry(uint32_t version,void* table,uint32_t bytes){
+ // SDL2's append-only Linux API v1 fixes the dispatch slots below.
+ // Ren'Py embeds SDL and calls its internal dispatch table, bypassing ELF
+ // interposition. Use SDL's supported SDL_DYNAMIC_API entry point too.
+ using Entry=int(*)(uint32_t,void*,uint32_t);
+ auto fn=lookup();auto original=api.dynapi?api.dynapi:(fn?reinterpret_cast<Entry>(fn(RTLD_NEXT,"SDL_DYNAPI_entry")):nullptr);
+ if(!original)return -1;
+ int result=original(version,table,bytes);if(result)return result;
+ const char* pacing=getenv("STEARLIGHT_RENPY_SDL");
+ if(pacing&&!strcmp(pacing,"1")){
+  if(version!=1||bytes<523*sizeof(void*))return -1;
+  auto entries=static_cast<void**>(table);
+  load(RTLD_NEXT);
+  // Save REAL functions before replacing the SDK's internal dispatch. Calling
+  // its public entry points from our wrappers would recurse into the adapter.
+#define DISPATCH(slot,field,symbol) api.field=reinterpret_cast<decltype(api.field)>(entries[slot]);entries[slot]=reinterpret_cast<void*>(&symbol)
+  DISPATCH(13,init,SDL_Init);DISPATCH(14,subsystem,SDL_InitSubSystem);
+  DISPATCH(15,quitSubsystem,SDL_QuitSubSystem);DISPATCH(17,quit,SDL_Quit);
+  DISPATCH(75,pump,SDL_PumpEvents);DISPATCH(81,poll,SDL_PollEvent);
+  DISPATCH(83,wait,SDL_WaitEventTimeout);DISPATCH(104,controllerUpdate,SDL_GameControllerUpdate);
+  DISPATCH(168,update,SDL_JoystickUpdate);
+  DISPATCH(520,swapInterval,SDL_GL_SetSwapInterval);DISPATCH(521,getSwapInterval,SDL_GL_GetSwapInterval);
+  DISPATCH(522,swapWindow,SDL_GL_SwapWindow);
+#undef DISPATCH
+ }
+ return 0;
+}
 void* dlsym(void* library,const char* name){
  auto fn=lookup();if(!fn)return nullptr;
  void* original=fn(library,name);
  if(!original||strncmp(name,"SDL_",4))return original;
+ if(!strcmp(name,"SDL_DYNAPI_entry"))return original;
  if(fn(library,"SDL_GetJoysticks"))return original;
  load(library);if(!api.attach)return original;
 #define HOOK(symbol) if(!strcmp(name,#symbol))return reinterpret_cast<void*>(&symbol)
  HOOK(SDL_Init);HOOK(SDL_InitSubSystem);HOOK(SDL_PumpEvents);HOOK(SDL_PollEvent);
+ HOOK(SDL_GL_SetSwapInterval);HOOK(SDL_GL_GetSwapInterval);HOOK(SDL_GL_SwapWindow);
  HOOK(SDL_WaitEventTimeout);HOOK(SDL_JoystickUpdate);HOOK(SDL_GameControllerUpdate);
  HOOK(SDL_Quit);HOOK(SDL_QuitSubSystem);
 #undef HOOK

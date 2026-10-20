@@ -15,13 +15,13 @@
     "appid": 667970,
     "name": "VTOL VR",
     "status": "playable",
-    "notes": "Launches at 10–15 FPS."
+    "notes": "Launches at 10â€“15 FPS."
   },
   {
     "appid": 2386250,
     "name": "It gets so lonely here",
-    "status": "playable",
-    "notes": "Story, controller input and music tested on Quest 2. Uses software rendering to avoid the OpenGL startup crash."
+    "status": "verified",
+    "notes": "Story, Quest controller input and music tested on Quest 2 with native ARM64 Ren'Py and Adreno GPU rendering."
   },
   {
     "appid": 1598780,
@@ -34,5 +34,11 @@
     "name": "Garden of Witches",
     "status": "verified",
     "notes": "Local gameplay, picture, Quest gamepad controls and music confirmed on Quest 2. Startup is slow."
+  },
+  {
+    "appid": 4122860,
+    "name": "Z.A.T.O. // I Love the World and Everything In It",
+    "status": "playable",
+    "notes": "Story, Quest controller input and music work with native ARM64 Ren'Py and Adreno GPU rendering. Menus and transitions remain slow."
   }
 ]

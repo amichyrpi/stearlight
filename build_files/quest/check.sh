@@ -18,6 +18,7 @@ python3 packages/quest-runtime/tests/audio-queue.test.py
 python3 packages/quest-runtime/tests/loading-boost.test.py
 python3 packages/quest-runtime/tests/mountinfo-cache.test.py
 python3 packages/quest-runtime/tests/steam-input.test.py
+python3 packages/quest-runtime/tests/sdl-gamepad.test.py
 python3 packages/quest-runtime/tests/game-launch-wrapper.test.py
 python3 packages/quest-runtime/tests/game-runtime.test.py
 python3 packages/quest-runtime/tests/proton-runtime.test.py

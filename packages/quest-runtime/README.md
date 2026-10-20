@@ -238,10 +238,18 @@ the emulated game to Gamescope's Xwayland display. FNA games default to Vulkan a
 uses PulseAudio. Explicit game overrides are preserved. Shader pre-caching
 uses one replay worker to stay within Android's child-process limit.
 
-It gets so lonely here (2386250) uses Ren'Py's software renderer to avoid its
-OpenGL startup crash under FEX. Story, controller input and music have been
-tested on Quest 2. An explicit `RENPY_RENDERER` value is preserved, and
-`STEARLIGHT_QUEST_GAME_PROFILE=0` disables this game profile.
+It gets so lonely here (2386250) and Z.A.T.O. (4122860) run their original
+scripts and assets with the official ARM64 Ren'Py 7.5.3 and 8.0.3 engines,
+respectively. They render on Adreno through Zink/Turnip without FEX CPU
+translation. The APK includes only the matching engines, Python libraries
+and licenses from checksum-pinned SDKs. An engine-version check preserves
+Steam updates that change the game's Ren'Py version.
+
+Their embedded SDL2 libraries use an in-process dynamic API adapter for the
+Quest virtual gamepad and a 60 Hz frame limit for the Gamescope panel.
+Explicit `RENPY_RENDERER` and `SDL_DYNAMIC_API` values are preserved;
+`STEARLIGHT_QUEST_GAME_PROFILE=0` disables these profiles. Z.A.T.O. remains
+slow in menus and transitions on Quest 2.
 
 Local Frame Android games are not supported yet. Steam launches VRChat's
 ARM64 APK through Lepton. Its Android container needs private namespaces and
