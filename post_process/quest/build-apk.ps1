@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory)][string]$Payload,
     [Parameter(Mandatory)][string]$Output,
-    [string]$Gradle='gradle'
+    [string]$Gradle='gradle',
+    [string]$SigningStore
 )
 $ErrorActionPreference='Stop'
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -21,11 +22,20 @@ for($index=0;$index -lt $parts.Count;$index++){
     if(!(Test-Path -LiteralPath $part) -or (Get-Item -LiteralPath $part).Length -eq 0){throw "Missing or empty Quest rootfs part: $expected"}
 }
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
+$signingArgs=@()
+if(!$SigningStore){
+    $localStore=Join-Path $env:USERPROFILE '.android/stearlight-signing/quest-continuous.keystore'
+    if(Test-Path -LiteralPath $localStore){$SigningStore=$localStore}
+}
+if($SigningStore){
+    $store=(Resolve-Path -LiteralPath $SigningStore).Path
+    $signingArgs+= "-PquestSigningStore=$($store.Replace('\','/'))"
+}
 & $Gradle -p (Join-Path $repo 'packages/quest-runtime') `
     "-PquestPayload=$($payloadPath.Replace('\','/'))" `
     "-PquestBuildDir=$($outputPath.Replace('\','/'))" `
     --project-cache-dir (Join-Path $outputPath 'gradle-cache') `
-    --no-daemon --console=plain :app:assembleDebug
+    @signingArgs --no-daemon --console=plain :app:assembleDebug
 if($LASTEXITCODE){throw "Quest APK build failed ($LASTEXITCODE)"}
 $apk=Join-Path $outputPath 'outputs/apk/debug/app-debug.apk'
 if(!(Test-Path -LiteralPath $apk)){throw 'Gradle did not produce the Quest APK'}

@@ -1,0 +1,51 @@
+name: Recover local Quest signing
+
+on:
+  workflow_dispatch:
+    inputs:
+      public_key:
+        description: RSA public key generated on the destination PC (PEM; never a private key)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  encrypt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install encryption support
+        run: sudo apt-get update && sudo apt-get install -y python3-cryptography
+      - name: Encrypt the existing identity for the destination PC
+        env:
+          RECOVERY_PUBLIC_KEY: ${{ inputs.public_key }}
+          QUEST_SIGNING_KEYSTORE_BASE64: ${{ secrets.QUEST_SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import base64, json, os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding, rsa
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          public = serialization.load_pem_public_key(os.environ['RECOVERY_PUBLIC_KEY'].encode())
+          if not isinstance(public, rsa.RSAPublicKey) or public.key_size < 3072:
+              raise ValueError('A destination RSA public key of at least 3072 bits is required')
+          payload = base64.b64decode(os.environ['QUEST_SIGNING_KEYSTORE_BASE64'], validate=True)
+          if not payload:
+              raise ValueError('The continuous signing identity is not configured')
+          key, nonce = AESGCM.generate_key(bit_length=256), os.urandom(12)
+          context = b'Stearlight local signing recovery v1'
+          encrypted = AESGCM(key).encrypt(nonce, payload, context)
+          wrapped = public.encrypt(key, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=context))
+          result = {'version': 1, **{name: base64.b64encode(value).decode() for name, value in
+                    [('key', wrapped), ('nonce', nonce), ('ciphertext', encrypted)]}}
+          Path('encrypted-keystore.json').write_text(json.dumps(result))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quest-local-signing
+          path: encrypted-keystore.json
+          retention-days: 1
+          if-no-files-found: error
