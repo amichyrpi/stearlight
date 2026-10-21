@@ -20,6 +20,7 @@ python3 packages/quest-runtime/tests/mountinfo-cache.test.py
 python3 packages/quest-runtime/tests/steam-input.test.py
 python3 packages/quest-runtime/tests/steam-gamepad-launch.test.py
 python3 packages/quest-runtime/tests/sdl-gamepad.test.py
+python3 packages/quest-runtime/tests/sdl3-resolver.test.py
 python3 packages/quest-runtime/tests/video-queue.test.py
 python3 packages/quest-runtime/tests/game-launch-wrapper.test.py
 python3 packages/quest-runtime/tests/game-runtime.test.py

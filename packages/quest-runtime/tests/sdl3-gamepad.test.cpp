@@ -10,11 +10,12 @@
 #include <cstdio>
 template<class T>T symbol(void* lib,const char* name){auto value=reinterpret_cast<T>(dlsym(lib,name));assert(value);return value;}
 int main(int argc,char** argv){
- assert(argc==2);char path[]="/tmp/quest-physical-gamepad-XXXXXX";int fd=mkstemp(path);assert(fd>=0);
+ assert(argc==2||argc==3);char path[]="/tmp/quest-physical-gamepad-XXXXXX";int fd=mkstemp(path);assert(fd>=0);
  assert(ftruncate(fd,sizeof(QuestExternalGamepad))==0);
  auto* shared=static_cast<QuestExternalGamepad*>(mmap(nullptr,sizeof(QuestExternalGamepad),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(shared!=MAP_FAILED);close(fd);
  *shared=QuestExternalGamepad{};setenv("STEARLIGHT_EXTERNAL_GAMEPAD_STATE",path,1);
  void* sdl=dlopen(argv[1],RTLD_NOW|RTLD_GLOBAL);if(!sdl){puts(dlerror());return 1;}
+ if(argc==3)sdl=RTLD_DEFAULT;
  auto init=symbol<bool(*)(uint32_t)>(sdl,"SDL_Init");auto pump=symbol<void(*)()>(sdl,"SDL_PumpEvents");auto get=symbol<uint32_t*(*)(int*)>(sdl,"SDL_GetJoysticks");auto free=symbol<void(*)(void*)>(sdl,"SDL_free");
  auto quit=symbol<void(*)()>(sdl,"SDL_Quit");auto open=symbol<void*(*)(uint32_t)>(sdl,"SDL_OpenGamepad");
  auto axis=symbol<int16_t(*)(void*,int)>(sdl,"SDL_GetGamepadAxis");auto button=symbol<bool(*)(void*,int)>(sdl,"SDL_GetGamepadButton");

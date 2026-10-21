@@ -32,8 +32,14 @@ class SteamGamepadLaunchTest(unittest.TestCase):
             text = first.decode()
             self.assertEqual(text.count('# STEARLIGHT_ANDROID_GAMEPAD'), 1)
             self.assertIn(command, text)
-            self.assertIn('${LD_PRELOAD:+:$LD_PRELOAD}', text)
+            self.assertIn('${LD_PRELOAD:+$LD_PRELOAD:}/opt/quest/libquest_android_gamepad.so', text)
             subprocess.run(['bash', '-n', str(launcher)], check=True)
+            # An installed test APK may already have the marker but the old
+            # interposer order. Preparation must repair that root too.
+            launcher.write_text(text.replace('${LD_PRELOAD:+$LD_PRELOAD:}/opt/quest/libquest_android_gamepad.so',
+                                             '/opt/quest/libquest_android_gamepad.so${LD_PRELOAD:+:$LD_PRELOAD}'))
+            subprocess.run(['sh', str(prepare)], env=env, check=True)
+            self.assertEqual(launcher.read_bytes(), first)
 
 
 if __name__ == '__main__':
