@@ -76,9 +76,12 @@ void feed(){
  load(RTLD_NEXT);
  if(!api.attach||!api.open||!api.close||!api.detach||!api.axis||!api.button||!api.wasInit||!api.wasInit(0x200))return;
  busy=true;timespec stamp{};clock_gettime(CLOCK_MONOTONIC,&stamp);uint64_t now=uint64_t(stamp.tv_sec)*1000000000+stamp.tv_nsec;
- QuestExternalGamepad physical{};bool connected=reader.read(physical,now);
- if(id&&(!connected||vendor!=physical.vendor||product!=physical.product))disconnect();
- if(connected&&!id){
+ QuestExternalGamepad physical{};bool connected=id!=0;
+ bool fresh=reader.read(physical,now,&connected);
+ // A stalled XR producer releases held input, but is not a Bluetooth removal.
+ // Re-enumerating Steam's pad during game loads repeatedly rebuilds bindings.
+ if(id&&(!connected||(fresh&&(vendor!=physical.vendor||product!=physical.product))))disconnect();
+ if(fresh&&!id){
   physical.name[sizeof(physical.name)-1]=0;
   Descriptor desc{};desc.version=sizeof(desc);desc.type=1;desc.vendor=physical.vendor;desc.product=physical.product;
   desc.axes=6;desc.buttons=15;desc.axisMask=0x3f;desc.buttonMask=0x7fff;desc.name=physical.name;
@@ -87,6 +90,7 @@ void feed(){
    if(!joystick){api.detach(id);id=0;}
   }
  }
+ if(!fresh)physical.input=QuestGamepadState{};
  if(joystick){for(int i=0;i<6;i++){
   float value=physical.input.axes[i];if(!std::isfinite(value))value=i>=4?-1:0;value=std::clamp(value,-1.f,1.f);
   api.axis(joystick,i,static_cast<int16_t>(value<0?value*32768:value*32767));

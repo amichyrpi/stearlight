@@ -25,6 +25,11 @@ int main(int argc,char** argv){
  value.input.buttons=(1<<0)|(1<<14);value.input.axes[0]=.75f;value.input.axes[4]=1;publish();pump();
  ids=get(&count);assert(count==1);void* gamepad=open(ids[0]);free(ids);assert(gamepad);pump();
  assert(button(gamepad,0)&&button(gamepad,14));assert(axis(gamepad,0)>24000&&axis(gamepad,4)==32767);
+ ids=get(&count);uint32_t originalId=ids[0];free(ids);
+ value.input.monotonic_ns=0;quest::publishExternalGamepad(shared,value);pump();
+ ids=get(&count);assert(count==1&&ids[0]==originalId);free(ids);
+ assert(!button(gamepad,0)&&axis(gamepad,0)==0&&axis(gamepad,4)==0);
+ publish();pump();assert(button(gamepad,0)&&axis(gamepad,0)>24000);
  value.input=QuestGamepadState{};publish();pump();assert(!button(gamepad,0)&&axis(gamepad,0)==0&&axis(gamepad,4)==0);
  symbol<void(*)(void*)>(sdl,"SDL_CloseGamepad")(gamepad);
  value.connected=0;publish();pump();ids=get(&count);assert(count==0);free(ids);

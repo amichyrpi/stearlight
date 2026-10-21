@@ -17,12 +17,14 @@ inline void publishExternalGamepad(QuestExternalGamepad* shared,const QuestExter
  memcpy(reinterpret_cast<char*>(shared)+offset,reinterpret_cast<const char*>(&value)+offset,sizeof(value)-offset);
  __atomic_add_fetch(&shared->sequence,1,__ATOMIC_RELEASE);
 }
-inline bool readExternalGamepad(const QuestExternalGamepad* shared,QuestExternalGamepad& value,uint64_t now){
+inline bool readExternalGamepad(const QuestExternalGamepad* shared,QuestExternalGamepad& value,uint64_t now,bool* connected=nullptr){
  for(int attempt=0;attempt<4;attempt++){
   auto before=__atomic_load_n(&shared->sequence,__ATOMIC_ACQUIRE);if(before&1)continue;
   memcpy(&value,shared,sizeof value);
   if(before!=__atomic_load_n(&shared->sequence,__ATOMIC_ACQUIRE))continue;
-  return value.magic==0x53514550&&value.version==1&&value.connected&&
+  bool valid=value.magic==0x53514550&&value.version==1;
+  if(connected)*connected=valid&&value.connected;
+  return valid&&value.connected&&
    now>=value.input.monotonic_ns&&now-value.input.monotonic_ns<2000000000;
  }
  return false;

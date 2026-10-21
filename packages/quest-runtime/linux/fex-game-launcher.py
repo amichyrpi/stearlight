@@ -9,10 +9,25 @@ import re
 import runpy
 import shutil
 import sys
+import time
 
 
 def unescape(value):
     return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
+
+
+def release_streaming_audio(state=Path("/run/stearlight/quest")):
+    # Local games use PulseAudio. Reuse the existing VR-game handover rather
+    # than exceed Android's child-process limit with idle streaming services.
+    if not (state / "local-vr-audio.supported").exists():
+        return
+    (state / "local-vr.pid").write_text(str(os.getpid()))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if (state / "local-vr-audio.paused").exists():
+            return
+        time.sleep(0.05)
+    raise RuntimeError("Streaming audio did not release the local game process budget")
 
 
 def prepare_rootfs(platform, destination):
@@ -306,6 +321,7 @@ def main():
         environment.setdefault("RENPY_RENDERER", "gl2")
         environment["STEARLIGHT_RENPY_SDL"] = "1"
     if environment.get("STEARLIGHT_FEX_GAMESCOPE") != "1" and environment.get("SteamAppId"):
+        release_streaming_audio()
         app = environment["SteamAppId"]
         environment["STEARLIGHT_FEX_GAMESCOPE"] = "1"
         environment["GLIBC_TUNABLES"] = "glibc.pthread.rseq=0"

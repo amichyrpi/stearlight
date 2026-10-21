@@ -10,7 +10,7 @@ class ExternalGamepadReader {
  const QuestExternalGamepad* shared=nullptr;uint64_t retry=0;
 public:
  ~ExternalGamepadReader(){if(shared)munmap(const_cast<QuestExternalGamepad*>(shared),sizeof(*shared));}
- bool read(QuestExternalGamepad& value,uint64_t now){
+ bool read(QuestExternalGamepad& value,uint64_t now,bool* connected=nullptr){
   if(!shared&&now>=retry){
    retry=now+1000000000;const char* path=getenv("STEARLIGHT_EXTERNAL_GAMEPAD_STATE");
    int fd=open(path?path:"/run/stearlight/quest/external-gamepad",O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
@@ -19,6 +19,6 @@ public:
     if(mapping!=MAP_FAILED)shared=static_cast<const QuestExternalGamepad*>(mapping);
    }close(fd);}
   }
-  return shared&&quest::readExternalGamepad(shared,value,now);
+  return shared&&quest::readExternalGamepad(shared,value,now,connected);
  }
 };
