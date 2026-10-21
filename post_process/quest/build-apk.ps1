@@ -24,7 +24,7 @@ for($index=0;$index -lt $parts.Count;$index++){
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 $signingArgs=@()
 if(!$SigningStore){
-    $localStore=Join-Path $env:USERPROFILE '.android/stearlight-signing/quest-continuous.keystore'
+    $localStore=Join-Path ([Environment]::GetFolderPath('UserProfile')) '.android/stearlight-signing/quest-continuous.keystore'
     if(Test-Path -LiteralPath $localStore){$SigningStore=$localStore}
 }
 if($SigningStore){

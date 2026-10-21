@@ -476,8 +476,18 @@ Configure the repository Actions secret `QUEST_SIGNING_KEYSTORE_BASE64` with
 a base64-encoded PKCS12 keystore, alias `androiddebugkey`, and store/key password
 `android`. The keystore itself is private; its password is the standard
 development password. The workflow fails rather than publishing with a new,
-incompatible key if the secret is missing. PR and nonpublishing builds use
-temporary debug certificates and do not receive this secret.
+incompatible key if the secret is missing. PR builds use temporary debug
+certificates and do not receive this secret. A trusted manual build can select
+`sign_test_apk` to retain the installed identity without publishing a release.
+
+For local Windows builds, `build-apk.ps1` accepts `-SigningStore PATH`. It also
+uses `.android/stearlight-signing/quest-continuous.keystore` in the current
+user's profile automatically when that file exists. Keep this key outside the
+checkout; it is not part of the APK payload. If its only surviving copy is the
+repository secret, the manual `recover_signing_public_key` workflow option
+encrypts it for a locally generated RSA public key (at least 3072 bits), skips
+the APK build and uploads only the encrypted result for one day. The matching
+private decryption key stays on the destination PC.
 
 For initial repository setup, generate a dedicated key outside the checkout
 and store it in GitHub with the GitHub CLI:
