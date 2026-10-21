@@ -29,6 +29,7 @@ class QuestBuildTest(unittest.TestCase):
         names = ('opt/quest/start-session.sh opt/quest/runtime-monitor opt/quest/libquest_vulkan.so '
                  'opt/quest/libquest_socket.so opt/quest/libquest_video.so opt/quest/libquest_streaming_drm.so '
                  'opt/quest/libquest_gamepad_aarch64.so opt/quest/libquest_gamepad_x86_64.so '
+                 'opt/quest/libquest_android_gamepad.so '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so '
                  'opt/quest/renpy/7.5.3/lib/python2.7/encodings/__init__.pyo opt/quest/renpy/7.5.3/LICENSE.txt '

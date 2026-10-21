@@ -52,6 +52,15 @@ games can map a stick to it in Steam Input. Original per-hand VR
 input paths remain available. Losing focus or a controller releases its inputs.
 The local adapter adds no background process and needs no kernel input-device
 permission. SDL3 and applications that bypass SDL are not covered by this fallback.
+Physical Bluetooth and USB gamepads paired in Horizon use Android's input
+events. The first connected external gamepad is exposed to Steam through SDL3
+and takes priority over the Touch pair in the SDL2 local-game adapter. It does
+not require selecting Touch gamepad mode. Sticks, D-pad, face/shoulder buttons,
+stick clicks, Start/Select and analog or digital triggers are forwarded;
+disconnect and loss of app focus release held input. Home remains owned by
+Horizon. Rumble, motion sensors and multiple simultaneous physical pads are
+not bridged. Steam's VR-controller pairing dialog does not scan Android HID
+gamepads; pair in Horizon's Bluetooth settings, then return to Stearlight.
 Enable Hand Tracking in Horizon settings and set the Touch controllers down to
 use hands in Steam's dashboard. Quest supplies articulated hand meshes and aim
 poses; index-thumb pinch selects, and holding a pinch drags Steam's controls.

@@ -404,6 +404,8 @@ def main():
     for compiler, architecture in (("x86_64-linux-gnu-g++", "x86_64"), ("aarch64-linux-gnu-g++", "aarch64")):
         run(compiler, "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-Wl,-Bsymbolic-functions", "-std=c++17",
             f"-I{includes}", linux / "sdl-gamepad.cpp", "-ldl", "-o", quest / f"libquest_gamepad_{architecture}.so")
+    run("aarch64-linux-gnu-g++", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-Wl,-Bsymbolic-functions", "-std=c++17",
+        f"-I{includes}", linux / "sdl3-gamepad.cpp", "-ldl", "-o", quest / "libquest_android_gamepad.so")
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
         f"-I{includes}", linux / "video-bridge.cpp", "-ldl", "-pthread",
         "-o", quest / "libquest_video.so")

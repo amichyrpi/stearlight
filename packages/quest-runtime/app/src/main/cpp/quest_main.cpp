@@ -30,6 +30,7 @@
 #include "loading_boost.h"
 #include "hand_tracking.h"
 #include "hand_render.h"
+#include "android_gamepad.h"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"StearlightXR",__VA_ARGS__)
 static void check(XrResult result,const char* name){if(XR_FAILED(result)){LOG("%s failed: %d",name,result);throw std::runtime_error(name);}}
@@ -68,6 +69,7 @@ struct Runtime {
  int hapticSocket=-1;
  Passthrough camera;
  HandTracking handTracking;HandRender handRender;
+ AndroidGamepad physicalGamepad;
  bool controllerProfile[2]{true,true},lastHands=false;XrPath touchProfile=XR_NULL_PATH;
  bool has(const std::vector<XrExtensionProperties>& e,const char* name){for(const auto& p:e)if(!strcmp(p.extensionName,name))return true;return false;}
  XrPath path(const char* s){XrPath p;XR(xrStringToPath(instance,s,&p));return p;}
@@ -84,6 +86,8 @@ struct Runtime {
   app=value;JNIEnv* env;app->activity->vm->AttachCurrentThread(&env,nullptr);
   jclass activityClass=env->GetObjectClass(app->activity->clazz);jmethodID getDirectory=env->GetMethodID(activityClass,"getStateDirectory","()Ljava/lang/String;");
   auto str=static_cast<jstring>(env->CallObjectMethod(app->activity->clazz,getDirectory));const char* chars=env->GetStringUTFChars(str,nullptr);directory=chars;env->ReleaseStringUTFChars(str,chars);env->DeleteLocalRef(str);env->DeleteLocalRef(activityClass);
+  physicalGamepad.initialize(env,directory);
+  app->userData=this;app->onInputEvent=[](android_app* app,AInputEvent* event)->int32_t{return static_cast<Runtime*>(app->userData)->physicalGamepad.handle(event);};
   int fd=open((directory+"/tracking").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);if(fd<0||ftruncate(fd,sizeof(QuestTracking)))throw std::runtime_error("tracking file");
   tracking=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));close(fd);if(tracking==MAP_FAILED)throw std::runtime_error("tracking mmap");
   unlink((directory+"/dashboard.ready").c_str());
@@ -217,6 +221,7 @@ struct Runtime {
   playSpacePublished=true;LOG("Quest seated/standing tracking origins published; stage rectangle %.2fx%.2f",bounds.width,bounds.height);
  }
  void frame(){
+  physicalGamepad.tick(focused&&app->activityState==APP_CMD_RESUME);
   XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};XrFrameState state{XR_TYPE_FRAME_STATE};XR(xrWaitFrame(session,&wait,&state));XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO};XR(xrBeginFrame(session,&begin));
   XrActiveActionSet active{actions,XR_NULL_PATH};XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;XrResult syncResult=xrSyncActions(session,&sync);if(syncResult!=XR_SESSION_NOT_FOCUSED)check(syncResult,"xrSyncActions");
   haptics();
@@ -326,7 +331,7 @@ struct Runtime {
   }
   static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }
- void idle(){gpu.poll();gpu.finish();}
- void shutdown(){handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
+ void idle(){physicalGamepad.tick(false);gpu.poll();gpu.finish();}
+ void shutdown(){physicalGamepad.shutdown();handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
 };
 extern "C" void android_main(android_app* app){Runtime runtime;runtime.app=app;try{while(!app->destroyRequested&&(!app->window||app->activityState!=APP_CMD_RESUME)){int events;android_poll_source* source;if(ALooper_pollOnce(50,nullptr,&events,reinterpret_cast<void**>(&source))>=0&&source)source->process(app,source);}if(app->destroyRequested)return;LOG("Android VR activity resumed with a native window");runtime.initialize(app);while(!app->destroyRequested){int events;android_poll_source* source;while(ALooper_pollOnce(runtime.running?0:50,nullptr,&events,reinterpret_cast<void**>(&source))>=0){if(source)source->process(app,source);if(app->destroyRequested)break;}if(app->destroyRequested||!runtime.events())break;if(runtime.running)runtime.frame();else runtime.idle();}}catch(const std::exception& e){LOG("Native runtime stopped: %s",e.what());}runtime.shutdown();}

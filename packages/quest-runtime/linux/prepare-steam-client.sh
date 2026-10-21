@@ -28,6 +28,18 @@ if ! grep -Fq '# STEARLIGHT_STEAM_CHANNEL' "$root/RUNSTEAM.sh";then
  temporary=
 fi
 /bin/sh "$quest/prepare-store-browser.sh"
+# Only Steam loads the SDL3 adapter. Browser and game launchers establish their
+# own preload lists; SDL2 games use the existing local-game adapter instead.
+if ! grep -Fq '# STEARLIGHT_ANDROID_GAMEPAD' "$root/RUNSTEAM.sh";then
+ temporary="$root/RUNSTEAM.sh.quest-next"
+ awk '/^exec "\$\{STEAM_COMMAND\[@\]\}"/ {
+  print "# STEARLIGHT_ANDROID_GAMEPAD";
+  print "export LD_PRELOAD=\"/opt/quest/libquest_android_gamepad.so${LD_PRELOAD:+:$LD_PRELOAD}\""
+ } {print}' "$root/RUNSTEAM.sh" >"$temporary"
+ chmod --reference="$root/RUNSTEAM.sh" "$temporary"
+ mv "$temporary" "$root/RUNSTEAM.sh"
+ temporary=
+fi
 /bin/sh "$quest/prepare-cef.sh" || true
 /usr/bin/python3 "$quest/prepare-steam-input.py"
 /bin/sh "$quest/frame-steam-ipc" || true
