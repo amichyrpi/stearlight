@@ -42,7 +42,9 @@ if ! grep -Fq '# STEARLIGHT_ANDROID_GAMEPAD' "$root/RUNSTEAM.sh";then
 fi
 # Keep dlsym's RTLD_NEXT lookups beyond the existing socket adapter. Repair
 # the early test ordering as well as creating the correct line on clean roots.
-sed -i 's|^export LD_PRELOAD="/opt/quest/libquest_android_gamepad.so${LD_PRELOAD:+:$LD_PRELOAD}"$|export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}/opt/quest/libquest_android_gamepad.so"|' "$root/RUNSTEAM.sh"
+if grep -Fqx 'export LD_PRELOAD="/opt/quest/libquest_android_gamepad.so${LD_PRELOAD:+:$LD_PRELOAD}"' "$root/RUNSTEAM.sh";then
+ sed -i 's|^export LD_PRELOAD="/opt/quest/libquest_android_gamepad.so${LD_PRELOAD:+:$LD_PRELOAD}"$|export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}/opt/quest/libquest_android_gamepad.so"|' "$root/RUNSTEAM.sh"
+fi
 /bin/sh "$quest/prepare-cef.sh" || true
 /usr/bin/python3 "$quest/prepare-steam-input.py"
 /bin/sh "$quest/frame-steam-ipc" || true

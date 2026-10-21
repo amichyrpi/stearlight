@@ -27,8 +27,13 @@ class SteamGamepadLaunchTest(unittest.TestCase):
             prepare = ROOT / 'packages/quest-runtime/linux/prepare-steam-client.sh'
             subprocess.run(['sh', str(prepare)], env=env, check=True)
             first = launcher.read_bytes()
+            first_stat = launcher.stat()
             subprocess.run(['sh', str(prepare)], env=env, check=True)
             self.assertEqual(launcher.read_bytes(), first)
+            # Steam's inotify watcher must not prepare forever in response to
+            # our own no-op launcher replacement during a local game launch.
+            self.assertEqual(launcher.stat().st_ino, first_stat.st_ino)
+            self.assertEqual(launcher.stat().st_mtime_ns, first_stat.st_mtime_ns)
             text = first.decode()
             self.assertEqual(text.count('# STEARLIGHT_ANDROID_GAMEPAD'), 1)
             self.assertIn(command, text)
