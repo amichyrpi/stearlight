@@ -15,6 +15,8 @@
 class AndroidGamepad {
  JNIEnv* env=nullptr;jclass deviceClass=nullptr;
  jmethodID ids=nullptr,get=nullptr,external=nullptr,sources=nullptr,vendor=nullptr,product=nullptr,name=nullptr;
+ jmethodID motionRange=nullptr,rangeFlat=nullptr;
+ int stickAxes[4]={AMOTION_EVENT_AXIS_X,AMOTION_EVENT_AXIS_Y,AMOTION_EVENT_AXIS_Z,AMOTION_EVENT_AXIS_RZ};float flats[4]{};
  QuestExternalGamepad* shared=nullptr;QuestExternalGamepad state{};
  int selected=-1;bool focused=false;uint32_t keys=0,hat=0;bool triggers[2]{};
  uint64_t nextInventory=0;
@@ -34,6 +36,12 @@ class AndroidGamepad {
   env->ReleaseIntArrayElements(devices,list,JNI_ABORT);env->DeleteLocalRef(devices);
   if(found!=selected){release();selected=found;state.connected=found>=0;
    if(chosen){state.vendor=env->CallIntMethod(chosen,vendor);state.product=env->CallIntMethod(chosen,product);
+    for(int i=0;i<4;i++){
+     auto range=env->CallObjectMethod(chosen,motionRange,stickAxes[i],AINPUT_SOURCE_JOYSTICK);
+     flats[i]=range?env->CallFloatMethod(range,rangeFlat):0;
+     if(!std::isfinite(flats[i])||flats[i]<0||flats[i]>1)flats[i]=0;
+     if(range)env->DeleteLocalRef(range);
+    }
     auto label=static_cast<jstring>(env->CallObjectMethod(chosen,name));const char* text=label?env->GetStringUTFChars(label,nullptr):nullptr;
     std::snprintf(state.name,sizeof(state.name),"%s",text?text:"Android gamepad");
     if(text)env->ReleaseStringUTFChars(label,text);
@@ -50,7 +58,9 @@ public:
   ids=env->GetStaticMethodID(deviceClass,"getDeviceIds","()[I");get=env->GetStaticMethodID(deviceClass,"getDevice","(I)Landroid/view/InputDevice;");
   external=env->GetMethodID(deviceClass,"isExternal","()Z");sources=env->GetMethodID(deviceClass,"getSources","()I");
   vendor=env->GetMethodID(deviceClass,"getVendorId","()I");product=env->GetMethodID(deviceClass,"getProductId","()I");name=env->GetMethodID(deviceClass,"getName","()Ljava/lang/String;");
-  if(env->ExceptionCheck()||!ids||!get||!external||!sources||!vendor||!product||!name){env->ExceptionClear();throw std::runtime_error("Android gamepad device API");}
+  motionRange=env->GetMethodID(deviceClass,"getMotionRange","(II)Landroid/view/InputDevice$MotionRange;");
+  jclass range=env->FindClass("android/view/InputDevice$MotionRange");rangeFlat=env->GetMethodID(range,"getFlat","()F");env->DeleteLocalRef(range);
+  if(env->ExceptionCheck()||!ids||!get||!external||!sources||!vendor||!product||!name||!motionRange||!rangeFlat){env->ExceptionClear();throw std::runtime_error("Android gamepad device API");}
   int fd=open((directory+"/external-gamepad").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);
   if(fd<0)throw std::runtime_error("external gamepad file");
   if(ftruncate(fd,sizeof(QuestExternalGamepad))){close(fd);throw std::runtime_error("external gamepad size");}
@@ -82,8 +92,7 @@ public:
   if(!focused)return 1;
   if((AMotionEvent_getAction(event)&AMOTION_EVENT_ACTION_MASK)==AMOTION_EVENT_ACTION_CANCEL){release();return 1;}
   auto axis=[&](int code){return AMotionEvent_getAxisValue(event,code,0);};
-  state.input.axes[0]=quest::gamepadAxis(axis(AMOTION_EVENT_AXIS_X));state.input.axes[1]=quest::gamepadAxis(axis(AMOTION_EVENT_AXIS_Y));
-  state.input.axes[2]=quest::gamepadAxis(axis(AMOTION_EVENT_AXIS_Z));state.input.axes[3]=quest::gamepadAxis(axis(AMOTION_EVENT_AXIS_RZ));
+  for(int i=0;i<4;i++)state.input.axes[i]=quest::gamepadAxis(axis(stickAxes[i]),flats[i]);
   for(int i=0;i<2;i++){float value=std::max(axis(i?AMOTION_EVENT_AXIS_RTRIGGER:AMOTION_EVENT_AXIS_LTRIGGER),axis(i?AMOTION_EVENT_AXIS_GAS:AMOTION_EVENT_AXIS_BRAKE));if(!std::isfinite(value))value=0;state.input.axes[4+i]=triggers[i]?1:std::clamp(value,0.f,1.f)*2-1;}
   float x=axis(AMOTION_EVENT_AXIS_HAT_X),y=axis(AMOTION_EVENT_AXIS_HAT_Y);
   hat=(y<-.5f?1u<<11:0)|(y>.5f?1u<<12:0)|(x<-.5f?1u<<13:0)|(x>.5f?1u<<14:0);
