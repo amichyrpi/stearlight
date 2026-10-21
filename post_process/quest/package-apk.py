@@ -60,7 +60,8 @@ def verify(apk):
             'opt/quest/libquest_gamepad_aarch64.so', 'opt/quest/libquest_gamepad_x86_64.so',
             'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python',
             'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so',
-            'opt/quest/renpy/7.5.3/lib/python2.7/encodings/__init__.pyc',
+            # The pinned Python 2 SDK ships optimized bytecode; Python 3 uses pyc.
+            'opt/quest/renpy/7.5.3/lib/python2.7/encodings/__init__.pyo',
             'opt/quest/renpy/7.5.3/LICENSE.txt',
             'opt/quest/renpy/8.0.3/lib/py3-linux-aarch64/python',
             'opt/quest/renpy/8.0.3/lib/py3-linux-aarch64/librenpython.so',

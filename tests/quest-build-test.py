@@ -31,7 +31,7 @@ class QuestBuildTest(unittest.TestCase):
                  'opt/quest/libquest_gamepad_aarch64.so opt/quest/libquest_gamepad_x86_64.so '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so '
-                 'opt/quest/renpy/7.5.3/lib/python2.7/encodings/__init__.pyc opt/quest/renpy/7.5.3/LICENSE.txt '
+                 'opt/quest/renpy/7.5.3/lib/python2.7/encodings/__init__.pyo opt/quest/renpy/7.5.3/LICENSE.txt '
                  'opt/quest/renpy/8.0.3/lib/py3-linux-aarch64/python '
                  'opt/quest/renpy/8.0.3/lib/py3-linux-aarch64/librenpython.so '
                  'opt/quest/renpy/8.0.3/lib/python3.9/encodings/__init__.pyc opt/quest/renpy/8.0.3/LICENSE.txt '
@@ -84,6 +84,7 @@ class QuestBuildTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Incomplete Quest runtime'):
             package.verify(self.apk(omit='opt/quest/prepare-steam-input.py'))
         for missing in ('opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python',
+                        'opt/quest/renpy/7.5.3/lib/python2.7/encodings/__init__.pyo',
                         'opt/quest/renpy/8.0.3/lib/py3-linux-aarch64/librenpython.so',
                         'opt/quest/renpy/8.0.3/lib/python3.9/encodings/__init__.pyc'):
             with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, 'Incomplete Quest runtime'):
