@@ -307,6 +307,7 @@ def main():
     stage_update_helpers(overlay, downloads)
     run(sys.executable, REPO / "build_files/quest/patch-gamescope.py",
         root / "opt/frame-gamescope/bin/gamescope", overlay / "opt/frame-gamescope/bin/gamescope")
+    shutil.copyfile(root / 'opt/frame-gamescope/bin/mangoapp', overlay / 'opt/frame-gamescope/bin/mangoapp')
     for spec in LOCK["audio"].values():
         run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
     for spec in LOCK["gaming"].values():
@@ -347,7 +348,8 @@ def main():
     else:
         parser.error("Provide --frame-desktop-root to stage Chromium and its ARM64 dependencies")
     for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-launcher.sh", "desktop-manager.py", "steam_channels.py", "chromium-launcher.sh",
-                 "desktop-ui-bridge.js", "plasma-core-session.sh", "prepare-desktop.sh",
+                 "desktop-ui-bridge.js", "frame-menu-bridge.js", "frame_menus.py", "gamescope-perf.py", "desktop-windows.js", "desktop-run-app.sh",
+                 "plasma-core-session.sh", "prepare-desktop.sh",
                  "prepare-desktop-ui.py", "prepare-desktop-kio.py", "desktop-shell.sh", "adb-command.py", "desktop-remote.sh", "desktop-fonts.conf",
                  "flatpak-launcher.py", "prepare-flatpak.py", "flathub.flatpakrepo", "prepare-desktop-cli.sh", "desktop-defaults.py", "desktop-device-settings.sh"):
         shutil.copyfile(REPO / "packages/quest-runtime/linux" / name, quest / name)
@@ -399,6 +401,8 @@ def main():
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "socket-report.c", "-ldl", "-o", quest / "libquest_socket.so")
     verify_musl_preload(quest / "libquest_socket.so", root)
+    run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
+        linux / "mango-sensors.c", "-ldl", "-o", quest / "libquest_mango_sensors.so")
     # No libc dependency: resolve the small identity adapter in musl itself.
     run("aarch64-linux-gnu-gcc", "-O2", "-shared", "-fPIC", "-nostdlib",
         linux / "audio-identity.c", "-o", quest / "libquest_audio_identity.so")

@@ -99,6 +99,7 @@
     try {
       const result = await call('status');
       if (result.ok) synchronizeUpdates(result.value.updates);
+      if (result.ok) globalThis.__stearlightFrameMenusStatus?.(result.value.frame);
       if (result.ok && result.value.desktop_running && result.value.focus_id &&
           result.value.focus_id !== desktopFocus) {
         desktopFocus = result.value.focus_id;

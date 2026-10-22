@@ -55,11 +55,15 @@ def verify(apk):
         if digest.hexdigest() != archive.read('assets/rootfs.sha256').decode('ascii').strip():
             raise ValueError('Rootfs content SHA-256 mismatch')
         required = {
+            'opt/frame-gamescope/bin/mangoapp',
+            'opt/quest/libquest_mango_sensors.so',
             'opt/quest/start-session.sh', 'opt/quest/runtime-monitor', 'opt/quest/libquest_vulkan.so',
             'opt/quest/libquest_socket.so', 'opt/quest/libquest_video.so', 'opt/quest/libquest_streaming_drm.so',
             'opt/quest/libquest_gamepad_aarch64.so', 'opt/quest/libquest_gamepad_x86_64.so',
             'opt/quest/libquest_audio_identity.so',
             'opt/quest/libquest_android_gamepad.so',
+            'opt/quest/frame_menus.py', 'opt/quest/frame-menu-bridge.js', 'opt/quest/gamescope-perf.py',
+            'opt/quest/desktop-windows.js', 'opt/quest/desktop-run-app.sh',
             'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python',
             'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so',
             # The pinned Python 2 SDK ships optimized bytecode; Python 3 uses pyc.

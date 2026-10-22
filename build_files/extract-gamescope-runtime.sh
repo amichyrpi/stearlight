@@ -10,10 +10,11 @@ extract_frame_gamescope() (
   }
   mkdir -p "$stage/bin" "$stage/lib" "$stage/share"
   cp "$frame_root/usr/bin/gamescope" "$stage/bin/gamescope"
+  cp "$frame_root/usr/bin/mangoapp" "$stage/bin/mangoapp"
   pending="$stage/dependencies.pending"
   seen="$stage/dependencies.txt"
   : >"$seen"
-  scanelf -n -B -F '%n' "$frame_root/usr/bin/gamescope" |
+  scanelf -n -B -F '%n' "$frame_root/usr/bin/gamescope" "$frame_root/usr/bin/mangoapp" |
     awk '{print $1}' | tr ',' '\n' >"$pending"
   # Vulkan is loaded with dlopen, so it is absent from DT_NEEDED.
   printf '%s\n' libvulkan.so.1 >>"$pending"
@@ -34,12 +35,12 @@ extract_frame_gamescope() (
     scanelf -n -B -F '%n' "$source" |
       awk '{print $1}' | tr ',' '\n' >>"$pending"
   done
-  for resource in gamescope libdrm X11/xkb; do
+  for resource in gamescope libdrm X11/xkb licenses/mangohud doc/mangohud; do
     if [ -d "$frame_root/usr/share/$resource" ]; then
       mkdir -p "$stage/share/$resource"
       cp -a "$frame_root/usr/share/$resource/." "$stage/share/$resource/"
     fi
   done
   rm "$pending"
-  chmod 0755 "$stage/bin/gamescope" "$stage/lib/ld-linux-aarch64.so.1"
+  chmod 0755 "$stage/bin/gamescope" "$stage/bin/mangoapp" "$stage/lib/ld-linux-aarch64.so.1"
 )

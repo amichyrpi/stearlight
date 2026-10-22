@@ -20,6 +20,7 @@ import urllib.parse
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import steam_channels
+from frame_menus import FrameMenus
 
 RUNTIME = Path('/opt/stearlight-desktop')
 STATE = Path('/home/stearlight/.local/state/stearlight-desktop')
@@ -84,6 +85,7 @@ class Manager:
         self.ssh_sequence = 0
         self.focus_at = 0
         self.focus_id = ''
+        self.menus = FrameMenus(self, STATE, atomic)
 
     def save(self):
         atomic(CONFIG, json.dumps(self.settings) + '\n')
@@ -94,7 +96,8 @@ class Manager:
                 'desktop_running': self.running('desktop') or self.remote, 'ssh_running': self.running('ssh'),
                 'rdp_running': self.running('rdp'), 'ssh_port': 2222, 'rdp_port': 3389,
                 'username': 'stearlight', 'default_session': self.settings['default_session'],
-                'focus_id': self.focus_id, 'error': self.error, 'updates': steam_channels.status()}
+                'focus_id': self.focus_id, 'error': self.error, 'updates': steam_channels.status(),
+                'frame': self.menus.status()}
 
     def running(self, name):
         if name == 'ssh':
@@ -397,6 +400,8 @@ param={STATE}/xorg.%s.log
     def call(self, operation, args):
         if operation == 'status':
             return self.status()
+        if operation in ('frame-settings', 'launch-app', 'focus-window'):
+            return self.menus.call(operation, args)
         if operation == 'performance-boost':
             atomic(INTERACTION_BOOST, f'{time.monotonic() + 2:.6f}\n')
             return {}
@@ -459,6 +464,10 @@ param={STATE}/xorg.%s.log
             self.error = ''
         elif operation in ('stop', 'remote-stop'):
             self.clear_headset_activation()
+            self.menus.pending.clear()
+            for name in list(self.processes):
+                if name.startswith('app-'):
+                    self.stop(name)
             self.stop('workspace')
             self.stop('desktop')
             if self.remote:
@@ -557,6 +566,7 @@ def serve():
             if manager.ssh_socket and manager.ssh_socket in readable:
                 manager.accept_ssh()
             manager.poll()
+            manager.menus.poll()
     finally:
         manager.close()
         server.server_close()

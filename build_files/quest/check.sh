@@ -19,6 +19,12 @@ python3 packages/quest-runtime/tests/audio-identity.test.py
 python3 packages/quest-runtime/tests/loading-boost.test.py
 python3 packages/quest-runtime/tests/mountinfo-cache.test.py
 python3 packages/quest-runtime/tests/steam-input.test.py
+python3 packages/quest-runtime/tests/frame-menus.test.py
+if command -v node >/dev/null 2>&1; then
+    node packages/quest-runtime/tests/frame-menu-ui.test.cjs
+else
+    echo 'Frame menu JavaScript test skipped: Node is not installed.'
+fi
 python3 packages/quest-runtime/tests/steam-gamepad-launch.test.py
 python3 packages/quest-runtime/tests/sdl-gamepad.test.py
 python3 packages/quest-runtime/tests/sdl3-resolver.test.py

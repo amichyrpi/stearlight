@@ -61,6 +61,10 @@ struct Runtime {
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
  LoadingBoost loadingBoost;
  bool cpuBoosted=false;
+ bool powersave=false;
+ XrPerfSettingsLevelEXT cpuLevel=XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+ XrPerfSettingsLevelEXT gpuLevel=XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+ double profilePollAt=0;
  bool cpuThermalLimited=false;
  double boostPollAt=0,boostRetryAt=0;
  timespec boostStamp[2]{};uint32_t boostMenu=0;
@@ -250,6 +254,10 @@ struct Runtime {
   if(!bootFinished)bootFinished=bootComplete();
   bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootFinished;
   double boostNow=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  if(boostNow>=profilePollAt){
+   profilePollAt=boostNow+1;std::string profile;std::ifstream input(directory+"/performance-profile");input>>profile;
+   if(profile=="Performance"||profile=="Powersave")powersave=profile=="Powersave";
+  }
   uint32_t menu=sample.buttons[0]&QUEST_MENU;
   if(menu&&!boostMenu)loadingBoost.request(boostNow,2);
   boostMenu=menu;
@@ -264,12 +272,20 @@ struct Runtime {
     if(std::isfinite(deadline)&&deadline>boostNow)loadingBoost.request(boostNow,deadline-boostNow);
    }
   }
-  bool boost=loadingBoost.update(boostNow,loading,focused&&!cpuThermalLimited);
-  if(setPerformance&&boost!=cpuBoosted&&boostNow>=boostRetryAt){
-   XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,boost?XR_PERF_SETTINGS_LEVEL_BOOST_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
+  bool boost=loadingBoost.update(boostNow,loading,focused&&!cpuThermalLimited&&!powersave);
+  auto targetCPU=powersave?XR_PERF_SETTINGS_LEVEL_SUSTAINED_LOW_EXT:boost?XR_PERF_SETTINGS_LEVEL_BOOST_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+  auto targetGPU=powersave?XR_PERF_SETTINGS_LEVEL_SUSTAINED_LOW_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+  if(setPerformance&&targetCPU!=cpuLevel&&boostNow>=boostRetryAt){
+   XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,targetCPU);
    LOG("Activity CPU boost %d result %d",boost,result);
-   if(XR_SUCCEEDED(result))cpuBoosted=boost;
+   if(XR_SUCCEEDED(result)){cpuBoosted=boost;cpuLevel=targetCPU;}
    boostRetryAt=XR_SUCCEEDED(result)?boostNow:boostNow+2;
+  }
+  if(setPerformance&&targetGPU!=gpuLevel&&boostNow>=boostRetryAt){
+   XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_GPU_EXT,targetGPU);
+   LOG("Frame power profile %s GPU result %d",powersave?"Powersave":"Performance",result);
+   if(XR_SUCCEEDED(result))gpuLevel=targetGPU;
+   else boostRetryAt=boostNow+2;
   }
   bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;
   if(!loading&&visible&&compositionReady)camera.update();else camera.suspend();

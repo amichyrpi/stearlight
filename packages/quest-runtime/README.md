@@ -356,6 +356,17 @@ The bottom dock's **+ > Desktop** action opens Valve's KDE Plasma workspace in a
 headset window. **Return to Gaming Mode** on the desktop closes it and restores
 Steam. The workspace includes Dolphin, Konsole, System Settings, Discover, VLC,
 KDE utilities, Valve's Vapor theme, and the Frame wallpaper catalog.
+The dock's **+** menu also lists installed desktop applications and open Plasma
+windows. Selecting an application starts Desktop when needed; selecting an open
+window restores it and brings its desktop panel forward.
+
+Quick access **Performance** retains Valve's controls. Scaling filter and mode
+apply to Gamescope's 2D game/desktop windows. The optional Frame MangoApp overlay
+shows their FPS and frame timing and stops when disabled. Android-restricted
+CPU/GPU sensor readings and manual clock/TDP controls are unavailable.
+Performance/Playtime profiles request the corresponding OpenXR performance
+levels; Horizon still owns clock and thermal decisions.
+
 Chromium is bundled separately from pinned Debian ARM64 packages, with private
 font and NSS libraries. It uses software rendering to avoid another GPU service.
 PRoot cannot supply Chromium's Linux namespace sandbox; the surrounding Android
