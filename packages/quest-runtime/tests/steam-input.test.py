@@ -24,9 +24,9 @@ class SteamInputTest(unittest.TestCase):
         self.modified = b'unchanged prefix' + adapter.RETURN + b'unchanged suffix'
         self.binary.write_bytes(self.original)
         self.binary.chmod(0o640)
-        self.pins = patch.multiple(adapter, OFFSET=len(b'unchanged prefix'),
-                                  ORIGINAL=hashlib.sha256(self.original).hexdigest(),
-                                  PATCHED=hashlib.sha256(self.modified).hexdigest())
+        self.build = (hashlib.sha256(self.original).hexdigest(),
+                      hashlib.sha256(self.modified).hexdigest(), len(b'unchanged prefix'))
+        self.pins = patch.object(adapter, 'BUILDS', (self.build,))
         self.pins.start()
         self.addCleanup(self.pins.stop)
 
@@ -49,19 +49,31 @@ class SteamInputTest(unittest.TestCase):
         self.assertEqual(self.binary.read_bytes(), unknown)
 
     def test_invalid_output_pin_never_replaces_library(self):
-        with patch.object(adapter, 'PATCHED', '0' * 64):
+        with patch.object(adapter, 'BUILDS', ((self.build[0], '0' * 64, self.build[2]),)):
             with self.assertRaises(ValueError):
                 adapter.prepare(self.binary)
         self.assertEqual(self.binary.read_bytes(), self.original)
+
+    def test_selects_matching_build_offset(self):
+        other = b'a different prefix' + adapter.PROLOGUE + b'other suffix'
+        modified = b'a different prefix' + adapter.RETURN + b'other suffix'
+        build = (hashlib.sha256(other).hexdigest(), hashlib.sha256(modified).hexdigest(), len(b'a different prefix'))
+        self.binary.write_bytes(other)
+        with patch.object(adapter, 'BUILDS', (self.build, build)):
+            self.assertTrue(adapter.prepare(self.binary))
+            self.assertEqual(self.binary.read_bytes(), modified)
+            self.assertFalse(adapter.prepare(self.binary))
+            self.assertTrue(adapter.prepare(self.binary, raw_hid=True))
+            self.assertEqual(self.binary.read_bytes(), other)
 
     @unittest.skipUnless(os.environ.get('TEST_STEAM_SDL3'), 'optional licensed runtime fixture')
     def test_verified_runtime_round_trip(self):
         self.pins.stop()
         data = Path(os.environ['TEST_STEAM_SDL3']).read_bytes()
-        self.assertEqual(hashlib.sha256(data).hexdigest(), adapter.ORIGINAL)
+        build = next(item for item in adapter.BUILDS if item[0] == hashlib.sha256(data).hexdigest())
         self.binary.write_bytes(data)
         self.assertTrue(adapter.prepare(self.binary))
-        self.assertEqual(hashlib.sha256(self.binary.read_bytes()).hexdigest(), adapter.PATCHED)
+        self.assertEqual(hashlib.sha256(self.binary.read_bytes()).hexdigest(), build[1])
         self.assertTrue(adapter.prepare(self.binary, raw_hid=True))
         self.assertEqual(self.binary.read_bytes(), data)
 
