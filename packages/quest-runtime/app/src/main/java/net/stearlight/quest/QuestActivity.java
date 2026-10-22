@@ -31,6 +31,7 @@ public final class QuestActivity extends NativeActivity {
  private volatile boolean charging;
  private BluetoothBridge bluetoothBridge;
  private AudioBridge audioBridge;
+ private final NativeAudioServer audioServer=new NativeAudioServer();
  private NetworkBridge networkBridge;
  private UsbNetworkBridge usbNetworkBridge;
  private DesktopAppBridge desktopAppBridge;
@@ -95,7 +96,7 @@ public final class QuestActivity extends NativeActivity {
    FileLock lock=null;
    while(!closing&&lock==null){try{lock=channel.tryLock();}catch(OverlappingFileLockException busy){}if(lock==null)Thread.sleep(50);}
    if(lock==null)return;
-   try{runLinux();}finally{stopLinux();stopSocketRegistry();lock.release();}
+   try{runLinux();}finally{stopLinux();audioServer.close();stopSocketRegistry();lock.release();}
   }catch(Exception error){if(!closing)Log.e("StearlightQuest","Linux session failed",error);}
  }
  private void stopLinux(){
@@ -167,9 +168,13 @@ public final class QuestActivity extends NativeActivity {
    args.addAll(0,Arrays.asList("/system/bin/sh","-c","printf '%s\\n' \"$$\" > \"$1\" || exit; shift; exec \"$@\"","stearlight-linux",pidFile.toString()));
    ProcessBuilder builder=new ProcessBuilder(args);Map<String,String> env=builder.environment();env.put("LD_LIBRARY_PATH",nativeDir);env.put("PROOT_LOADER",nativeDir+"/libproot_loader.so");env.put("PROOT_TMP_DIR",tmp.toString());env.remove("PROOT_NO_SECCOMP");env.put("PROOT_QUEST_ROBUST","1");env.put("TMPDIR","/tmp");env.put("HOME","/home/stearlight");env.put("USER","stearlight");env.put("LOGNAME","stearlight");env.put("PATH","/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");env.put("GLIBC_TUNABLES","glibc.pthread.rseq=0");
    builder.redirectErrorStream(true);builder.redirectOutput(new File(logs,"linux.log"));
+   env.put("QUEST_NATIVE_PULSE","1");
    while(!closing){
     status("Starting Stearlight OS");if(closing)return;
-    linux=builder.start();int result=linux.waitFor();if(closing)return;
+    int result;
+    try{audioServer.start(root,tmp,new File(getStateDirectory()),logs,new File(nativeDir,"libquest_audio_loader.so"));if(closing)return;linux=builder.start();result=linux.waitFor();}
+    finally{audioServer.close();}
+    if(closing)return;
     // Only the Remote Desktop return asks for a fresh Linux/SteamVR session.
     // PRoot's kill-on-exit has already stopped its owned service processes.
     if(result!=75){status(result==78?"Linux IPC verification failed":"Stearlight stopped ("+result+")");break;}

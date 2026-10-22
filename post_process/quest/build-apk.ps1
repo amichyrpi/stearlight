@@ -8,7 +8,7 @@ $ErrorActionPreference='Stop'
 $repo=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $payloadPath=(Resolve-Path -LiteralPath $Payload).Path
 $outputPath=[System.IO.Path]::GetFullPath($Output)
-foreach($file in @('assets/rootfs.list','assets/rootfs.sha256','assets/quest-overlay.bin','assets/boot/clips.json','jniLibs/arm64-v8a/libproot_exec.so')){
+foreach($file in @('assets/rootfs.list','assets/rootfs.sha256','assets/quest-overlay.bin','assets/boot/clips.json','jniLibs/arm64-v8a/libproot_exec.so','jniLibs/arm64-v8a/libquest_audio_loader.so')){
     if(!(Test-Path -LiteralPath (Join-Path $payloadPath $file))){throw "Incomplete Quest payload: $file"}
 }
 $parts=@(Get-Content -LiteralPath (Join-Path $payloadPath 'assets/rootfs.list'))

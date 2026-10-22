@@ -28,7 +28,7 @@ def verify(apk):
                      'assets/quest-dependencies.json', 'lib/arm64-v8a/libstearlight_quest.so',
                      'lib/arm64-v8a/libopenxr_loader.so', 'lib/arm64-v8a/libproot_exec.so',
                      'lib/arm64-v8a/libproot_loader.so', 'lib/arm64-v8a/libtalloc.so',
-                     'lib/arm64-v8a/libandroid-shmem.so'):
+                     'lib/arm64-v8a/libandroid-shmem.so', 'lib/arm64-v8a/libquest_audio_loader.so'):
             if archive.getinfo(name).file_size == 0:
                 raise ValueError('Empty APK entry: ' + name)
         if b'PROOT_QUEST_ROBUST' not in archive.read('lib/arm64-v8a/libproot_exec.so'):
@@ -58,6 +58,7 @@ def verify(apk):
             'opt/quest/start-session.sh', 'opt/quest/runtime-monitor', 'opt/quest/libquest_vulkan.so',
             'opt/quest/libquest_socket.so', 'opt/quest/libquest_video.so', 'opt/quest/libquest_streaming_drm.so',
             'opt/quest/libquest_gamepad_aarch64.so', 'opt/quest/libquest_gamepad_x86_64.so',
+            'opt/quest/libquest_audio_identity.so',
             'opt/quest/libquest_android_gamepad.so',
             'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python',
             'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so',

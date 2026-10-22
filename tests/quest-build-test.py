@@ -29,7 +29,7 @@ class QuestBuildTest(unittest.TestCase):
         names = ('opt/quest/start-session.sh opt/quest/runtime-monitor opt/quest/libquest_vulkan.so '
                  'opt/quest/libquest_socket.so opt/quest/libquest_video.so opt/quest/libquest_streaming_drm.so '
                  'opt/quest/libquest_gamepad_aarch64.so opt/quest/libquest_gamepad_x86_64.so '
-                 'opt/quest/libquest_android_gamepad.so '
+                 'opt/quest/libquest_android_gamepad.so opt/quest/libquest_audio_identity.so '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so '
                  'opt/quest/renpy/7.5.3/lib/python2.7/encodings/__init__.pyo opt/quest/renpy/7.5.3/LICENSE.txt '
@@ -53,7 +53,7 @@ class QuestBuildTest(unittest.TestCase):
             for name in ('AndroidManifest.xml', 'classes.dex', 'assets/quest-dependencies.json',
                          'lib/arm64-v8a/libstearlight_quest.so', 'lib/arm64-v8a/libopenxr_loader.so',
                          'lib/arm64-v8a/libproot_loader.so', 'lib/arm64-v8a/libtalloc.so',
-                         'lib/arm64-v8a/libandroid-shmem.so'):
+                         'lib/arm64-v8a/libandroid-shmem.so', 'lib/arm64-v8a/libquest_audio_loader.so'):
                 archive.writestr(name, b'test')
             archive.writestr('lib/arm64-v8a/libproot_exec.so', b'PROOT_QUEST_ROBUST')
             archive.writestr('assets/boot/clips.json', json.dumps({name: {'starts_ms': [0], 'duration_ms': 16} for name in ('startup', 'loop')}))

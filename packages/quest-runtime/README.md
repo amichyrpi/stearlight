@@ -38,6 +38,14 @@ launchers avoid zygote and separate audio service processes to reduce Android's
 child-process count. Network and GPU services remain separate processes for
 Steam's browser ownership checks and shared GPU textures.
 
+PulseAudio runs directly as an app-owned child through the bundled musl
+loader, so game and browser syscalls in PRoot cannot delay its audio clock.
+Android owns its startup and cleanup with the Linux session. The speaker
+bridge keeps a bounded PCM queue, adapts playback headroom to measured stalls,
+and smooths forced backlog skips. `adb logcat -s StearlightAudio` reports
+underruns, queued/dropped frames and delivery gaps; the server log is
+`files/logs/audio-server.log` inside the app's data directory.
+
 Steam's native sign-in panel, separate left dock, bottom dock, and Touch lasers
 are supplied by Valve's runtime.
 The Touch pair advertises SteamVR's Frame gamepad capability. Select gamepad

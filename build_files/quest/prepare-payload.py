@@ -399,6 +399,9 @@ def main():
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "socket-report.c", "-ldl", "-o", quest / "libquest_socket.so")
     verify_musl_preload(quest / "libquest_socket.so", root)
+    # No libc dependency: resolve the small identity adapter in musl itself.
+    run("aarch64-linux-gnu-gcc", "-O2", "-shared", "-fPIC", "-nostdlib",
+        linux / "audio-identity.c", "-o", quest / "libquest_audio_identity.so")
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "wine-pe-memory.c", "-ldl", "-o", quest / "libquest_wine_pe.so")
     for compiler, architecture in (("x86_64-linux-gnu-g++", "x86_64"), ("aarch64-linux-gnu-g++", "aarch64")):
@@ -503,6 +506,9 @@ def main():
     prefix = proot / "data/data/com.termux/files/usr"
     jni = output / "jniLibs/arm64-v8a"
     jni.mkdir(parents=True, exist_ok=True)
+    # Android permits exec from the APK's native library directory. The
+    # bundled musl loader keeps audio scheduling outside the PRoot tracer.
+    shutil.copyfile(root / "lib/ld-musl-aarch64.so.1", jni / "libquest_audio_loader.so")
     for source, name in [("lib/libtalloc.so.2.5.0", "libtalloc.so"), ("lib/libandroid-shmem.so", "libandroid-shmem.so")]:
         shutil.copyfile(prefix / source, jni / name)
     run(sys.executable, REPO / "build_files/quest/build-proot.py",

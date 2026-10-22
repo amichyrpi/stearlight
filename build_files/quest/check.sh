@@ -15,6 +15,7 @@ python3 tests/recovery-test.py
 python3 packages/quest-runtime/tests/rootfs-archive.test.py
 python3 packages/quest-runtime/tests/clock-bridge.test.py
 python3 packages/quest-runtime/tests/audio-queue.test.py
+python3 packages/quest-runtime/tests/audio-identity.test.py
 python3 packages/quest-runtime/tests/loading-boost.test.py
 python3 packages/quest-runtime/tests/mountinfo-cache.test.py
 python3 packages/quest-runtime/tests/steam-input.test.py
