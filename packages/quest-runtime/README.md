@@ -25,6 +25,10 @@ It installs the bundled rootfs and starts Linux, SteamVR, and Steam itself.
 The PC launcher and an ADB connection are optional developer tools. First
 installation takes longer while the rootfs is extracted; later launches reuse
 it and preserve Steam's account data.
+Startup checks Steam's UI library and can restore a damaged copy from the
+matching verified Valve package. It preserves accounts, games and runtime
+adapters. The first repair may require internet; a verified cached package can
+be reused offline.
 
 The Linux guest identifies itself as `frame` in Steam settings, Remote Play
 and desktop applications. Its PRoot adapter changes only the guest's uname

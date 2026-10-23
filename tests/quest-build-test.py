@@ -31,7 +31,7 @@ class QuestBuildTest(unittest.TestCase):
                  'opt/quest/libquest_gamepad_aarch64.so opt/quest/libquest_gamepad_x86_64.so '
                  'opt/quest/libquest_android_gamepad.so opt/quest/libquest_audio_identity.so '
                  'opt/frame-gamescope/bin/mangoapp opt/quest/libquest_mango_sensors.so '
-                 'opt/quest/frame_menus.py opt/quest/frame-menu-bridge.js opt/quest/gamescope-perf.py '
+                 'opt/quest/prepare-steam-integrity.py opt/quest/frame_menus.py opt/quest/frame-menu-bridge.js opt/quest/gamescope-perf.py '
                  'opt/quest/desktop-windows.js opt/quest/desktop-run-app.sh '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so '

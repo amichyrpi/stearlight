@@ -11,9 +11,10 @@ class ClientUpdateTest(unittest.TestCase):
     shutil.copyfile(LINUX/name,quest/name)
    for name in ['prepare-cef.sh','frame-steam-ipc','prepare-streaming-client.sh','prepare-game-runtime.sh']:(quest/name).write_text('exit 0\n')
    (quest/'prepare-desktop-ui.py').write_text('# No desktop UI in this fixture.\n')
+   (quest/'prepare-steam-input.py').write_text('# No input library in this fixture.\n')
    (quest/'steam_channels.py').write_text('# No Frame profile in this fixture.\n')
    launcher=root/'steamrtarm64/steamwebhelper.sh';runner=root/'RUNSTEAM.sh';library=root/'steamui/library.js'
-   source='export LD_LIBRARY_PATH="${STEAMROOT}/${STEAM_RT_ARM64}"\nSTEAM_COMMAND=(\n true\n)\n'
+   source='export LD_LIBRARY_PATH="${STEAMROOT}/${STEAM_RT_ARM64}"\nSTEAM_COMMAND=(\n true\n)\nexec "${STEAM_COMMAND[@]}"\n'
    env=dict(os.environ,STEARLIGHT_STEAM_ROOT=str(root),STEARLIGHT_QUEST_ROOT=str(quest))
    def prepare():subprocess.run(['sh',str(LINUX/'prepare-steam-client.sh')],env=env,check=True)
    for revision in ['first','updated']:

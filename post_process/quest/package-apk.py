@@ -75,6 +75,7 @@ def verify(apk):
             'opt/quest/renpy/8.0.3/LICENSE.txt',
             'opt/quest/fna3d/libFNA3D.so.0', 'opt/quest/prepare-flatpak.py',
             'opt/quest/prepare-steam-input.py', 'opt/quest/game-launch-wrapper',
+            'opt/quest/prepare-steam-integrity.py',
             'opt/quest/prepare-fex.py',
             'opt/quest/prepare-game-runtime.sh',
             'opt/quest/stearlight-quest/bin/linuxarm64/driver_stearlight-quest.so',

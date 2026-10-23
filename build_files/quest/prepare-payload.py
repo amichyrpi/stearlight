@@ -477,6 +477,7 @@ def main():
     shutil.copyfile(linux / "steam-update-bridge.js", quest / "steam-update-bridge.js")
     shutil.copyfile(linux / "prepare-store-browser.sh", quest / "prepare-store-browser.sh")
     shutil.copyfile(linux / "prepare-steam-client.sh", quest / "prepare-steam-client.sh")
+    shutil.copyfile(linux / "prepare-steam-integrity.py", quest / "prepare-steam-integrity.py")
     shutil.copyfile(linux / "steam-channel-args.sh", quest / "steam-channel-args.sh")
     shutil.copyfile(linux / "prepare-cef.sh", quest / "prepare-cef.sh")
     shutil.copyfile(linux / "prepare-steam-input.py", quest / "prepare-steam-input.py")

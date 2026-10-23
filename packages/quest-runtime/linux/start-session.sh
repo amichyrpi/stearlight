@@ -149,6 +149,7 @@ export VK_ICD_FILENAMES=/opt/quest/turnip_icd.json
 # The adapter supplies Valve's required surface extension discovery; ANGLE
 # renders offscreen. Only vrcompositor may create an OpenXR display swapchain.
 # Adapt the installed UI rather than copying a library from another version.
+/usr/bin/python3 /opt/quest/prepare-steam-integrity.py
 /bin/sh /opt/quest/prepare-steam-client.sh
 /bin/sh /opt/quest/prepare-streaming-client.sh
 # The APK verifies its rootfs payload. Steam's optional repair pass would undo
