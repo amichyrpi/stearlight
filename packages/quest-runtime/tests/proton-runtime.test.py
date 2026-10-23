@@ -16,6 +16,55 @@ spec.loader.exec_module(launcher)
 
 
 class ProtonRuntimeTest(unittest.TestCase):
+    def test_outerwilds_profile_preserves_saves_and_subsequent_choices(self):
+        with tempfile.TemporaryDirectory() as folder:
+            compat = Path(folder)
+            profile = compat / 'pfx/drive_c/users/steamuser/AppData/LocalLow/Mobius Digital/Outer Wilds/SteamSaves/Player'
+            profile.mkdir(parents=True)
+            (profile / 'player.owsett').write_text('{"language":3}')
+            (profile / 'data.owsave').write_bytes(b'user progress')
+            settings = profile / 'graphics.owsett'
+            original = '{"gammaValue":0.6,"fieldOfView":75,"shadowQuality":3,"textureQuality":0}'
+            settings.write_text(original)
+            launcher.prepare_outerwilds_settings(compat)
+            actual = json.loads(settings.read_text())
+            self.assertEqual((actual['textureQuality'], actual['shadowQuality'], actual['refreshRate']), (2, 0, 30))
+            self.assertEqual((actual['gammaValue'], actual['fieldOfView']), (0.6, 75))
+            self.assertEqual(settings.with_name('graphics.owsett.quest-original').read_text(), original)
+            self.assertEqual((profile / 'data.owsave').read_bytes(), b'user progress')
+            self.assertEqual((profile / 'player.owsett').read_text(), '{"language":3}')
+            actual['textureQuality'] = 1
+            settings.write_text(json.dumps(actual))
+            launcher.prepare_outerwilds_settings(compat)
+            self.assertEqual(json.loads(settings.read_text())['textureQuality'], 1)
+
+    def test_outerwilds_unknown_settings_are_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as folder:
+            compat = Path(folder)
+            profile = compat / 'pfx/drive_c/users/steamuser/AppData/LocalLow/Mobius Digital/Outer Wilds/SteamSaves/Player'
+            profile.mkdir(parents=True)
+            (profile / 'player.owsett').touch()
+            settings = profile / 'graphics.owsett'
+            settings.write_bytes(b'unknown future settings format')
+            launcher.prepare_outerwilds_settings(compat)
+            self.assertEqual(settings.read_bytes(), b'unknown future settings format')
+            self.assertFalse(settings.with_name('graphics.owsett.quest-profile').exists())
+
+    def test_outerwilds_profile_migration_supplies_unity_camera_defaults(self):
+        with tempfile.TemporaryDirectory() as folder:
+            compat = Path(folder)
+            profile = compat / 'pfx/drive_c/users/steamuser/AppData/LocalLow/Mobius Digital/Outer Wilds/SteamSaves/Player'
+            profile.mkdir(parents=True)
+            (profile / 'player.owsett').touch()
+            settings = profile / 'graphics.owsett'
+            settings.write_text('{"textureQuality":1,"gammaValue":0.6}')
+            settings.with_name('graphics.owsett.quest-profile').write_text('1\n')
+            launcher.prepare_outerwilds_settings(compat)
+            actual = json.loads(settings.read_text())
+            self.assertEqual((actual['gammaValue'], actual['fieldOfView'], actual['aspectRatio']), (0.6, 70.0, 4))
+            self.assertEqual(actual['textureQuality'], 1)
+            self.assertEqual(settings.with_name('graphics.owsett.quest-profile').read_text(), '2\n')
+
     def test_garden_boot_preserves_other_settings_and_original(self):
         with tempfile.TemporaryDirectory() as folder:
             game = Path(folder)
@@ -23,10 +72,10 @@ class ProtonRuntimeTest(unittest.TestCase):
             boot.parent.mkdir()
             original = "gfx-enable-gfx-jobs=1\ngfx-enable-native-gfx-jobs=1\nbuild-guid=keep\n"
             boot.write_text(original)
-            launcher.prepare_garden_boot(game)
+            launcher.prepare_flat_unity_boot(game, "Garden of Witches_Data")
             self.assertEqual(boot.read_text(), original.replace("jobs=1", "jobs=0"))
             self.assertEqual(boot.with_name("boot.config.quest-original").read_text(), original)
-            launcher.prepare_garden_boot(game)
+            launcher.prepare_flat_unity_boot(game, "Garden of Witches_Data")
             self.assertEqual(boot.with_name("boot.config.quest-original").read_text(), original)
 
     def test_garden_prefix_retains_hid_drivers_and_rpc(self):
@@ -44,14 +93,14 @@ class ProtonRuntimeTest(unittest.TestCase):
                     ("winehid", '"Group"="WinePlugPlay"\n"Start"=dword:00000003'),
                 ])
             registry.write_text(original)
-            launcher.prepare_garden_prefix(compat)
+            launcher.prepare_flat_prefix(compat)
             updated = registry.read_text()
             self.assertIn('PlugPlay] 0\n"Start"=dword:00000004', updated)
             self.assertIn('Eventlog] 0\n"Start"=dword:00000004', updated)
             self.assertIn('RpcSs] 0\n"Start"=dword:00000002', updated)
             self.assertEqual(updated.count('"Group"="System Bus Extender"\n"Start"=dword:00000003'), 2)
-            launcher.prepare_garden_prefix(compat)
-            self.assertEqual(registry.with_name("system.reg.quest-garden-original").read_text(), original)
+            launcher.prepare_flat_prefix(compat)
+            self.assertEqual(registry.with_name("system.reg.quest-flat-original").read_text(), original)
 
     def test_proton_exec_keeps_prefix_setup_imports_arguments_and_log(self):
         class Executed(Exception):
@@ -71,7 +120,7 @@ with open(sys.argv[2], "w") as log:
             environment = {"SteamAppId": "2530470", "PULSE_SERVER": "unix:/pulse"}
             with patch.dict(os.environ, clear=True), patch.object(sys, "argv", []), \
                  patch.object(sys, "path", list(sys.path)), \
-                 patch.object(launcher, "prepare_garden_prefix") as prepare, \
+                 patch.object(launcher, "prepare_flat_prefix") as prepare, \
                  patch.object(launcher.subprocess, "call", return_value=0) as call, \
                  patch.object(launcher.os, "dup2") as duplicate, \
                  patch.object(launcher.os, "execvpe", side_effect=Executed) as execute:
@@ -118,9 +167,10 @@ with open(sys.argv[2], "w") as log:
             (platform / "usr-mtree.txt.gz").touch()
             command = ["helper", str(runtime / "_v2-entry-point"), "--", "/Proton/proton",
                        "waitforexitandrun", "/game/Game.exe"]
-            for appid in ("2530470", "667970"):
+            for appid in ("2530470", "753640", "667970"):
                 environment = {"SteamAppId": appid, "STEAM_COMPAT_DATA_PATH": "/prefix",
                                "STEAM_COMPAT_INSTALL_PATH": "/game", "STEARLIGHT_PROTON_GAMESCOPE": "1",
+                               "DXVK_CONFIG": "dxgi.maxFrameRate = 24",
                                "SDL_GAMECONTROLLER_IGNORE_DEVICES": "0x28de/0x11ff,0x0000/0x0000,0X0000/0X0000",
                                "SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT": "0x045e/0x028e"}
                 with patch.object(launcher.sys, "argv", command), patch.dict(os.environ, environment, clear=True), \
@@ -128,18 +178,30 @@ with open(sys.argv[2], "w") as log:
                      patch.object(launcher.os, "open", return_value=50), patch.object(launcher.os, "dup2"), \
                      patch.object(launcher.os, "close"), patch.object(launcher.os, "execve") as execute, \
                      patch.object(launcher, "exec_proton") as proton, \
-                     patch.object(launcher, "prepare_garden_boot"), patch.object(launcher, "prepare_vtol_bindings"), \
+                     patch.object(launcher, "prepare_flat_unity_boot"), patch.object(launcher, "prepare_vtol_bindings"), \
+                     patch.object(launcher, "prepare_outerwilds_textures"), \
+                     patch.object(launcher, "prepare_outerwilds_settings"), \
                      patch.object(launcher, "prepare_vtol_textures"), patch.object(launcher, "prepare_vtol_prefix"), \
                      patch.object(launcher, "release_streaming_audio"):
                     launcher.main()
-                actual = proton.call_args.args[1] if appid == "2530470" else execute.call_args.args[2]
+                actual = proton.call_args.args[1] if appid in ("2530470", "753640") else execute.call_args.args[2]
                 overrides = actual["WINEDLLOVERRIDES"].split(";")
                 self.assertNotIn("explorer.exe=d", overrides)
                 self.assertNotIn("rpcss.exe=d", overrides)
-                if appid == "2530470":
+                if appid in ("2530470", "753640"):
                     self.assertNotIn("winebus.sys=d", overrides)
                     self.assertEqual(actual["STEARLIGHT_WINE_GAMEPAD"], "1")
-                    self.assertEqual(actual["PROTON_USE_WINED3D"], "1")
+                    self.assertEqual(actual["PROTON_USE_WINED3D"], "0" if appid == "753640" else "1")
+                    if appid == "753640":
+                        self.assertEqual(actual["MESA_VK_WSI_DEBUG"], "sw,noshm")
+                        self.assertEqual(actual["MESA_VK_ENABLE_SUBMIT_THREAD"], "true")
+                        self.assertIn("dxgi.maxFrameRate = 30", actual["DXVK_CONFIG"])
+                        self.assertTrue(actual["DXVK_CONFIG"].endswith(environment["DXVK_CONFIG"]))
+                        self.assertNotIn("LD_AUDIT", actual)
+                        self.assertEqual(actual["MALLOC_ARENA_MAX"], "2")
+                        self.assertEqual(proton.call_args.args[0][-2:], ["-job-worker-count", "2"])
+                    else:
+                        self.assertEqual(actual["DXVK_CONFIG"], environment["DXVK_CONFIG"])
                     self.assertEqual(actual["SDL_GAMECONTROLLER_IGNORE_DEVICES"], "0x28de/0x11ff")
                     self.assertEqual(actual["SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"], "0x045e/0x028e,0x0000/0x0000")
                 else:

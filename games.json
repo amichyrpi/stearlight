@@ -18,6 +18,12 @@
     "notes": "Launches at 10â€“15 FPS."
   },
   {
+    "appid": 753640,
+    "name": "Outer Wilds",
+    "status": "unsupported",
+    "notes": "Standalone play is unsupported on Quest 2: rendering can freeze, and loading a save exhausts memory with the full SteamVR interface. [Investigation notes](docs/outer-wilds-investigation.md)."
+  },
+  {
     "appid": 2386250,
     "name": "It gets so lonely here",
     "status": "verified",
