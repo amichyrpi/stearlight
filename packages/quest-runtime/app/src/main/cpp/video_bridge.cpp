@@ -11,8 +11,10 @@
 #include <poll.h>
 #include <cstring>
 #include <vector>
+#include <map>
 #include <stdexcept>
 #include <algorithm>
+#include <chrono>
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"StearlightVideo",__VA_ARGS__)
 namespace {
 bool transfer(int fd,void* data,size_t bytes,bool sendData){
@@ -20,6 +22,8 @@ bool transfer(int fd,void* data,size_t bytes,bool sendData){
 }
 struct Decoder {
  AMediaCodec* codec=nullptr;int width=0,height=0,stride=0,slice=0,color=0;
+ std::map<int64_t,uint64_t> frameTags;int64_t lastCodecPts=0;
+ bool decoded=false;
  void* shared=MAP_FAILED;size_t capacity=0;
  ~Decoder(){reset();if(shared!=MAP_FAILED)munmap(shared,capacity);}
  bool outputMemory(int fd){
@@ -28,7 +32,7 @@ struct Decoder {
   void* memory=mmap(nullptr,info.st_size,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);if(memory==MAP_FAILED)return false;
   if(shared!=MAP_FAILED)munmap(shared,capacity);shared=memory;capacity=info.st_size;return true;
  }
- void reset(){if(codec){AMediaCodec_stop(codec);AMediaCodec_delete(codec);codec=nullptr;}}
+ void reset(){frameTags.clear();lastCodecPts=0;decoded=false;if(codec){AMediaCodec_stop(codec);AMediaCodec_delete(codec);codec=nullptr;}}
  bool configure(const QuestVideoRequest& r){
   reset();if(r.width<128||r.height<128||r.width>QUEST_VIDEO_MAX_DIMENSION||r.height>QUEST_VIDEO_MAX_DIMENSION||uint64_t(r.width)*r.height>QUEST_VIDEO_MAX_PIXELS||(r.codec!=4&&r.codec!=5))return false;
   codec=AMediaCodec_createDecoderByType(r.codec==4?"video/avc":"video/hevc");if(!codec)return false;
@@ -42,11 +46,28 @@ struct Decoder {
   width=r.width;height=r.height;stride=width;slice=height;color=21;char* name=nullptr;
   if(AMediaCodec_getName(codec,&name)==AMEDIA_OK){LOG("Streaming decoder %s: %dx%d",name,width,height);AMediaCodec_releaseName(codec,name);}return true;
  }
- bool submit(const QuestVideoRequest& r,const std::vector<unsigned char>& packet){
-  if(!codec)return false;ssize_t index=AMediaCodec_dequeueInputBuffer(codec,100000);
-  if(index<0)return false;size_t size=0;auto target=AMediaCodec_getInputBuffer(codec,index,&size);
+ bool submit(const QuestVideoRequest& r,const std::vector<unsigned char>& packet,QuestVideoResponse& response,std::vector<unsigned char>& frame){
+  if(!codec)return false;
+  // The first OMX input allocation can take longer during a loaded launch.
+  // Allow startup to finish below the player's 800 ms reset threshold.
+  auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(decoded?100:500);
+  ssize_t index;
+  // MediaCodec stops accepting input when its output slots are full. Waiting
+  // for input on this same thread cannot free those slots: drain output while
+  // retrying instead of turning backpressure into a decoder/stream reset.
+  while((index=AMediaCodec_dequeueInputBuffer(codec,0))<0){
+   if(index!=AMEDIACODEC_INFO_TRY_AGAIN_LATER||!output(response,frame)||std::chrono::steady_clock::now()>=deadline){
+    LOG("Streaming input stalled: result=%zd",index);return false;
+   }
+  }
+  size_t size=0;auto target=AMediaCodec_getInputBuffer(codec,index,&size);
   if(!target||size<packet.size())return false;memcpy(target,packet.data(),packet.size());
-  return AMediaCodec_queueInputBuffer(codec,index,0,packet.size(),r.timestamp,0)==AMEDIA_OK;
+  // V4L2 timestamps identify frames; they can be spaced a second apart.
+  // Give Android a monotonic codec clock and restore the exact tag on output.
+  int64_t now=std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  int64_t pts=std::max(lastCodecPts+1,now);
+  if(AMediaCodec_queueInputBuffer(codec,index,0,packet.size(),pts,0)!=AMEDIA_OK)return false;
+  lastCodecPts=pts;frameTags.emplace(pts,r.timestamp);while(frameTags.size()>256)frameTags.erase(frameTags.begin());return true;
  }
  bool output(QuestVideoResponse& response,std::vector<unsigned char>& frame){
   AMediaCodecBufferInfo info{};ssize_t index=AMediaCodec_dequeueOutputBuffer(codec,&info,5000);
@@ -55,9 +76,13 @@ struct Decoder {
    AMediaFormat_getInt32(f,AMEDIAFORMAT_KEY_WIDTH,&width);AMediaFormat_getInt32(f,AMEDIAFORMAT_KEY_HEIGHT,&height);
    stride=width;slice=height;AMediaFormat_getInt32(f,"stride",&stride);AMediaFormat_getInt32(f,"slice-height",&slice);
    AMediaFormat_getInt32(f,AMEDIAFORMAT_KEY_COLOR_FORMAT,&color);AMediaFormat_delete(f);
-   index=AMediaCodec_dequeueOutputBuffer(codec,&info,5000);
+   if(width<=0||height<=0||width>QUEST_VIDEO_MAX_DIMENSION||height>QUEST_VIDEO_MAX_DIMENSION||uint64_t(width)*height>QUEST_VIDEO_MAX_PIXELS||(width|height)&1)return false;
+   response.status=QUEST_VIDEO_FORMAT_CHANGED;response.width=width;response.height=height;response.bytes=0;response.timestamp=0;return true;
   }
   if(index<0)return true;
+  auto tag=frameTags.find(info.presentationTimeUs);
+  if(tag==frameTags.end()){AMediaCodec_releaseOutputBuffer(codec,index,false);return true;}
+  uint64_t originalTag=tag->second;frameTags.erase(tag);
   size_t size=0;auto data=AMediaCodec_getOutputBuffer(codec,index,&size);
   bool valid=width>0&&height>0&&width<=QUEST_VIDEO_MAX_DIMENSION&&height<=QUEST_VIDEO_MAX_DIMENSION&&uint64_t(width)*height<=QUEST_VIDEO_MAX_PIXELS&&!(width&1)&&!(height&1)&&stride>=width&&slice>=height;
   size_t luma=valid?size_t(stride)*slice:0;
@@ -73,7 +98,7 @@ struct Decoder {
     if(color!=19)memcpy(uv+size_t(y)*width,data+luma+size_t(y)*stride,width);
     else for(int x=0;x<width/2;x++){uv[size_t(y)*width+2*x]=data[luma+size_t(y)*(stride/2)+x];uv[size_t(y)*width+2*x+1]=data[luma+luma/4+size_t(y)*(stride/2)+x];}
    }
-   response.status=0;response.width=width;response.height=height;response.bytes=bytes;response.color=21;response.timestamp=info.presentationTimeUs;
+   decoded=true;response.status=0;response.width=width;response.height=height;response.bytes=bytes;response.color=21;response.timestamp=originalTag;
   }else LOG("Unsupported streaming output: color=%d size=%zu offset=%d stride=%d slice=%d",color,size,info.offset,stride,slice);
   AMediaCodec_releaseOutputBuffer(codec,index,false);return valid;
  }
@@ -115,7 +140,9 @@ void VideoBridge::serveClient(int connection){
    if(r.operation==QUEST_VIDEO_SHARED_OUTPUT)valid=outputMemory;
    else if(r.operation==QUEST_VIDEO_CONFIGURE)valid=decoder.configure(r);
    else if(decoder.codec&&(r.operation==QUEST_VIDEO_PACKET||r.operation==QUEST_VIDEO_POLL)){
-    valid=r.operation==QUEST_VIDEO_POLL||decoder.submit(r,packet);if(valid)valid=decoder.output(response,frame);
+    valid=r.operation==QUEST_VIDEO_POLL||decoder.submit(r,packet,response,frame);
+    // submit may already have drained a frame to make room for this packet.
+    if(valid&&response.status==QUEST_VIDEO_ACCEPTED)valid=decoder.output(response,frame);
    }
    if(!valid)response.status=-1;
    if(!transfer(connection,&response,sizeof(response),true)||(response.bytes&&decoder.shared==MAP_FAILED&&!transfer(connection,frame.data(),response.bytes,true)))break;

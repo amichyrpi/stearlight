@@ -420,7 +420,17 @@ def main():
             defaults = ("dxvk.numCompilerThreads = 2; dxgi.maxDeviceMemory = 512; "
                         "dxgi.maxSharedMemory = 512; dxgi.maxFrameLatency = 1; dxgi.maxFrameRate = 30")
             env["DXVK_CONFIG"] = defaults + "; " + env.get("DXVK_CONFIG", "")
-        env.setdefault("PROTON_USE_WINED3D", "0" if appid == "753640" else "1")
+        if appid == "2530470" and env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
+            # Use the tested D3D11 Vulkan path instead of WineD3D -> Zink.
+            # Bound worker/allocator pressure alongside the full VR dashboard.
+            env.setdefault("MALLOC_ARENA_MAX", "2")
+            defaults = ("dxvk.numCompilerThreads = 2; dxgi.maxDeviceMemory = 1024; "
+                        "dxgi.maxSharedMemory = 512; dxgi.maxFrameLatency = 1")
+            env["DXVK_CONFIG"] = defaults + "; " + env.get("DXVK_CONFIG", "")
+        env.setdefault("PROTON_USE_WINED3D", "0")
+        if appid == "2530470":
+            # Requires the payload's software-X11 PresentWait2 correction.
+            env["MESA_VK_WSI_DEBUG"] = "sw,noshm"
         if appid == "753640":
             # XPutImage avoids software MIT-SHM Present bookkeeping. The
             # payload's Mesa patch disables unsupported PresentWait2 here.
@@ -448,8 +458,9 @@ def main():
         env["WINEDLLOVERRIDES"] = overrides + ";" + env.get("WINEDLLOVERRIDES", "")
     if appid in flat_unity:
         width, height = (960, 540) if env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0" else (1280, 720)
-        args += ["-force-gfx-direct", "-screen-fullscreen", "0", "-screen-width", str(width), "-screen-height", str(height)]
-        if appid == "753640" and env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
+        graphics_thread = "-force-gfx-mt" if appid == "2530470" else "-force-gfx-direct"
+        args += [graphics_thread, "-screen-fullscreen", "0", "-screen-width", str(width), "-screen-height", str(height)]
+        if env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
             args += ["-job-worker-count", "2"]
     # The official Proton Python script still owns Wine, Steam identity,
     # per-game prefixes, and game exit. No extra supervisor is kept alive.

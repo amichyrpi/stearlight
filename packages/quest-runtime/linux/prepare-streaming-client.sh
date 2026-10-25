@@ -26,3 +26,4 @@ cp "$launcher" "$player.new"
 chmod 755 "$player.new" "$player.real"
 mv "$player.new" "$player"
 done
+/usr/bin/python3 /opt/quest/prepare-streaming-input.py

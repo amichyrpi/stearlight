@@ -30,6 +30,10 @@ python3 packages/quest-runtime/tests/steam-gamepad-launch.test.py
 python3 packages/quest-runtime/tests/sdl-gamepad.test.py
 python3 packages/quest-runtime/tests/sdl3-resolver.test.py
 python3 packages/quest-runtime/tests/video-queue.test.py
+python3 packages/quest-runtime/tests/video-codec.test.py
+python3 packages/quest-runtime/tests/streaming-input.test.py
+python3 packages/quest-runtime/tests/streaming-socket.test.py
+python3 packages/quest-runtime/tests/video-format.test.py
 python3 packages/quest-runtime/tests/game-launch-wrapper.test.py
 python3 packages/quest-runtime/tests/game-runtime.test.py
 python3 packages/quest-runtime/tests/proton-runtime.test.py
@@ -38,6 +42,12 @@ python3 packages/quest-runtime/tests/fex-signal.test.py
 test_binary=$(mktemp)
 trap 'rm -f -- "$test_binary"' EXIT
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp -isystem packages/openvr/headers packages/quest-runtime/tests/hand-skeleton.test.cpp -o "$test_binary"
+"$test_binary"
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/display-pulse.test.cpp -o "$test_binary"
+"$test_binary"
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -pthread packages/quest-runtime/tests/frame-history.test.cpp -o "$test_binary"
+"$test_binary"
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/motion.test.cpp -o "$test_binary"
 "$test_binary"
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/external-gamepad.test.cpp -o "$test_binary"
 "$test_binary"
@@ -48,3 +58,5 @@ cc -O2 -std=c11 -Wall -Wextra -Werror packages/quest-runtime/tests/capture-matri
 "$test_binary"
 python3 packages/quest-runtime/tests/capture-matrix-abi.test.py
 python3 packages/quest-runtime/tests/network-bridge.test.py
+python3 packages/quest-runtime/tests/network-interfaces.test.py
+python3 packages/quest-runtime/tests/socket-registry.test.py

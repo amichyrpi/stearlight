@@ -27,6 +27,7 @@
 #include "pcvr_color_shader.h"
 #include "gpu_bridge.h"
 #include "quest_bridge.h"
+#include "display-pulse.h"
 #include "video_image_layout.h"
 
 namespace {
@@ -342,22 +343,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkRegisterDisplayEventEXT(VkDevice device,VkDispl
  static std::once_flag logged;std::call_once(logged,[]{fprintf(stderr,"Quest OpenXR display-event pacing active\n");});
  // Turnip has no Android display event source. SteamVR otherwise spins its
  // VulkanVblankThread through the unsupported display-control entry point.
- // Complete registration at the next OpenXR display boundary, then return a
- // genuine signaled Vulkan fence; its wait/status/destruction stay with Turnip.
- thread_local const QuestTracking* timing=nullptr;
- if(!timing){int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd>=0){void* mapped=mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0);close(fd);if(mapped!=MAP_FAILED)timing=static_cast<const QuestTracking*>(mapped);}}
+ // A genuine signaled Vulkan fence preserves normal Turnip wait/destruction.
+ thread_local const QuestTracking* timing=nullptr;thread_local QuestDisplayPulse pulse;
+ if(!timing){
+  int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);
+  if(fd>=0){struct stat data{};if(!fstat(fd,&data)&&data.st_size==sizeof(QuestTracking)){void* mapped=mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0);if(mapped!=MAP_FAILED)timing=static_cast<const QuestTracking*>(mapped);}close(fd);}
+ }
  QuestTracking sample{};
  if(timing)for(int attempt=0;attempt<8;attempt++){uint32_t before=__atomic_load_n(&timing->sequence,__ATOMIC_ACQUIRE);if(before&1)continue;memcpy(&sample,timing,sizeof(sample));if(before==__atomic_load_n(&timing->sequence,__ATOMIC_ACQUIRE))break;sample={};}
- timespec now{};clock_gettime(CLOCK_MONOTONIC,&now);
- uint64_t current=uint64_t(now.tv_sec)*1000000000+now.tv_nsec;
  float rate=sample.refresh_hz;uint64_t period=1000000000ull/(rate>=60&&rate<=144?rate:72);
  displayPeriodNs=period;
- uint64_t next=sample.predicted_monotonic_ns;
- if(!next)next=current+period;
- else if(next<=current)next+=((current-next)/period+1)*period;
- else next-=((next-current-1)/period)*period;
- timespec deadline{static_cast<time_t>(next/1000000000),static_cast<long>(next%1000000000)};
- while(clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&deadline,nullptr)==EINTR){}
+ if(!pulse.wait(timing,period)){
+  // No running OpenXR session: remain bounded and avoid a vblank busy loop.
+  timespec pause{static_cast<time_t>(period/1000000000),static_cast<long>(period%1000000000)};
+  while(nanosleep(&pause,&pause)&&errno==EINTR){}
+ }
  VkFenceCreateInfo create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};create.flags=VK_FENCE_CREATE_SIGNALED_BIT;
  return D(vkCreateFence)(device,&create,allocator,fence);
 }

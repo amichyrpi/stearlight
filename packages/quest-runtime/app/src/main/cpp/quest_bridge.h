@@ -2,6 +2,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
+#include <unistd.h>
 
 enum { QUEST_BRIDGE_MAGIC=0x53515231, QUEST_BRIDGE_VERSION=2 };
 enum QuestButtons { QUEST_A=1,QUEST_B=2,QUEST_X=4,QUEST_Y=8,QUEST_THUMBSTICK=16,QUEST_MENU=32 };
@@ -35,4 +38,6 @@ inline void questPublishTracking(QuestTracking* shared, const QuestTracking& sam
  constexpr size_t offset=offsetof(QuestTracking,width);
  memcpy(reinterpret_cast<char*>(shared)+offset,reinterpret_cast<const char*>(&sample)+offset,sizeof(sample)-offset);
  __atomic_add_fetch(&shared->sequence,1,__ATOMIC_RELEASE);
+ // Wake the Linux display pulse after publishing the complete OpenXR sample.
+ syscall(SYS_futex,&shared->sequence,FUTEX_WAKE,1,nullptr,nullptr,0);
 }

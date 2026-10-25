@@ -12,6 +12,7 @@ export GLIBC_TUNABLES=glibc.pthread.rseq=0
 # CPU and repeatedly regenerates mountinfo. Keep HIDAPI's polling fallback.
 if [ "${STEARLIGHT_LINUX_HIDAPI:-0}" != 1 ];then
  export SDL_HIDAPI_UDEV=0 SDL_HIDAPI_LIBUSB=0 SDL_HIDAPI_DISABLE_LIBUSB=1
+ export SDL_HIDAPI_JOYSTICK_DISABLE_UDEV=1
 fi
 export MESA_VK_ENABLE_SUBMIT_THREAD=1
 export QUEST_SOCKET_REGISTRY=/run/stearlight/quest/socket-registry.sock

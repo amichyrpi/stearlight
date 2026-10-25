@@ -135,6 +135,8 @@ def build_mesa(root, work, downloads):
         with tarfile.open(source_archive) as archive:
             archive.extractall(sources, filter="data")
     run(sys.executable, REPO / "build_files/quest/patch-mesa.py", mesa)
+    for test in ("mesa-kgsl-poll.test.py", "mesa-kgsl-merge.test.py"):
+        run(sys.executable, REPO / "packages/quest-runtime/tests" / test, mesa)
     sysroot = work / "sysroot/lib"
     (sysroot / "pkgconfig").mkdir(parents=True, exist_ok=True)
     zlib = sorted((root / "usr/lib/aarch64-linux-gnu").glob("libz.so.1.*"))
@@ -420,6 +422,7 @@ def main():
     run("aarch64-linux-gnu-gcc", "-O2", linux / "streaming-client-launcher.c",
         "-o", quest / "streaming-client-launcher")
     shutil.copyfile(linux / "prepare-streaming-client.sh", quest / "prepare-streaming-client.sh")
+    shutil.copyfile(linux / "prepare-streaming-input.py", quest / "prepare-streaming-input.py")
     run("aarch64-linux-gnu-gcc", "-O2", linux / "shader-replay-launcher.c",
         "-o", quest / "shader-replay-launcher")
     run("aarch64-linux-gnu-gcc", "-O2", linux / "gamescopereaper.c",

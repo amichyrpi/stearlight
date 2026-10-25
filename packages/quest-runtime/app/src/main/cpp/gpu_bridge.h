@@ -32,10 +32,11 @@ class GpuBridge {
  EGLContext copyContext=EGL_NO_CONTEXT;EGLSurface copySurface=EGL_NO_SURFACE;
  std::chrono::steady_clock::time_point sceneReport{};unsigned sceneFrames=0;
  std::atomic<uint64_t> captureFrame{0};
+ GLsync readFence=nullptr;
  void copyFrames();void copy(const QuestGpuPresent&);
 public:
  void initialize(EGLDisplay,const std::string&,uint32_t,uint32_t);
- void poll();void draw(int,bool preserveAlpha=false);void finish();void shutdown();
+ void poll();void draw(int,bool preserveAlpha=false);void endRead();void finish();void shutdown();
  void capture(const QuestGpuPresent&);
  bool ready()const{return current>=0;}
  const QuestGpuPresent& inputPose()const{return framePose;}

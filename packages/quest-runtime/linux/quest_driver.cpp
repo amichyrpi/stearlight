@@ -1,6 +1,7 @@
 // OpenVR devices backed by real Quest OpenXR poses and Android device state.
 #include <openvr_driver.h>
 #include "quest_bridge.h"
+#include "quest_motion.h"
 #include "controller_pose.h"
 #include "controller_input.h"
 #include "gamepad_state.h"
@@ -23,6 +24,13 @@
 
 namespace {
 QuestTracking state{};const QuestTracking* shared=nullptr;
+const QuestMotion* sharedMotion=nullptr;
+void openMotion(){
+ int fd=open("/run/stearlight/quest/tracking-motion",O_RDONLY|O_CLOEXEC);if(fd<0)return;
+ struct stat info{};if(!fstat(fd,&info)&&info.st_size==sizeof(QuestMotion)){
+  void* mapping=mmap(nullptr,sizeof(QuestMotion),PROT_READ,MAP_SHARED,fd,0);if(mapping!=MAP_FAILED)sharedMotion=static_cast<QuestMotion*>(mapping);
+ }close(fd);
+}
 QuestHands handState{};const QuestHands* sharedHands=nullptr;
 void openHands(){
  int fd=open("/run/stearlight/quest/hands",O_RDONLY|O_CLOEXEC);if(fd<0)return;
@@ -62,7 +70,7 @@ public:
  void GetProjectionRaw(vr::EVREye eye,float* left,float* right,float* top,float* bottom)override{int i=eye==vr::Eye_Left?0:1;*left=std::tan(state.fov[i][0]);*right=std::tan(state.fov[i][1]);*top=-std::tan(state.fov[i][2]);*bottom=-std::tan(state.fov[i][3]);}
  vr::DistortionCoordinates_t ComputeDistortion(vr::EVREye,float u,float v)override{vr::DistortionCoordinates_t result{};result.rfRed[0]=result.rfGreen[0]=result.rfBlue[0]=u;result.rfRed[1]=result.rfGreen[1]=result.rfBlue[1]=v;return result;}
  bool ComputeInverseDistortion(vr::HmdVector2_t* out,vr::EVREye,uint32_t,float u,float v)override{if(!out)return false;out->v[0]=u;out->v[1]=v;return true;}
- vr::DriverPose_t GetPose()override{auto p=trackedPose(state.headset);p.deviceIsConnected=true;return p;}
+ vr::DriverPose_t GetPose()override{auto p=trackedPose(state.headset);p.deviceIsConnected=true;questMotionVelocity(sharedMotion,state.predicted_time_ns,p.poseIsValid&&state.session_visible,p.vecVelocity,p.vecAngularVelocity);return p;}
  void frame()override{
   if(index==vr::k_unTrackedDeviceIndexInvalid)return;
   if(!havePlaySpace&&access("/run/stearlight/quest/play-space.vrchap",R_OK)==0){
@@ -163,8 +171,8 @@ class Provider final:public vr::IServerTrackedDeviceProvider {
  bool havePublished=false;uint32_t publishedSequence=0;
  std::chrono::steady_clock::time_point measuredSince=std::chrono::steady_clock::now();
 public:
- vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;openHands();if(!vr::VRServerDriverHost()->TrackedDeviceAdded("STEARLIGHT-QUEST2-HMD",vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
- void Cleanup()override{head.Deactivate();left.Deactivate();right.Deactivate();if(gamepad){quest::publishGamepad(gamepad,QuestGamepadState{});munmap(gamepad,sizeof(*gamepad));gamepad=nullptr;}if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;if(sharedHands)munmap(const_cast<QuestHands*>(sharedHands),sizeof(QuestHands));sharedHands=nullptr;handState={};VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
+ vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;openHands();openMotion();if(!vr::VRServerDriverHost()->TrackedDeviceAdded("STEARLIGHT-QUEST2-HMD",vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
+ void Cleanup()override{head.Deactivate();left.Deactivate();right.Deactivate();if(gamepad){quest::publishGamepad(gamepad,QuestGamepadState{});munmap(gamepad,sizeof(*gamepad));gamepad=nullptr;}if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;if(sharedMotion)munmap(const_cast<QuestMotion*>(sharedMotion),sizeof(QuestMotion));sharedMotion=nullptr;if(sharedHands)munmap(const_cast<QuestHands*>(sharedHands),sizeof(QuestHands));sharedHands=nullptr;handState={};VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
  const char* const* GetInterfaceVersions()override{return vr::k_InterfaceVersions;}
  void RunFrame()override{
   ++measuredCalls;

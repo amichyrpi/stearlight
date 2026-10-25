@@ -191,7 +191,7 @@ with open(sys.argv[2], "w") as log:
                 if appid in ("2530470", "753640"):
                     self.assertNotIn("winebus.sys=d", overrides)
                     self.assertEqual(actual["STEARLIGHT_WINE_GAMEPAD"], "1")
-                    self.assertEqual(actual["PROTON_USE_WINED3D"], "0" if appid == "753640" else "1")
+                    self.assertEqual(actual["PROTON_USE_WINED3D"], "0")
                     if appid == "753640":
                         self.assertEqual(actual["MESA_VK_WSI_DEBUG"], "sw,noshm")
                         self.assertEqual(actual["MESA_VK_ENABLE_SUBMIT_THREAD"], "true")
@@ -201,7 +201,13 @@ with open(sys.argv[2], "w") as log:
                         self.assertEqual(actual["MALLOC_ARENA_MAX"], "2")
                         self.assertEqual(proton.call_args.args[0][-2:], ["-job-worker-count", "2"])
                     else:
-                        self.assertEqual(actual["DXVK_CONFIG"], environment["DXVK_CONFIG"])
+                        self.assertEqual(actual["MESA_VK_WSI_DEBUG"], "sw,noshm")
+                        self.assertIn("dxvk.numCompilerThreads = 2", actual["DXVK_CONFIG"])
+                        self.assertTrue(actual["DXVK_CONFIG"].endswith(environment["DXVK_CONFIG"]))
+                        self.assertIn("-force-gfx-mt", proton.call_args.args[0])
+                        self.assertEqual(proton.call_args.args[0][-2:], ["-job-worker-count", "2"])
+                        self.assertNotIn("DXVK_HUD", actual)
+                        self.assertEqual(actual["VK_DRIVER_FILES"], "/opt/quest/turnip_icd.json")
                     self.assertEqual(actual["SDL_GAMECONTROLLER_IGNORE_DEVICES"], "0x28de/0x11ff")
                     self.assertEqual(actual["SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"], "0x045e/0x028e,0x0000/0x0000")
                 else:

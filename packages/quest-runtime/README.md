@@ -82,8 +82,9 @@ pinch input, and a hand must open before clicking again. Picking up Touch
 controllers restores their models, buttons, sticks and gamepad input. Hands do
 not synthesize gamepad buttons or sticks. An optional shared mapping carries
 the 26 tracked OpenXR joints to the Linux driver, which publishes SteamVR's
-31-bone skeleton for each hand. Forwarding and presentation in streamed games
-still need headset verification. No hand-tracking history is recorded.
+31-bone skeleton for each hand. Hand tracking is local only; PCVR streaming
+uses the Touch controllers. Streamed hand tracking is not supported.
+No hand-tracking history is recorded.
 The streaming player uses the matching Mesa 26.1.6 EGL vendor with a
 surfaceless display. EGL/Vulkan pixel sharing is checked on the Quest;
 the older rootfs EGL driver produces black shared images. Its V4L2 decoder
@@ -104,7 +105,10 @@ the full image over a socket. Older APKs retain the socket fallback. Capture
 buffers are presented in completion order; when rendering falls behind, only
 completed buffers still owned by the decoder can be replaced. Encoded reference
 packets remain intact. The Quest launcher removes Frame's additional 6 ms
-submission delay; `STEARLIGHT_VRLINK_SUBMIT_DELAY_US=6000` restores it for comparison.
+submission delay. When MediaCodec's input slots fill, the Android bridge drains
+completed output while retrying input instead of resetting the stream. Decoder
+timestamp bookkeeping is bounded across recovery and skipped output.
+`STEARLIGHT_VRLINK_SUBMIT_DELAY_US=6000` restores the additional delay for comparison.
 The Quest compositor adapter converts the shipped spatial-video final-pass
 shader's reconstructed RGB to linear light before its sRGB output. It matches
 that shader exactly and leaves packed depth, motion and tracking data intact;
@@ -425,6 +429,10 @@ scoped IPv6 link are bound to that Android network; Wi-Fi remains the internet
 connection. Socket bindings refresh after cable reconnection. If Horizon drops
 an established USB network, the app renews its request after a short recovery
 interval; unavailable requests retain their retry delay.
+The socket adapter also handles IPv4-mapped IPv6 destinations, batched UDP,
+and connected datagrams after the USB network changes. Wi-Fi stays on Android's
+normal internet route. While the Activity is resumed it holds Android's
+low-latency Wi-Fi lock; pausing or closing releases it.
 On Windows, run `post_process/quest/usb-network.ps1 -Adb /path/to/adb.exe`
 from an Administrator PowerShell after opening Stearlight and approving the
 USB-network prompt. It assigns a compatible IPv4 address only to the USB NCM

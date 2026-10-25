@@ -1,5 +1,20 @@
 # USB streaming checks - 2026-10-20
 
+Presentation correction prepared on 2026-10-25: the native eye renderer now
+checks completion of its own texture reads with a GL fence, retains the held
+image while reads are incomplete, and selects the newest completed image after
+waiting for both OpenXR eye buffers. It no longer calls `glFinish` after every
+`xrEndFrame`. The copy worker's completion and Linux's foreign-ownership
+barriers remain intact. Decoder timing and stream quality are unchanged.
+
+The Android library builds, and history ownership and video-queue tests pass,
+including the history test with AddressSanitizer and UndefinedBehaviorSanitizer.
+Headset comparison is pending: the Quest reached 2% battery and reported
+overheating, and the user is recharging it. Do not treat this candidate as a
+verified latency improvement. Compare comfortable head movement, frame freezes,
+black borders, both-eye texture correctness, audio and Touch input after charge.
+The logged local image pose age excludes the remote encoder/decoder latency.
+
 Quest 2, direct PC-to-Quest USB connection, existing signed APK and account data
 preserved. The first ordered-buffer/copy change produced no noticeable latency
 improvement. After installing the bounded capture queue and removing Frame's

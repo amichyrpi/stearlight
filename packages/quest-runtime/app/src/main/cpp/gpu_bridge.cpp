@@ -104,12 +104,29 @@ void GpuBridge::copy(const QuestGpuPresent& present){
  if(seconds>=5){LOG("Linux handoffs %.1f fps; GPU copy wait %.2f ms/frame",reportFrames/seconds,completionMs/reportFrames);reportTime=done;reportFrames=0;completionMs=0;}
 }
 void GpuBridge::poll(){
- std::lock_guard<std::mutex> guard(historyLock);int slot=historySlots.adopt();if(slot<0)return;
+ // The copy thread may recycle the previously held texture after adoption.
+ // Test only our eye draws, without waiting for xrEndFrame's compositor work.
+ bool readsComplete=true;
+ if(readFence){
+  GLenum result=glClientWaitSync(readFence,0,0);
+  readsComplete=result!=GL_TIMEOUT_EXPIRED;
+  if(result==GL_WAIT_FAILED){LOG("Eye-read fence failed; completing reads synchronously");glFinish();}
+  if(readsComplete){glDeleteSync(readFence);readFence=nullptr;}
+ }
+ std::lock_guard<std::mutex> guard(historyLock);int slot=historySlots.adopt(readsComplete);if(slot<0)return;
  const auto& image=histories[slot];history=image.texture;
  framePose=image.pose;frameId=framePose.frame_id;frameFormat=framePose.vk_format;current=slot;hasFrame=true;
  auto now=std::chrono::steady_clock::now();if(sceneReport.time_since_epoch().count()==0)sceneReport=now;
  ++sceneFrames;double seconds=std::chrono::duration<double>(now-sceneReport).count();
  if(seconds>=5){LOG("Scene updates %.1f fps",sceneFrames/seconds);sceneReport=now;sceneFrames=0;}
+}
+void GpuBridge::endRead(){
+ if(!hasFrame)return;
+ // A replacement fence covers earlier reads on this same GL command stream.
+ if(readFence)glDeleteSync(readFence);
+ readFence=glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE,0);
+ if(!readFence){LOG("Eye-read fence unavailable; completing reads synchronously");glFinish();}
+ else glFlush();
 }
 // Explicit, one-shot diagnostic of Linux's image before color conversion.
 void GpuBridge::capture(const QuestGpuPresent& present){
@@ -141,6 +158,7 @@ void GpuBridge::draw(int eye,bool preserveAlpha){if(!hasFrame)return;
 void GpuBridge::finish(){current=-1;}
 void GpuBridge::shutdown(){
  stopping.store(true);if(copyThread.joinable())copyThread.join();
+ if(readFence){glFinish();glDeleteSync(readFence);readFence=nullptr;}
  if(server>=0){close(server);server=-1;}if(!path.empty())unlink(path.c_str());
  if(copySurface!=EGL_NO_SURFACE)eglDestroySurface(display,copySurface);
  if(copyContext!=EGL_NO_CONTEXT)eglDestroyContext(display,copyContext);

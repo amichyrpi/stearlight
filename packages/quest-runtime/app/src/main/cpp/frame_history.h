@@ -15,6 +15,6 @@ public:
   if(slot<0||slot!=writing)return false;
   pending=slot;writing=-1;return true;
  }
- int adopt(){if(pending<0)return -1;held=pending;pending=-1;return held;}
+ int adopt(bool readsComplete=true){if(!readsComplete||pending<0)return -1;held=pending;pending=-1;return held;}
 };
 }

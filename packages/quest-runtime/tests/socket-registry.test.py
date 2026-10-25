@@ -35,7 +35,36 @@ s.connect(('192.0.2.9',5555));s.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,10
 open(sys.argv[1],'w').write('1 192.0.2.8 24 2');time.sleep(.3)
 s.connect(('192.0.2.9',5555))
 assert s.getsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF)==65536, 'USB reconnect did not invalidate socket binding'
+v=socket.socket(socket.AF_INET6,socket.SOCK_DGRAM)
+try:v.sendto(b'test',('::ffff:192.0.2.9',5555))
+except OSError:pass
+assert v.getsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF)==65536, 'Dual-stack USB datagram escaped to default network'
+open(sys.argv[1],'w').write('1 127.0.0.2 32 3');time.sleep(.3)
+c=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);c.connect(('127.0.0.2',5555))
+c.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,1024)
+open(sys.argv[1],'w').write('1 127.0.0.2 32 4');time.sleep(.3)
+c.send(b'test')
+assert c.getsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF)==65536, 'Connected send kept the previous USB network'
+open(sys.argv[1],'w').write('1 192.0.2.8 24 2')
 """,str(d/'state/usb-network-scope')],env=env,check=True)
+  (d/'batch.c').write_text(r'''
+#define _GNU_SOURCE
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <string.h>
+int main(){
+ int fd=socket(AF_INET6,SOCK_DGRAM,0),size=0;socklen_t length=sizeof(size);
+ struct sockaddr_in6 peer={.sin6_family=AF_INET6,.sin6_port=htons(5555)};
+ inet_pton(AF_INET6,"::ffff:192.0.2.9",&peer.sin6_addr);
+ char data[]="test";struct iovec io={data,4};struct mmsghdr packets[2]={0};
+ for(int i=0;i<2;i++){packets[i].msg_hdr.msg_name=&peer;packets[i].msg_hdr.msg_namelen=sizeof(peer);packets[i].msg_hdr.msg_iov=&io;packets[i].msg_hdr.msg_iovlen=1;}
+ sendmmsg(fd,packets,2,MSG_DONTWAIT);
+ assert(!getsockopt(fd,SOL_SOCKET,SO_RCVBUF,&size,&length)&&size==65536);
+}
+''')
+  subprocess.run(['gcc',d/'batch.c','-o',d/'batch'],check=True)
+  subprocess.run([d/'batch'],env=env,check=True)
   client=subprocess.Popen(['python3','-c',"import socket,sys; s=socket.socket();s.bind(('127.0.0.1',0));s.listen();c=socket.create_connection(s.getsockname());a,p=s.accept();print(s.getsockname()[1],c.getsockname()[1],flush=True);sys.stdin.readline()"],env=env,stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
   try:
    server_port,client_port=map(int,client.stdout.readline().split());rows=[]

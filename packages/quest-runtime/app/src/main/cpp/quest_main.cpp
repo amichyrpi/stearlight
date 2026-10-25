@@ -23,6 +23,7 @@
 #include <chrono>
 #include <fstream>
 #include "quest_bridge.h"
+#include "quest_motion.h"
 #include "play_space.h"
 #include "gpu_bridge.h"
 #include "video_bridge.h"
@@ -51,11 +52,11 @@ struct Runtime {
  XrActionSet actions=XR_NULL_HANDLE;XrAction gripAction=XR_NULL_HANDLE,aimAction=XR_NULL_HANDLE,triggerAction=XR_NULL_HANDLE,squeezeAction=XR_NULL_HANDLE,stickAction=XR_NULL_HANDLE;
  XrAction buttonActions[6]{};XrAction touchAction=XR_NULL_HANDLE,hapticAction=XR_NULL_HANDLE,selectAction=XR_NULL_HANDLE;
  XrPath hands[2]{};Eye eyes[2],statusEye;XrTime statusUpdated=0;bool running=false,visible=false,focused=false;
- QuestTracking* tracking=nullptr;GLuint framebuffer=0;GpuBridge gpu;VideoBridge video;
+ QuestTracking* tracking=nullptr;QuestMotion* motion=nullptr;GLuint framebuffer=0;GpuBridge gpu;VideoBridge video;
  XrView frameViews[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};bool haveFrameViews=false;
  bool eyesDirty=true,lastLoading=true,lastPassthrough=false;
  bool haveStage=false,playSpacePublished=false;
- std::chrono::steady_clock::time_point eyeReport{};double eyeMs=0;unsigned eyeFrames=0;
+ std::chrono::steady_clock::time_point eyeReport{};double eyeMs=0,eyeWaitMs=0,poseAgeMs=0,maxPoseAgeMs=0;unsigned eyeFrames=0;
  PFN_xrConvertTimeToTimespecTimeKHR timeToMonotonic=nullptr;
  PFN_xrGetDisplayRefreshRateFB getRate=nullptr;PFN_xrRequestDisplayRefreshRateFB requestRate=nullptr;
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
@@ -97,6 +98,14 @@ struct Runtime {
   unlink((directory+"/dashboard.ready").c_str());
   unlink((directory+"/play-space.vrchap").c_str());
   memset(tracking,0,sizeof(*tracking));tracking->magic=QUEST_BRIDGE_MAGIC;tracking->version=QUEST_BRIDGE_VERSION;for(float& b:tracking->battery)b=-1;
+  int motionFd=open((directory+"/tracking-motion").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);
+  if(motionFd>=0){
+   if(!ftruncate(motionFd,sizeof(QuestMotion))){
+    void* mapping=mmap(nullptr,sizeof(QuestMotion),PROT_READ|PROT_WRITE,MAP_SHARED,motionFd,0);
+    if(mapping!=MAP_FAILED){motion=static_cast<QuestMotion*>(mapping);memset(motion,0,sizeof(*motion));motion->magic=QUEST_MOTION_MAGIC;motion->version=QUEST_MOTION_VERSION;}
+   }close(motionFd);
+  }
+  if(!motion)LOG("Headset velocity bridge unavailable");
   auto loader=function<PFN_xrInitializeLoaderKHR>(XR_NULL_HANDLE,"xrInitializeLoaderKHR");XrLoaderInitInfoAndroidKHR loaderInfo{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};loaderInfo.applicationVM=app->activity->vm;loaderInfo.applicationContext=app->activity->clazz;XR(loader(reinterpret_cast<XrLoaderInitInfoBaseHeaderKHR*>(&loaderInfo)));
   uint32_t n=0;XR(xrEnumerateInstanceExtensionProperties(nullptr,0,&n,nullptr));std::vector<XrExtensionProperties> extensions(n,{XR_TYPE_EXTENSION_PROPERTIES});XR(xrEnumerateInstanceExtensionProperties(nullptr,n,&n,extensions.data()));
   std::vector<const char*> enabled={XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME};
@@ -231,7 +240,13 @@ struct Runtime {
   haptics();
   XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};locate.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;locate.displayTime=state.predictedDisplayTime;locate.space=stage;XrViewState viewState{XR_TYPE_VIEW_STATE};XrView views[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};uint32_t count;XR(xrLocateViews(session,&locate,&viewState,2,&count,views));
   QuestTracking sample=*tracking;sample.predicted_time_ns=state.predictedDisplayTime;if(timeToMonotonic){timespec predicted{};XR(timeToMonotonic(instance,state.predictedDisplayTime,&predicted));sample.predicted_monotonic_ns=static_cast<uint64_t>(predicted.tv_sec)*1000000000+predicted.tv_nsec;}sample.session_visible=visible;sample.session_focused=focused;
-  XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};XR(xrLocateSpace(head,stage,state.predictedDisplayTime,&location));sample.headset=pose(location.pose,location.locationFlags);
+  XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+  XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};location.next=&velocity;
+  XR(xrLocateSpace(head,stage,state.predictedDisplayTime,&location));sample.headset=pose(location.pose,location.locationFlags);
+  QuestMotion motionSample{};motionSample.predicted_time_ns=sample.predicted_time_ns;
+  if(velocity.velocityFlags&XR_SPACE_VELOCITY_LINEAR_VALID_BIT){motionSample.flags|=QUEST_LINEAR_VELOCITY_VALID;motionSample.linear[0]=velocity.linearVelocity.x;motionSample.linear[1]=velocity.linearVelocity.y;motionSample.linear[2]=velocity.linearVelocity.z;}
+  if(velocity.velocityFlags&XR_SPACE_VELOCITY_ANGULAR_VALID_BIT){motionSample.flags|=QUEST_ANGULAR_VELOCITY_VALID;motionSample.angular[0]=velocity.angularVelocity.x;motionSample.angular[1]=velocity.angularVelocity.y;motionSample.angular[2]=velocity.angularVelocity.z;}
+  location.next=nullptr;
   for(int i=0;i<2;i++){
    XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,poseState.isActive?location.locationFlags:0);XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);sample.eyes[i]=pose(views[i].pose,viewState.viewStateFlags);sample.fov[i][0]=views[i].fov.angleLeft;sample.fov[i][1]=views[i].fov.angleRight;sample.fov[i][2]=views[i].fov.angleUp;sample.fov[i][3]=views[i].fov.angleDown;
    // Query only bindings present on this hand. Keep zero inputs for sleeping
@@ -248,7 +263,7 @@ struct Runtime {
    XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));sample.thumbstick[i][0]=stick.isActive?stick.currentState.x:0;sample.thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
    }
    handTracking.update(sample,i,physical,stage,state.predictedDisplayTime);
-  }handTracking.publish(sample);questPublishTracking(tracking,sample);
+  }handTracking.publish(sample);questPublishMotion(motion,motionSample);questPublishTracking(tracking,sample);
   publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   if(!bootFinished)bootFinished=bootComplete();
@@ -298,6 +313,19 @@ struct Runtime {
   eyesDirty=eyesDirty||loading!=lastLoading||passthroughActive!=lastPassthrough||(!loading&&gpu.ready())||showHands||lastHands;
   lastHands=showHands;
   lastLoading=loading;lastPassthrough=passthroughActive;
+  bool drewEyes=state.shouldRender&&eyesDirty;
+  auto eyeStart=std::chrono::steady_clock::now();
+  uint32_t eyeIndices[2]{};double swapWaitMs=0;
+  if(drewEyes){
+   for(int i=0;i<2;i++){
+    XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eyes[i].chain,&acquire,&eyeIndices[i]));
+    XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eyes[i].chain,&imageWait));
+   }
+   swapWaitMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-eyeStart).count();
+   // Buffer availability can lag behind xrWaitFrame. Select the newest
+   // completed Linux image after those waits, once for the whole stereo pair.
+   gpu.poll();
+  }
   // Repeated submissions of the same pixels must keep the same layer pose.
   // Updating it every xrWaitFrame incorrectly head-locks a stalled Linux image.
   if(gpu.ready()||!haveFrameViews){
@@ -322,32 +350,32 @@ struct Runtime {
   // acknowledged Linux independently of xrWaitFrame. Retain the adopted image
   // through both eye draws; finish only clears its fresh-frame indication.
   gpu.finish();
-  bool drewEyes=state.shouldRender&&eyesDirty;
-  auto eyeStart=std::chrono::steady_clock::now();
   // OpenXR reuses the most recently released image. Reproject repeated Linux
   // frames without redrawing seven million pixels at every headset tick.
   if(state.shouldRender)for(int i=0;i<2;i++){
    Eye& eye=eyes[i];
    if(eyesDirty){
-   uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eye.chain,&acquire,&index));XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eye.chain,&imageWait));glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[index].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loading){gpu.draw(i,passthroughActive);if(showHands)handRender.draw(handTracking,frameViews[i],eye.width,eye.height);}glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));
+   glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[eyeIndices[i]].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loading){gpu.draw(i,passthroughActive);if(showHands)handRender.draw(handTracking,frameViews[i],eye.width,eye.height);}glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));
    }
    projectionViews[i].pose=frameViews[i].pose;projectionViews[i].fov=frameViews[i].fov;projectionViews[i].subImage={eye.chain,{{0,0},{static_cast<int32_t>(eye.width),static_cast<int32_t>(eye.height)}},0};
   }
+  if(drewEyes&&!loading)gpu.endRead();
   if(state.shouldRender)eyesDirty=false;
   XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};projection.space=stage;projection.layerFlags=passthroughActive?XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT:0;projection.viewCount=2;projection.views=projectionViews;
   XrCompositionLayerPassthroughFB pass{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};pass.layerHandle=camera.layer;XrCompositionLayerQuad status{XR_TYPE_COMPOSITION_LAYER_QUAD};status.space=head;status.eyeVisibility=XR_EYE_VISIBILITY_BOTH;status.subImage={statusEye.chain,{{0,0},{450,450}},0};status.pose=identity();status.pose.position.z=-1.7f;status.size={.8f,.8f};const XrCompositionLayerBaseHeader* layers[3];uint32_t layerCount=0;if(state.shouldRender){if(passthroughActive)layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&pass);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);if(loading){updateStatus(state.predictedDisplayTime);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&status);}}
   XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};end.displayTime=state.predictedDisplayTime;end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;end.layerCount=layerCount;end.layers=layers;XR(xrEndFrame(session,&end));
-  // Preserve completion of each newly drawn stereo image, independently of
-  // the already completed DMA-BUF copy. Repeated images need no extra wait.
-  if(drewEyes)glFinish();
   if(drewEyes){
    auto done=std::chrono::steady_clock::now();eyeMs+=std::chrono::duration<double,std::milli>(done-eyeStart).count();++eyeFrames;
+   eyeWaitMs+=swapWaitMs;
+   auto stamp=gpu.inputPose().predicted_monotonic_ns;
+   double age=stamp&&sample.predicted_monotonic_ns>stamp?(sample.predicted_monotonic_ns-stamp)*1e-6:0;
+   poseAgeMs+=age;maxPoseAgeMs=std::max(maxPoseAgeMs,age);
    if(eyeReport.time_since_epoch().count()==0)eyeReport=done;
-   if(std::chrono::duration<double>(done-eyeReport).count()>=5){LOG("Stereo eye draw/submit %.2f ms/frame",eyeMs/eyeFrames);eyeMs=0;eyeFrames=0;eyeReport=done;}
+   if(std::chrono::duration<double>(done-eyeReport).count()>=5){LOG("Stereo draw/submit %.2f ms, buffer wait %.2f ms; local image pose age %.2f ms (max %.2f)",eyeMs/eyeFrames,eyeWaitMs/eyeFrames,poseAgeMs/eyeFrames,maxPoseAgeMs);eyeMs=eyeWaitMs=poseAgeMs=maxPoseAgeMs=0;eyeFrames=0;eyeReport=done;}
   }
   static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }
  void idle(){physicalGamepad.tick(false);gpu.poll();gpu.finish();}
- void shutdown(){physicalGamepad.shutdown();handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
+ void shutdown(){physicalGamepad.shutdown();handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(motion)munmap(motion,sizeof(*motion));if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
 };
 extern "C" void android_main(android_app* app){Runtime runtime;runtime.app=app;try{while(!app->destroyRequested&&(!app->window||app->activityState!=APP_CMD_RESUME)){int events;android_poll_source* source;if(ALooper_pollOnce(50,nullptr,&events,reinterpret_cast<void**>(&source))>=0&&source)source->process(app,source);}if(app->destroyRequested)return;LOG("Android VR activity resumed with a native window");runtime.initialize(app);while(!app->destroyRequested){int events;android_poll_source* source;while(ALooper_pollOnce(runtime.running?0:50,nullptr,&events,reinterpret_cast<void**>(&source))>=0){if(source)source->process(app,source);if(app->destroyRequested)break;}if(app->destroyRequested||!runtime.events())break;if(runtime.running)runtime.frame();else runtime.idle();}}catch(const std::exception& e){LOG("Native runtime stopped: %s",e.what());}runtime.shutdown();}

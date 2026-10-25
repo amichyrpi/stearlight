@@ -17,6 +17,13 @@ int main(){
  int third=history.beginWrite();assert(third==2);
  assert(history.publish(third)); // Supersede an image that was never adopted.
  assert(history.adopt()==third&&history.adopt()==-1);
+ // An unsignaled eye-read fence keeps the old image held while newer
+ // completed copies supersede one another. Both eyes retain stable pixels.
+ int pending=history.beginWrite();assert(pending!=third&&history.publish(pending));
+ assert(history.adopt(false)==-1);
+ int latest=history.beginWrite();assert(latest!=third&&latest!=pending);
+ assert(history.publish(latest)&&history.adopt(false)==-1);
+ assert(history.adopt(true)==latest);
  int reused=history.beginWrite();assert(reused==first);
  assert(history.publish(reused)&&history.adopt()==reused);
  for(int i=0;i<10000;i++){

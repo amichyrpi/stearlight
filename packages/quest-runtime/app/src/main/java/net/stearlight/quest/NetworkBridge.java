@@ -18,7 +18,22 @@ final class NetworkBridge {
  private final QuestActivity activity;
  private final File directory;
  private boolean requestedScanPermission;
+ private WifiManager.WifiLock latencyLock;
  NetworkBridge(QuestActivity activity,File directory){this.activity=activity;this.directory=directory;new File(directory,"network-settings.request").delete();new File(directory,"network-scan.request").delete();}
+ // Foreground VR is latency-sensitive even between bursts of video packets.
+ // Keep Android's per-app lock for the visible session; release on pause/exit.
+ void resumed(boolean active){
+  try{
+   if(active&&latencyLock==null){
+    WifiManager wifi=(WifiManager)activity.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+    if(wifi!=null){latencyLock=wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY,"Stearlight:VR");latencyLock.setReferenceCounted(false);}
+   }
+   if(latencyLock!=null){
+    if(active&&!latencyLock.isHeld())latencyLock.acquire();
+    else if(!active&&latencyLock.isHeld())latencyLock.release();
+   }
+  }catch(RuntimeException error){Log.w("StearlightNetwork","Low-latency Wi-Fi lock unavailable",error);}
+ }
  private static String encoded(String text){return Base64.encodeToString(text.getBytes(StandardCharsets.UTF_8),Base64.NO_WRAP);}
  private static String ssid(WifiInfo info){String name=info==null?null:info.getSSID();if(name==null||name.equals(WifiManager.UNKNOWN_SSID))return "";return name.startsWith("\"")&&name.endsWith("\"")?name.substring(1,name.length()-1):name;}
  private static int security(String capabilities){return capabilities.contains("PSK")?392:capabilities.contains("EAP")?648:0;}

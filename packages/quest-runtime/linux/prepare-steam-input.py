@@ -16,6 +16,13 @@ BUILDS = (
     # count, updates the HID device list on change, then releases the guard.
     ('484b0375810a738592c7dbc5f7b6003dd9676ff40708759929e1d5427cb2eed5',
      'e9aa7a344acf940d9396b735762c4fe5146ea1570ec896d6a550c73d8409ded7', 0xd4df0),
+    # Client 1792711043 retains the same verified SDL3 detection routine.
+    ('a809e5dee7b5382a3c8e1c3122a7c3071cbd52aad369cfe9427586c237f0dc39',
+     '17445fc82bc64ccdab2bfb5edf369942b4aeeba934710cad6e73a32df8c2914d', 0xd4df0),
+    # Debian ARM64 SDL 2.26.5, used by Wine's controller service. Verified
+    # against build-id 9c22a11ac822b10572c713275311e288d856a346 and SDL source.
+    ('72457d21f5a6874e98a89b537ea96a8f7204399a3938dc2a0e41f2a82ed44a59',
+     'e960c98217759a07c324fbd5e39116b0566ae238239e19c8f5a2a7ab559730ad', 0x12ed50),
 )
 PROLOGUE = bytes.fromhex('fd7bbea9')
 RETURN = bytes.fromhex('c0035fd6')
@@ -54,8 +61,10 @@ def prepare(binary, raw_hid=False):
 
 
 if __name__ == '__main__':
-    try:
-        root = Path(os.environ.get('STEARLIGHT_STEAM_ROOT', '/opt/steam'))
-        prepare(root / 'steamrtarm64/libSDL3.so.0', os.environ.get('STEARLIGHT_LINUX_HIDAPI') == '1')
-    except (OSError, ValueError) as error:
-        print(f'Quest SDL input adapter unavailable: {error}', file=sys.stderr)
+    root = Path(os.environ.get('STEARLIGHT_STEAM_ROOT', '/opt/steam'))
+    for binary in (root / 'steamrtarm64/libSDL3.so.0',
+                   Path('/usr/lib/aarch64-linux-gnu/libSDL2-2.0.so.0')):
+        try:
+            prepare(binary, os.environ.get('STEARLIGHT_LINUX_HIDAPI') == '1')
+        except (OSError, ValueError) as error:
+            print(f'Quest SDL input adapter unavailable for {binary.name}: {error}', file=sys.stderr)

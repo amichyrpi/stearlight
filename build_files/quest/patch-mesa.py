@@ -92,6 +92,78 @@ kgsl_poll_timestamp(int fd, unsigned int context_id, unsigned int timestamp)
 """
     target.write_text(source[:start] + poll + block + source[end:])
 
+# Quest's app policy rejects READTIMESTAMP_CTXTID with EACCES. Keep the
+# zero-timeout contract using an exportable timestamp fence instead; do not
+# turn the probe back into a KGSL wait (timeout 0 means infinite there).
+source = target.read_text()
+before = """   if (safe_ioctl(fd, IOCTL_KGSL_CMDSTREAM_READTIMESTAMP_CTXTID, &read))
+      return VK_ERROR_UNKNOWN;
+   return timestamp_cmp(read.timestamp, timestamp) ? VK_SUCCESS : VK_TIMEOUT;"""
+after = """   static bool timestamp_read_denied;
+   if (!__atomic_load_n(&timestamp_read_denied, __ATOMIC_RELAXED)) {
+      if (!safe_ioctl(fd, IOCTL_KGSL_CMDSTREAM_READTIMESTAMP_CTXTID, &read))
+         return timestamp_cmp(read.timestamp, timestamp) ? VK_SUCCESS : VK_TIMEOUT;
+      if (errno != EACCES && errno != EPERM && errno != ENOTTY)
+         return VK_ERROR_UNKNOWN;
+      __atomic_store_n(&timestamp_read_denied, true, __ATOMIC_RELAXED);
+   }
+
+   int sync_fd = -1;
+   struct kgsl_timestamp_event event = {
+      .type = KGSL_TIMESTAMP_EVENT_FENCE,
+      .timestamp = timestamp,
+      .context_id = context_id,
+      .priv = &sync_fd,
+      .len = sizeof(sync_fd),
+   };
+   if (safe_ioctl(fd, IOCTL_KGSL_TIMESTAMP_EVENT, &event))
+      return VK_ERROR_UNKNOWN;
+   struct pollfd fence = { .fd = sync_fd, .events = POLLIN };
+   int result;
+   do {
+      result = poll(&fence, 1, 0);
+   } while (result < 0 && errno == EINTR);
+   close(sync_fd);
+   if (result < 0 || (fence.revents & (POLLERR | POLLNVAL)))
+      return VK_ERROR_UNKNOWN;
+   return result > 0 ? VK_SUCCESS : VK_TIMEOUT;"""
+if after not in source:
+    if source.count(before) != 1:
+        raise SystemExit("Unsupported Mesa KGSL timestamp poll fallback")
+    source = source.replace(before, after)
+target.write_text(source)
+
+# Mesa 9dea49d1: poll returns a positive ready count, zero on timeout, or -1
+# on error. Preserve errno before closing the temporary exported sync FDs.
+source = target.read_text()
+before = """      for (uint32_t i = 0; i < fds_count - num_fds; i++)
+         close(fds[i].fd);
+
+      if (ret != 0) {
+         assert(errno == ETIME);
+         result = VK_TIMEOUT;
+      } else {
+         result = VK_SUCCESS;
+      }"""
+after = """      const int error = errno;
+      for (uint32_t i = 0; i < fds_count - num_fds; i++)
+         close(fds[i].fd);
+
+      if (ret > 0) {
+         result = VK_SUCCESS;
+      } else if (ret == 0) {
+         result = VK_TIMEOUT;
+      } else {
+         result = vk_errorf(device, VK_ERROR_UNKNOWN,
+                            "KGSL sync FD poll failed: errno %d (%s)",
+                            error, strerror(error));
+      }"""
+if after not in source:
+    if source.count(before) != 1:
+        raise SystemExit("Unsupported Mesa KGSL wait-any poll result")
+    source = source.replace(before, after)
+target.write_text(source)
+
 # Mesa 1da50a1b: convert the aggregate timestamp before merging an FD or a
 # timestamp from another queue. Do not interpret a queue pointer as an FD,
 # or convert an incoming FD as though it were a timestamp.
