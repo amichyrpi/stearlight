@@ -15,6 +15,37 @@ spec.loader.exec_module(menus)
 
 
 class FrameMenusTests(unittest.TestCase):
+    def test_menu_failures_do_not_close_desktop_ssh_or_rdp(self):
+        spec = importlib.util.spec_from_file_location('desktop_manager', path.with_name('desktop-manager.py'))
+        desktop = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(desktop)
+        for error in (OSError('disk full'), ValueError('invalid settings'), menus.subprocess.SubprocessError('launch failed')):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as folder:
+                token = Path(folder) / 'token'
+                token.write_text('test-token')
+                manager, server = Mock(ssh_socket=None), Mock()
+                handlers = {}
+                def register(number, handler):
+                    handlers[number] = handler
+                def poll():
+                    if manager.menus.poll.call_count == 1:
+                        # A second iteration proves a menu failure did not exit
+                        # the service or close its SSH/RDP/desktop processes.
+                        manager.close.assert_not_called()
+                        handlers[desktop.signal.SIGTERM]()
+                manager.poll.side_effect = poll
+                manager.menus.poll.side_effect = [error, None]
+                with patch.object(desktop, 'TOKEN', token), \
+                     patch.object(desktop, 'Manager', return_value=manager), \
+                     patch.object(desktop, 'HTTPServer', return_value=server), \
+                     patch.object(desktop.signal, 'signal', side_effect=register), \
+                     patch.object(desktop.select, 'select', return_value=([], [], [])), \
+                     patch.object(desktop.sys, 'stderr'):
+                    desktop.serve()
+                self.assertEqual(manager.menus.poll.call_count, 2)
+                manager.close.assert_called_once()
+                server.server_close.assert_called_once()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -41,7 +41,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libtalloc-dev libsdl2-2.0-0 zstd
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libtalloc-dev libx11-dev libxext-dev libsdl2-2.0-0 zstd
       - name: Check Quest sources and packaging
         run: bash build_files/quest/check.sh
 

@@ -566,7 +566,10 @@ def serve():
             if manager.ssh_socket and manager.ssh_socket in readable:
                 manager.accept_ssh()
             manager.poll()
-            manager.menus.poll()
+            try:
+                manager.menus.poll()
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                print(f'Frame menu polling failed: {error}', file=sys.stderr)
     finally:
         manager.close()
         server.server_close()

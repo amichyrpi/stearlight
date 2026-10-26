@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 import time
 
 
@@ -136,6 +137,34 @@ def prepare_vtol_prefix(compat):
     stamp.write_text(json.dumps({"version": 1}))
 
 
+def backup_original(path, data, valid):
+    # A killed/full-disk write must never become the next launch's original.
+    try:
+        if valid(path.read_bytes()):
+            return
+    except FileNotFoundError:
+        pass
+    if not valid(data):
+        raise ValueError("Cannot recover an invalid game backup")
+    descriptor, name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def graphics_settings_valid(data):
+    try:
+        return isinstance(json.loads(data), dict)
+    except (ValueError, UnicodeError):
+        return False
+
+
 def prepare_outerwilds_textures(game):
     # Unity 2019's default full-size textures exhaust Quest 2's shared RAM.
     # Omit the two largest mips and use smaller shadow maps; retain game code.
@@ -161,8 +190,7 @@ def prepare_outerwilds_textures(game):
     if hashlib.sha256(updated).hexdigest() != adjusted:
         raise ValueError("Outer Wilds graphics profile checksum mismatch")
     backup = asset.with_name(asset.name + ".quest-original")
-    if not backup.exists():
-        backup.write_bytes(data)
+    backup_original(backup, data, lambda value: hashlib.sha256(value).hexdigest() == original)
     temporary = asset.with_name(asset.name + ".quest-next")
     temporary.write_bytes(updated)
     temporary.replace(asset)
@@ -190,8 +218,8 @@ def prepare_outerwilds_settings(compat):
             print("Stearlight: unrecognized Outer Wilds settings; leaving them unchanged", file=sys.stderr)
             continue
         backup = settings.with_name(settings.name + ".quest-original")
-        if original is not None and not backup.exists():
-            backup.write_bytes(original)
+        if original is not None:
+            backup_original(backup, original, graphics_settings_valid)
         if previous != "1":
             data.update(defaults)
         # Unity 2019 JsonUtility does not run this class's constructor. Supply

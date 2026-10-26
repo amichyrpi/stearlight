@@ -21,6 +21,7 @@ inline bool readExternalGamepad(const QuestExternalGamepad* shared,QuestExternal
  for(int attempt=0;attempt<4;attempt++){
   auto before=__atomic_load_n(&shared->sequence,__ATOMIC_ACQUIRE);if(before&1)continue;
   memcpy(&value,shared,sizeof value);
+  __atomic_thread_fence(__ATOMIC_ACQUIRE);
   if(before!=__atomic_load_n(&shared->sequence,__ATOMIC_ACQUIRE))continue;
   bool valid=value.magic==0x53514550&&value.version==1;
   if(connected)*connected=valid&&value.connected;

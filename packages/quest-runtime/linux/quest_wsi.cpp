@@ -77,11 +77,31 @@ struct Swapchain {
  uint32_t queueFamily=0;VkCommandPool pool=VK_NULL_HANDLE;VkCommandBuffer acquireCommands[QUEST_GPU_BUFFERS]{},releaseCommands[QUEST_GPU_BUFFERS]{};bool released[QUEST_GPU_BUFFERS]{};
  VkFence releaseFence=VK_NULL_HANDLE;
  quest::FramePool framePool;uint64_t presentIds[QUEST_GPU_BUFFERS]{};
- VkResult receiveEvent(uint64_t timeout){
+ bool eventWaiting=false;
+ VkResult waitReadable(uint64_t timeout){
   int milliseconds=timeout==UINT64_MAX?-1:static_cast<int>(std::min<uint64_t>(INT_MAX,timeout/1000000+(timeout%1000000!=0)));
   pollfd event{socket,POLLIN,0};int ready;do ready=::poll(&event,1,milliseconds);while(ready<0&&errno==EINTR);
   if(!ready)return VK_TIMEOUT;
   if(ready<0||event.revents&(POLLERR|POLLHUP|POLLNVAL))return VK_ERROR_SURFACE_LOST_KHR;
+  return VK_SUCCESS;
+ }
+ VkResult receiveEvent(std::unique_lock<std::mutex>& guard,uint64_t timeout){
+  // One socket reader wakes all waiters after updating shared state. Multiple
+  // pollers could miss an event consumed by another thread and wait forever.
+  if(eventWaiting){
+   if(!timeout)return VK_TIMEOUT;
+   // Recheck the caller's condition on every wake, even if a different reader
+   // has already started waiting for a later event.
+   if(timeout==UINT64_MAX)presentedCondition.wait(guard);
+   else if(presentedCondition.wait_for(guard,std::chrono::nanoseconds(std::min<uint64_t>(timeout,INT64_MAX)))==std::cv_status::timeout)return VK_TIMEOUT;
+   return VK_SUCCESS;
+  }
+  eventWaiting=true;
+  guard.unlock();
+  VkResult result=waitReadable(timeout);
+  guard.lock();
+  eventWaiting=false;presentedCondition.notify_all();
+  if(result!=VK_SUCCESS)return result;
   QuestGpuRelease release{};ssize_t size=recv(socket,&release,sizeof(release),MSG_DONTWAIT|MSG_TRUNC);
   if(size<0&&(errno==EAGAIN||errno==EINTR))return VK_TIMEOUT;
   if(size!=sizeof(release)||release.slot>=QUEST_GPU_BUFFERS)return VK_ERROR_SURFACE_LOST_KHR;
@@ -284,7 +304,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroySwapchainKHR(VkDevice,VkSwapchainKHR swap,co
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSwapchainImagesKHR(VkDevice,VkSwapchainKHR handle,uint32_t* count,VkImage* images){auto swap=object<Swapchain>(handle);if(!images){*count=QUEST_GPU_BUFFERS;return VK_SUCCESS;}uint32_t n=std::min(*count,(uint32_t)QUEST_GPU_BUFFERS);memcpy(images,swap->images,n*sizeof(VkImage));*count=n;return n<QUEST_GPU_BUFFERS?VK_INCOMPLETE:VK_SUCCESS;}
 VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR handle,uint64_t timeout,VkSemaphore semaphore,VkFence fence,uint32_t* index){
  roomViewMode=roomViewReady&&access("/run/stearlight/quest/passthrough.enabled",F_OK)==0;
- auto swap=object<Swapchain>(handle);std::lock_guard<std::mutex> guard(swap->lock);
+ auto swap=object<Swapchain>(handle);std::unique_lock<std::mutex> guard(swap->lock);
  if(swap->offscreen)*index=swap->next++%QUEST_GPU_BUFFERS;
  else{
   auto start=std::chrono::steady_clock::now();
@@ -292,8 +312,8 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice device,VkSwapchain
    int slot=swap->framePool.acquire();if(slot>=0){*index=slot;break;}
    uint64_t elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
    uint64_t left=timeout==UINT64_MAX?timeout:elapsed>=timeout?0:timeout-elapsed;
-   VkResult result=swap->receiveEvent(left);
-   if(result==VK_TIMEOUT)return timeout?VK_TIMEOUT:VK_NOT_READY;
+   VkResult result=swap->receiveEvent(guard,left);
+   if(result==VK_TIMEOUT){int slot=swap->framePool.acquire();if(slot>=0){*index=slot;break;}return timeout?VK_TIMEOUT:VK_NOT_READY;}
    if(result!=VK_SUCCESS)return result;
   }
  }
@@ -373,7 +393,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkWaitForPresentKHR(VkDevice,VkSwapchainKHR handl
  while(!ready()){
   uint64_t elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
   uint64_t left=timeout==UINT64_MAX?timeout:elapsed>=timeout?0:timeout-elapsed;
-  VkResult result=swap->receiveEvent(left);if(result!=VK_SUCCESS)return result;
+  VkResult result=swap->receiveEvent(lock,left);if(ready())return VK_SUCCESS;if(result!=VK_SUCCESS)return result;
  }
  return VK_SUCCESS;
 }
