@@ -76,6 +76,9 @@ int main(int argc,char** argv){
  pad.input.buttons=(1<<1)|(1<<11);pad.input.axes[0]=.9f;pad.input.axes[4]=1;quest::publishExternalGamepad(physical,pad);pump();
  assert(button(controller,1)&&button(controller,11)&&!button(controller,0));assert(axis(controller,0)>29000&&axis(controller,4)==32767);
  pad.input.monotonic_ns=0;quest::publishExternalGamepad(physical,pad);pump();assert(!button(controller,1)&&axis(controller,0)==0);
+ clock_gettime(CLOCK_MONOTONIC,&stamp);pad.input.monotonic_ns=uint64_t(stamp.tv_sec)*1000000000+stamp.tv_nsec;
+ pad.connected=1;quest::publishExternalGamepad(physical,pad);pump();assert(button(controller,11));
+ clock_gettime(CLOCK_MONOTONIC,&stamp);pad.input.monotonic_ns=uint64_t(stamp.tv_sec)*1000000000+stamp.tv_nsec;
  pad.connected=0;quest::publishExternalGamepad(physical,pad);pump();assert(!button(controller,11));
  symbol<void(*)(void*)>(sdl,"SDL_GameControllerClose")(controller);quit();
  assert(init(0x2000)==0&&count()==1);quit();

@@ -20,6 +20,7 @@ python3 packages/quest-runtime/tests/os-update-activation.test.py
 python3 packages/quest-runtime/tests/audio-queue.test.py
 python3 packages/quest-runtime/tests/audio-identity.test.py
 python3 packages/quest-runtime/tests/loading-boost.test.py
+python3 packages/quest-runtime/tests/wsi-events.test.py
 python3 packages/quest-runtime/tests/mountinfo-cache.test.py
 python3 packages/quest-runtime/tests/steam-input.test.py
 python3 packages/quest-runtime/tests/steam-integrity.test.py

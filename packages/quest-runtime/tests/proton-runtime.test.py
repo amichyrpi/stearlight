@@ -16,6 +16,62 @@ spec.loader.exec_module(launcher)
 
 
 class ProtonRuntimeTest(unittest.TestCase):
+    def test_original_backups_replace_partial_files_but_preserve_valid_ones(self):
+        with tempfile.TemporaryDirectory() as folder:
+            backup = Path(folder) / 'graphics.quest-original'
+            original = b'{"textureQuality":0,"gammaValue":0.6}'
+            backup.write_bytes(original[:12])
+            launcher.backup_original(backup, original, launcher.graphics_settings_valid)
+            self.assertEqual(backup.read_bytes(), original)
+            launcher.backup_original(backup, b'{"textureQuality":1}', launcher.graphics_settings_valid)
+            self.assertEqual(backup.read_bytes(), original)
+            # Binary assets must match the known original, not just its size.
+            valid_asset = lambda value: value == b'complete original asset'
+            backup.write_bytes(b'partial asset')
+            launcher.backup_original(backup, b'complete original asset', valid_asset)
+            self.assertEqual(backup.read_bytes(), b'complete original asset')
+
+    def test_backup_write_failure_leaves_original_and_existing_backup_untouched(self):
+        with tempfile.TemporaryDirectory() as folder:
+            backup = Path(folder) / 'graphics.quest-original'
+            backup.write_bytes(b'partial legacy backup')
+            original = b'{"gammaValue":0.6}'
+            with patch.object(launcher.os, 'fsync', side_effect=OSError('disk full')):
+                with self.assertRaises(OSError):
+                    launcher.backup_original(backup, original, launcher.graphics_settings_valid)
+            self.assertEqual(backup.read_bytes(), b'partial legacy backup')
+            self.assertEqual(list(Path(folder).iterdir()), [backup])
+
+    def test_outerwilds_replaces_truncated_settings_backup_before_applying_profile(self):
+        with tempfile.TemporaryDirectory() as folder:
+            compat = Path(folder)
+            profile = compat / 'pfx/drive_c/users/steamuser/AppData/LocalLow/Mobius Digital/Outer Wilds/SteamSaves/Player'
+            profile.mkdir(parents=True)
+            (profile / 'player.owsett').touch()
+            settings = profile / 'graphics.owsett'
+            original = b'{"gammaValue":0.6,"textureQuality":0}'
+            settings.write_bytes(original)
+            backup = settings.with_name(settings.name + '.quest-original')
+            backup.write_bytes(original[:10])
+            launcher.prepare_outerwilds_settings(compat)
+            self.assertEqual(backup.read_bytes(), original)
+            self.assertEqual(json.loads(settings.read_bytes())['textureQuality'], 2)
+
+    def test_failed_settings_backup_does_not_modify_game_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            compat = Path(folder)
+            profile = compat / 'pfx/drive_c/users/steamuser/AppData/LocalLow/Mobius Digital/Outer Wilds/SteamSaves/Player'
+            profile.mkdir(parents=True)
+            (profile / 'player.owsett').touch()
+            settings = profile / 'graphics.owsett'
+            original = b'{"gammaValue":0.6,"textureQuality":0}'
+            settings.write_bytes(original)
+            with patch.object(launcher.os, 'fsync', side_effect=OSError('disk full')):
+                with self.assertRaises(OSError):
+                    launcher.prepare_outerwilds_settings(compat)
+            self.assertEqual(settings.read_bytes(), original)
+            self.assertEqual(sorted(p.name for p in profile.iterdir()), ['graphics.owsett', 'player.owsett'])
+
     def test_outerwilds_profile_preserves_saves_and_subsequent_choices(self):
         with tempfile.TemporaryDirectory() as folder:
             compat = Path(folder)
