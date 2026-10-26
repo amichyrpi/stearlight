@@ -54,11 +54,11 @@ public:
  virtual void frame()=0;
 };
 class Headset final:public Device,public vr::IVRDisplayComponent {
- vr::VRInputComponentHandle_t proximity=0;std::chrono::steady_clock::time_point lastBattery{};
+ vr::VRInputComponentHandle_t proximity=0;std::chrono::steady_clock::time_point lastBattery{};int lastBatteryPercent=-2;bool lastCharging=false;
  bool haveProximity=false,lastProximity=false,haveEyes=false,havePlaySpace=false;float lastRate=0,lastIpd=-1;vr::HmdMatrix34_t lastEyes[2]{};
 public:
  vr::EVRInitError Activate(uint32_t id)override{
-  haveProximity=haveEyes=false;lastRate=0;lastIpd=-1;lastBattery={};
+  haveProximity=haveEyes=false;lastRate=0;lastIpd=-1;lastBattery={};lastBatteryPercent=-2;
   havePlaySpace=false;
   base(id,"STEARLIGHT-QUEST2-HMD","Oculus Quest2");auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,"stearlight-quest/quest2");p->SetInt32Property(properties,vr::Prop_HmdTrackingStyle_Int32,vr::HmdTrackingStyle_InsideOutCameras);p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);frame();return vr::VRInitError_None;
  }
@@ -96,7 +96,21 @@ public:
    p->SetBoolProperty(properties,vr::Prop_DisplaySupportsMultipleFramerates_Bool,false);
    p->SetBoolProperty(properties,vr::Prop_DisplaySupportsRuntimeFramerateChange_Bool,false);lastRate=state.refresh_hz;
   }
-  auto now=std::chrono::steady_clock::now();if(now-lastBattery<std::chrono::seconds(1))return;lastBattery=now;std::ifstream file("/run/stearlight/quest/device.json");std::string json((std::istreambuf_iterator<char>(file)),{});auto key=json.find("\"battery_percent\":");if(key!=std::string::npos){int value=std::atoi(json.c_str()+key+18);vr::VRProperties()->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,value>=0);if(value>=0)vr::VRProperties()->SetFloatProperty(properties,vr::Prop_DeviceBatteryPercentage_Float,value/100.f);}key=json.find("\"charging\":");if(key!=std::string::npos)vr::VRProperties()->SetBoolProperty(properties,vr::Prop_DeviceIsCharging_Bool,json.compare(key+11,4,"true")==0);
+  auto now=std::chrono::steady_clock::now();if(now-lastBattery<std::chrono::seconds(1))return;lastBattery=now;
+  std::ifstream file("/run/stearlight/quest/device.json");std::string json((std::istreambuf_iterator<char>(file)),{});
+  auto key=json.find("\"battery_percent\":");if(key==std::string::npos)return;
+  int value=std::atoi(json.c_str()+key+18);bool present=value>=0&&value<=100;
+  key=json.find("\"charging\":");bool charging=key!=std::string::npos&&json.compare(key+11,4,"true")==0;
+  if(value==lastBatteryPercent&&charging==lastCharging)return;
+  float fraction=present?value/100.f:0;
+  // Publish related properties together. Never expose an absent percentage as -1
+  // or notify consumers that a battery exists before its percentage is ready.
+  vr::PropertyWrite_t writes[3]{};
+  writes[0]={vr::Prop_DeviceBatteryPercentage_Float,present?vr::PropertyWrite_Set:vr::PropertyWrite_Erase,vr::TrackedProp_Success,&fraction,sizeof(fraction),vr::k_unFloatPropertyTag,vr::TrackedProp_Success};
+  writes[1]={vr::Prop_DeviceIsCharging_Bool,vr::PropertyWrite_Set,vr::TrackedProp_Success,&charging,sizeof(charging),vr::k_unBoolPropertyTag,vr::TrackedProp_Success};
+  writes[2]={vr::Prop_DeviceProvidesBatteryStatus_Bool,vr::PropertyWrite_Set,vr::TrackedProp_Success,&present,sizeof(present),vr::k_unBoolPropertyTag,vr::TrackedProp_Success};
+  if(vr::VRPropertiesRaw()->WritePropertyBatch(properties,writes,3)==vr::TrackedProp_Success){lastBatteryPercent=value;lastCharging=charging;}
+
  }
 };
 class Controller final:public Device {

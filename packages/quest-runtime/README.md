@@ -178,7 +178,9 @@ still need separate checks.
 The Mesa build also releases its owned DMA-heap/ION allocation descriptors
 after import, so freeing an exported GPU buffer can reclaim its memory.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
-layer, until the main panel and bottom dock are ready. Display buffers use
+layer. Once Valve's native bootstrapper overlay has textures, its own Frame
+boot/update UI replaces the loading loop; ordinary startup waits for the main
+panel and bottom dock. Display buffers use
 explicit Vulkan ownership transfers before Android reads them. A memory
 barrier makes earlier compositor pass writes visible before the next pass reads
 color and depth attachments, preventing stale right-eye trails on Turnip.
@@ -249,7 +251,10 @@ and activates the runtime on the next launch. The previous runtime is restored
 if the new dashboard fails to start. APK upgrades preserve an installed OS
 runtime update. Empty image extents remain sparse. The required free space is
 calculated from the selected image's data plus 2 GiB for staging and recovery;
-interrupted downloads resume. Stable and Beta may publish the same OS image,
+interrupted downloads resume. Completed images are verified before reuse; a
+failed chunk cancels queued work. Confirmed obsolete rollback runtimes are
+reclaimed before the next download. Storage failures report the required and
+available space. Stable and Beta may publish the same OS image,
 and the OS feed may lag SteamVR's separately distributed Beta releases.
 The October 15 image (0.5.6 Beta, build `20261015.6141207`) has completed this
 update path on Quest, and Steam's native client and OS update checks succeed.
@@ -317,7 +322,10 @@ Steam and Plasma receive the Quest's real battery percentage and charger state
 through the same thread's UPower adapter. Android also supplies battery voltage,
 temperature, and time to full charge when available. Changes are published over
 D-Bus once per second; Android continues to manage charging and low-battery
-shutdown. Unsupported battery-health and remaining-time estimates stay unknown.
+shutdown. Battery level and charger state are sampled together; unavailable
+readings retain the last valid level for at most 30 seconds. SteamVR receives
+related battery properties in one batch, only when they change. Unsupported
+battery-health and remaining-time estimates stay unknown.
 
 Passthrough uses a real OpenXR compositor layer. Native room-view style,
 monochrome hue, edge color and strength settings are forwarded to that layer.

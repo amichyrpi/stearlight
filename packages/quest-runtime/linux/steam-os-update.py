@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Steam's OS-update command, adapted to the Quest's unprivileged rootfs."""
 import configparser
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import ctypes
 import fcntl
 import hashlib
@@ -32,6 +32,20 @@ def atomic_json(path, value):
     temporary = path.with_suffix('.next')
     temporary.write_text(json.dumps(value) + '\n')
     temporary.replace(path)
+
+
+def progress(title, detail='', fraction=-1, error=False):
+    value = dict(title=title, detail=detail, fraction=fraction, error=error)
+    atomic_json(CACHE / 'progress.json', value)
+
+
+def reclaim_previous():
+    previous = Path('/opt/steamvr.previous')
+    # Dashboard confirmation must precede removal of the previous backup.
+    if ((CACHE / 'installed.json').is_file() and not (CACHE / 'activated.json').exists()
+            and Path('/opt/steamvr/bin/linuxarm64/vrserver').is_file()
+            and previous.is_dir() and not previous.is_symlink()):
+        shutil.rmtree(previous)
 
 
 def fetch(url):
@@ -188,7 +202,17 @@ def reconstruct(index, size, expected_hash, store):
     allocated = image.stat().st_blocks * 512 if image.exists() else 0
     needed = physical + 2 * 1024 ** 3 - min(allocated, physical)
     if shutil.disk_usage(CACHE).free < needed:
-        raise OSError(f'SteamOS update needs {needed / 1024 ** 3:.1f} GiB of free storage')
+        raise OSError(f'SteamOS update needs {needed / 1024 ** 3:.1f} GiB free; '
+                      f'{shutil.disk_usage(CACHE).free / 1024 ** 3:.1f} GiB available. '
+                      'Free storage in Quest Settings, then retry; downloaded chunks are preserved.')
+    # A completed image can survive an interrupted extraction. Verify it once
+    # rather than dispatching thousands of read/write jobs for unchanged chunks.
+    if image.exists() and image.stat().st_size == size:
+        progress('Verifying SteamOS update', 'Checking the saved root image')
+        with image.open('rb') as source:
+            if hashlib.file_digest(source, 'sha256').hexdigest() == expected_hash:
+                return image
+    progress('Downloading SteamOS update', 'Verified chunks resume automatically', 0)
     fd = os.open(image, os.O_RDWR | os.O_CREAT, 0o600)
     os.ftruncate(fd, size)
     local = threading.local()
@@ -218,14 +242,36 @@ def reconstruct(index, size, expected_hash, store):
     try:
         clear_extents(fd, zeros)
         with ThreadPoolExecutor(max_workers=8) as pool:
-            work = [pool.submit(worker, entry) for entry in groups.items()]
-            for number, future in enumerate(as_completed(work), 1):
-                future.result()
-                if number % 500 == 0:
-                    print(f'SteamOS download {number * 100 // len(groups)}%', file=sys.stderr, flush=True)
+            entries = iter(groups.items())
+            pending = set()
+            number = 0
+            try:
+                while True:
+                    # Keep memory bounded and stop queuing requests after a
+                    # failure instead of draining the entire image on exit.
+                    while len(pending) < 16:
+                        entry = next(entries, None)
+                        if entry is None:
+                            break
+                        pending.add(pool.submit(worker, entry))
+                    if not pending:
+                        break
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        future.result()
+                        number += 1
+                    if number == len(groups) or number // 32 != (number - len(done)) // 32:
+                        progress('Downloading SteamOS update', '', number / len(groups))
+                    if number // 500 != (number - len(done)) // 500:
+                        print(f'SteamOS download {number * 100 // len(groups)}%', file=sys.stderr, flush=True)
+            except BaseException:
+                for future in pending:
+                    future.cancel()
+                raise
         os.fsync(fd)
     finally:
         os.close(fd)
+    progress('Verifying SteamOS update', 'Checking the signed root image')
     with image.open('rb') as source:
         if hashlib.file_digest(source, 'sha256').hexdigest() != expected_hash:
             raise ValueError('SteamOS root image failed its signed checksum')
@@ -245,6 +291,7 @@ def restore_executables(runtime):
 
 
 def stage(item, channel='stable'):
+    progress('Verifying SteamOS update', 'Checking Valve signature')
     index, size, digest = verified_bundle(item, channel)
     image = reconstruct(index, size, digest, item['chunks_store_path'])
     extracted = CACHE / 'extracted'
@@ -252,6 +299,7 @@ def stage(item, channel='stable'):
         shutil.rmtree(extracted)
     extracted.mkdir()
     # Android owns all extracted files. Do not restore Valve's Unix owners.
+    progress('Installing SteamOS update', 'Extracting the Steam Frame runtime')
     tool('btrfs', 'restore', '-S', '--path-regex', '^/(|opt(|/steamvr(|/.*)))$', image, extracted)
     runtime = extracted / 'opt/steamvr'
     restore_executables(runtime)
@@ -261,6 +309,7 @@ def stage(item, channel='stable'):
             raise ValueError('Update does not contain a complete ARM64 SteamVR runtime')
     # Prepare all Quest adapters on the staged copy; a failure leaves the
     # currently running runtime intact and propagates to Steam Settings.
+    progress('Preparing SteamOS update', 'Keeping Quest tracking, audio and graphics adapters')
     environment = {**os.environ, 'STEARLIGHT_STEAMVR_ROOT': str(runtime)}
     subprocess.run(['/usr/bin/python3', str(QUEST / 'prepare-os-runtime.py'), str(runtime)], env=environment, check=True)
     for script in ('prepare-vrclient.sh', 'prepare-frame-controls.sh'):
@@ -271,6 +320,7 @@ def stage(item, channel='stable'):
     runtime.rename(pending)
     atomic_json(CACHE / 'pending.json', item['image'])
     image.unlink()
+    progress('Update ready', 'Quit and reopen Stearlight to finish installation', 1)
     print('SteamOS runtime update staged; restart Stearlight to activate it.', file=sys.stderr)
 
 
@@ -296,6 +346,7 @@ def main(arguments):
         if 'check' in arguments:
             print(item['image']['buildid'])
         else:
+            reclaim_previous()
             stage(item, channel)
         return 0
 
@@ -304,5 +355,10 @@ if __name__ == '__main__':
     try:
         sys.exit(main(sys.argv[1:]))
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        if CACHE.is_dir():
+            try:
+                progress('SteamOS update failed', str(error), error=True)
+            except OSError:
+                pass
         print('SteamOS runtime update failed: ' + str(error), file=sys.stderr)
         sys.exit(1)

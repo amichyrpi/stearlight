@@ -110,6 +110,33 @@ class OSUpdateTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 update.index_chunks(data, 256)
 
+    def test_verified_completed_download_skips_network_and_rewrite(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder)
+            image = cache / 'rootfs.img'
+            contents = b'completed signed image'
+            image.write_bytes(contents)
+            (cache / 'index').write_bytes(b'index')
+            with patch.object(update, 'CACHE', cache), patch.object(update, 'progress'), \
+                    patch.object(update, 'index_chunks', return_value={b'x': [(0, len(contents))]}), \
+                    patch.object(update, 'sparse_chunks', side_effect=lambda groups: (groups, [])), \
+                    patch.object(update, 'fetch', side_effect=AssertionError('must not download')):
+                self.assertEqual(update.reconstruct(cache / 'index', len(contents), hashlib.sha256(contents).hexdigest(), 'vr/chunks.castr'), image)
+                self.assertEqual(image.read_bytes(), contents)
+
+    def test_failed_chunk_does_not_queue_the_entire_image(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder)
+            (cache / 'index').write_bytes(b'index')
+            groups = {number.to_bytes(32, 'little'): [(number * 64, 64)] for number in range(1000)}
+            with patch.object(update, 'CACHE', cache), patch.object(update, 'progress'), \
+                    patch.object(update, 'index_chunks', return_value=groups), \
+                    patch.object(update, 'sparse_chunks', side_effect=lambda value: (value, [])), \
+                    patch.object(update, 'fetch', side_effect=OSError('connection interrupted')) as fetch:
+                with self.assertRaisesRegex(OSError, 'connection interrupted'):
+                    update.reconstruct(cache / 'index', 64000, '0' * 64, 'vr/chunks.castr')
+                self.assertLessEqual(fetch.call_count, 16)
+
     def test_native_duplicate_detection_does_not_start_download(self):
         with patch.object(update, 'fetch', side_effect=AssertionError('must not download')):
             self.assertEqual(update.main(['--supports-duplicate-detection']), 0)

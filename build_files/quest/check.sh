@@ -14,6 +14,9 @@ python3 packages/quest-runtime/tests/clean-build.test.py
 python3 tests/recovery-test.py
 python3 packages/quest-runtime/tests/rootfs-archive.test.py
 python3 packages/quest-runtime/tests/clock-bridge.test.py
+python3 packages/quest-runtime/tests/battery-snapshot.test.py
+python3 packages/quest-runtime/tests/steam-os-update.test.py
+python3 packages/quest-runtime/tests/os-update-activation.test.py
 python3 packages/quest-runtime/tests/audio-queue.test.py
 python3 packages/quest-runtime/tests/audio-identity.test.py
 python3 packages/quest-runtime/tests/loading-boost.test.py

@@ -27,8 +27,7 @@ public final class QuestActivity extends NativeActivity {
  private volatile java.lang.Process linux;
  private volatile boolean closing;
  private final AtomicBoolean starting=new AtomicBoolean();
- private volatile int batteryPercent=-1, batteryStatus=BatteryManager.BATTERY_STATUS_UNKNOWN, batteryPlugged, batteryVoltage, batteryTemperature;
- private volatile boolean charging;
+ private volatile BatterySnapshot battery=new BatterySnapshot();
  private BluetoothBridge bluetoothBridge;
  private AudioBridge audioBridge;
  private final NativeAudioServer audioServer=new NativeAudioServer();
@@ -38,7 +37,16 @@ public final class QuestActivity extends NativeActivity {
  private ClockBridge clockBridge;
  native void setUsbNetwork(long handle);
  native int networkInterfaceIndex(String name);
- private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));batteryStatus=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=batteryStatus==BatteryManager.BATTERY_STATUS_CHARGING||batteryStatus==BatteryManager.BATTERY_STATUS_FULL;batteryPlugged=intent.getIntExtra(BatteryManager.EXTRA_PLUGGED,0);batteryVoltage=intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE,0);batteryTemperature=intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,0);}};
+ private synchronized void receiveBattery(Intent intent){
+  battery=battery.update(intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),intent.getIntExtra(BatteryManager.EXTRA_SCALE,0),
+    intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN),intent.getIntExtra(BatteryManager.EXTRA_PLUGGED,0),
+    intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE,0),intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,0),SystemClock.elapsedRealtime());
+ }
+ private synchronized BatterySnapshot batterySnapshot(BatteryManager manager){
+  if(manager!=null)battery=battery.capacity(manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY),SystemClock.elapsedRealtime());
+  return battery;
+ }
+ private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){receiveBattery(intent);}};
  @Override public void onCreate(Bundle state){
   new File(getStateDirectory(),"dashboard.ready").delete();
   new File(getStateDirectory(),"gpu-capture.request").delete();
@@ -75,9 +83,10 @@ public final class QuestActivity extends NativeActivity {
   if(closing)return;
   syncClock();
   try {
-   JSONObject state=new JSONObject();state.put("battery_percent",batteryPercent);state.put("charging",charging);
-   state.put("battery_status",batteryStatus);state.put("battery_plugged",batteryPlugged);state.put("battery_voltage_mv",batteryVoltage);state.put("battery_temperature_tenths_c",batteryTemperature);
-   BatteryManager power=(BatteryManager)getSystemService(BATTERY_SERVICE);state.put("battery_charge_time_ms",power==null?-1:power.computeChargeTimeRemaining());
+   BatteryManager power=(BatteryManager)getSystemService(BATTERY_SERVICE);BatterySnapshot sample=batterySnapshot(power);
+   JSONObject state=new JSONObject();state.put("battery_percent",sample.percent);state.put("charging",sample.charging());
+   state.put("battery_status",sample.status);state.put("battery_plugged",sample.plugged);state.put("battery_voltage_mv",sample.voltage);state.put("battery_temperature_tenths_c",sample.temperature);
+   state.put("battery_charge_time_ms",power==null?-1:power.computeChargeTimeRemaining());
    ConnectivityManager cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);Network network=cm.getActiveNetwork();NetworkCapabilities caps=cm.getNetworkCapabilities(network);LinkProperties link=cm.getLinkProperties(network);
    state.put("connected",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET));state.put("validated",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));state.put("wifi",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI));
    JSONArray dns=new JSONArray(),addresses=new JSONArray();if(link!=null){for(java.net.InetAddress address:link.getDnsServers())dns.put(address.getHostAddress());for(LinkAddress address:link.getLinkAddresses())addresses.put(address.toString());}state.put("dns",dns);state.put("addresses",addresses);
