@@ -26,6 +26,12 @@ compatible with local Quest execution.
 
 ## Use Touch controllers as a gamepad
 
+For a physical Bluetooth gamepad, pair and connect it in **Horizon Settings →
+Bluetooth**, then return to Stearlight. Steam's VR-controller **Pair** dialog
+does not pair Android gamepads. The connected physical controller is forwarded
+to Steam and supported local SDL2 games automatically; the Touch-specific
+gamepad button is not needed. One physical gamepad is supported at a time.
+
 Launch a game and select **gamepad input** on its window. Both Touch controllers
 must be awake. Gamepad mode and laser interaction are separate input modes.
 

@@ -1,6 +1,7 @@
 // SDL2 gamepad input for unprivileged local games. No kernel input device or
 // background worker is needed. SteamVR owns the per-hand gamepad-mode gates.
 #include "gamepad_state.h"
+#include "external-gamepad-reader.h"
 #include <dlfcn.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -35,6 +36,7 @@ struct API {
  int(*dynapi)(uint32_t,void*,uint32_t)=nullptr;
 } api;
 const QuestGamepadState* shared=nullptr;void* joystick=nullptr;
+ExternalGamepadReader external;
 thread_local bool busy=false;
 thread_local int frameInterval=0;
 thread_local uint64_t previousFrame=0;
@@ -66,13 +68,17 @@ bool map(){
 }
 void feed(){
  if(const char* enabled=getenv("STEARLIGHT_STEAM_INPUT");enabled&&!strcmp(enabled,"0"))return;
- if(busy||!api.attach||!api.open||!api.axis||!api.button||!map())return;
+ if(busy||!api.attach||!api.open||!api.axis||!api.button)return;
+ timespec now{};clock_gettime(CLOCK_MONOTONIC,&now);
+ uint64_t ns=uint64_t(now.tv_sec)*1000000000+now.tv_nsec;
+ QuestExternalGamepad physical{};bool physicalActive=external.read(physical,ns);
+ if(!physicalActive&&!map())return;
  busy=true;
  if(!joystick){int index=api.attach(1,6,15,0);if(index>=0){joystick=api.open(index);if(joystick){const char message[]="Quest SDL gamepad attached\n";[[maybe_unused]] auto written=write(STDERR_FILENO,message,sizeof(message)-1);}}}
  if(joystick){
-  QuestGamepadState value;timespec now{};clock_gettime(CLOCK_MONOTONIC,&now);
-  uint64_t ns=uint64_t(now.tv_sec)*1000000000+now.tv_nsec;
-  if(!quest::readGamepad(shared,value)||ns<value.monotonic_ns||ns-value.monotonic_ns>500000000)value=QuestGamepadState{};
+  QuestGamepadState value;
+  if(physicalActive)value=physical.input;
+  else if(!shared||!quest::readGamepad(shared,value)||ns<value.monotonic_ns||ns-value.monotonic_ns>500000000)value=QuestGamepadState{};
   for(int i=0;i<6;i++){
    float axis=std::isfinite(value.axes[i])?std::clamp(value.axes[i],-1.f,1.f):(i>=4?-1.f:0.f);
    api.axis(joystick,i,static_cast<int16_t>(axis<0?axis*32768:axis*32767));

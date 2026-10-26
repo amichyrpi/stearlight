@@ -222,6 +222,7 @@ int main(int argc, char** argv) {
     bool dashboardRequested = false, dashboardReady = false, steamRequested = false;
     bool failed = false, desktopShown = false, desktopWasActive = false, remoteMode = false;
     std::string previousCameraStyle;
+    std::chrono::steady_clock::time_point cameraPollAt{};
     while (!stopping) {
         std::ifstream desktopRequest("/run/stearlight/quest/desktop-mode.active");
         std::string desktopKind;std::getline(desktopRequest,desktopKind);
@@ -245,34 +246,42 @@ int main(int argc, char** argv) {
         share.poll();
         bool desktopAudioReady=desktopKind.empty() || access("/run/stearlight/quest/local-vr-audio.paused",F_OK)==0;
         if (!session.poll(desktopAudioReady) || quest_watch_step() < 0) { failed = true; break; }
-        vr::EVRSettingsError settingError;
-        auto cameraValue=[&](const char* name,float fallback){vr::EVRSettingsError error;float value=settings->GetFloat("camera",name,&error);return error==vr::VRSettingsError_None?value:fallback;};
-        auto cameraInteger=[&](const char* name,int fallback){vr::EVRSettingsError error;int value=settings->GetInt32("camera",name,&error);return error==vr::VRSettingsError_None?value:fallback;};
-        std::ostringstream cameraStyle;
-        cameraStyle<<1<<' '<<cameraInteger("roomViewStyle",0)<<' '<<cameraValue("monochromeTintHue",.67f)<<' '
-                   <<cameraInteger("cameraBoundsColorGammaR",0)/255.f<<' '<<cameraInteger("cameraBoundsColorGammaG",255)/255.f<<' '
-                   <<cameraInteger("cameraBoundsColorGammaB",255)/255.f<<' '<<cameraInteger("cameraBoundsColorGammaA",153)/255.f<<' '
-                   <<cameraInteger("cameraBoundsStrength",78)/100.f;
-        if(cameraStyle.str()!=previousCameraStyle){
-            const char* next="/run/stearlight/quest/passthrough-style.tsv.next";
-            std::ofstream file(next);file<<cameraStyle.str()<<'\n';file.close();
-            if(file&&rename(next,"/run/stearlight/quest/passthrough-style.tsv")==0)previousCameraStyle=cameraStyle.str();
-        }
-        bool requested = settings->GetBool("stearlight_quest", "passthrough_enabled", &settingError);
-        if (settingError == vr::VRSettingsError_None && requested != passthroughRequested) {
-            if (requested && access("/run/stearlight/quest/passthrough.supported", F_OK) == 0) {
-                if (FILE* marker = std::fopen(passthrough, "w")) std::fclose(marker);
-            } else unlink(passthrough);
-            passthroughRequested = requested;
-            std::printf("QUEST_NATIVE_ROOMVIEW_REQUESTED %d\n", requested);
-            std::fflush(stdout);
-        }
         vr::VREvent_t event;
         while (system->PollNextEvent(&event, sizeof(event))) {
             if (event.eventType == vr::VREvent_ProcessConnected) quest_request_loading_boost();
+            if (event.eventType == vr::VREvent_CameraSettingsHaveChanged ||
+                event.eventType == vr::VREvent_OtherSectionSettingChanged) cameraPollAt = {};
             if (event.eventType == vr::VREvent_Quit) {
                 system->AcknowledgeQuit_Exiting();
                 stopping = 1;
+            }
+        }
+        // Settings events retain the existing 200 ms response to camera/UI
+        // changes. A one-second fallback also covers clients without events.
+        auto now = std::chrono::steady_clock::now();
+        if (now >= cameraPollAt) {
+            cameraPollAt = now + std::chrono::seconds(1);
+            vr::EVRSettingsError settingError;
+            auto cameraValue=[&](const char* name,float fallback){vr::EVRSettingsError error;float value=settings->GetFloat("camera",name,&error);return error==vr::VRSettingsError_None?value:fallback;};
+            auto cameraInteger=[&](const char* name,int fallback){vr::EVRSettingsError error;int value=settings->GetInt32("camera",name,&error);return error==vr::VRSettingsError_None?value:fallback;};
+            std::ostringstream cameraStyle;
+            cameraStyle<<1<<' '<<cameraInteger("roomViewStyle",0)<<' '<<cameraValue("monochromeTintHue",.67f)<<' '
+                       <<cameraInteger("cameraBoundsColorGammaR",0)/255.f<<' '<<cameraInteger("cameraBoundsColorGammaG",255)/255.f<<' '
+                       <<cameraInteger("cameraBoundsColorGammaB",255)/255.f<<' '<<cameraInteger("cameraBoundsColorGammaA",153)/255.f<<' '
+                       <<cameraInteger("cameraBoundsStrength",78)/100.f;
+            if(cameraStyle.str()!=previousCameraStyle){
+                const char* next="/run/stearlight/quest/passthrough-style.tsv.next";
+                std::ofstream file(next);file<<cameraStyle.str()<<'\n';file.close();
+                if(file&&rename(next,"/run/stearlight/quest/passthrough-style.tsv")==0)previousCameraStyle=cameraStyle.str();
+            }
+            bool requested = settings->GetBool("stearlight_quest", "passthrough_enabled", &settingError);
+            if (settingError == vr::VRSettingsError_None && requested != passthroughRequested) {
+                if (requested && access("/run/stearlight/quest/passthrough.supported", F_OK) == 0) {
+                    if (FILE* marker = std::fopen(passthrough, "w")) std::fclose(marker);
+                } else unlink(passthrough);
+                passthroughRequested = requested;
+                std::printf("QUEST_NATIVE_ROOMVIEW_REQUESTED %d\n", requested);
+                std::fflush(stdout);
             }
         }
         vr::VROverlayHandle_t overlay;
@@ -293,7 +302,10 @@ int main(int argc, char** argv) {
         }
         vr::VROverlayHandle_t steamOverlay;
         bool steamAvailable = false;
-        if (overlays && overlays->FindOverlay("valve.steam.gamepadui.main", &steamOverlay) == vr::VROverlayError_None) {
+        // Texture readiness is a startup/desktop-return check. Repeating its
+        // OpenVR calls throughout gameplay needlessly allocates IPC messages.
+        bool needSteamTexture = !dashboardReady || (!desktopMode && !steamRequested && dashboardRequested);
+        if (needSteamTexture && overlays && overlays->FindOverlay("valve.steam.gamepadui.main", &steamOverlay) == vr::VROverlayError_None) {
             uint32_t width = 0, height = 0;
             bool hasTexture = overlays->GetOverlayTextureSize(steamOverlay, &width, &height) == vr::VROverlayError_None && width && height;
             if (!desktopMode && !steamRequested && dashboardRequested && hasTexture) {
@@ -304,12 +316,12 @@ int main(int argc, char** argv) {
             }
             vr::VROverlayHandle_t bar;
             uint32_t barWidth = 0, barHeight = 0;
-            steamAvailable = hasTexture &&
+            steamAvailable = !dashboardReady && hasTexture &&
                 overlays->FindOverlay("valve.steam.gamepadui.bar", &bar) == vr::VROverlayError_None &&
                 overlays->GetOverlayTextureSize(bar, &barWidth, &barHeight) == vr::VROverlayError_None &&
                 barWidth && barHeight;
         }
-        if (overlays && overlays->FindOverlay("system.systemui", &overlay) == vr::VROverlayError_None) {
+        if (!dashboardReady && overlays && overlays->FindOverlay("system.systemui", &overlay) == vr::VROverlayError_None) {
             if (!dashboardRequested) {
                 overlays->ShowDashboard("");
                 dashboardRequested = true;

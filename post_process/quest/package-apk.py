@@ -28,7 +28,7 @@ def verify(apk):
                      'assets/quest-dependencies.json', 'lib/arm64-v8a/libstearlight_quest.so',
                      'lib/arm64-v8a/libopenxr_loader.so', 'lib/arm64-v8a/libproot_exec.so',
                      'lib/arm64-v8a/libproot_loader.so', 'lib/arm64-v8a/libtalloc.so',
-                     'lib/arm64-v8a/libandroid-shmem.so'):
+                     'lib/arm64-v8a/libandroid-shmem.so', 'lib/arm64-v8a/libquest_audio_loader.so'):
             if archive.getinfo(name).file_size == 0:
                 raise ValueError('Empty APK entry: ' + name)
         if b'PROOT_QUEST_ROBUST' not in archive.read('lib/arm64-v8a/libproot_exec.so'):
@@ -55,9 +55,15 @@ def verify(apk):
         if digest.hexdigest() != archive.read('assets/rootfs.sha256').decode('ascii').strip():
             raise ValueError('Rootfs content SHA-256 mismatch')
         required = {
+            'opt/frame-gamescope/bin/mangoapp',
+            'opt/quest/libquest_mango_sensors.so',
             'opt/quest/start-session.sh', 'opt/quest/runtime-monitor', 'opt/quest/libquest_vulkan.so',
             'opt/quest/libquest_socket.so', 'opt/quest/libquest_video.so', 'opt/quest/libquest_streaming_drm.so',
             'opt/quest/libquest_gamepad_aarch64.so', 'opt/quest/libquest_gamepad_x86_64.so',
+            'opt/quest/libquest_audio_identity.so',
+            'opt/quest/libquest_android_gamepad.so',
+            'opt/quest/frame_menus.py', 'opt/quest/frame-menu-bridge.js', 'opt/quest/gamescope-perf.py',
+            'opt/quest/desktop-windows.js', 'opt/quest/desktop-run-app.sh',
             'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python',
             'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so',
             # The pinned Python 2 SDK ships optimized bytecode; Python 3 uses pyc.
@@ -69,6 +75,7 @@ def verify(apk):
             'opt/quest/renpy/8.0.3/LICENSE.txt',
             'opt/quest/fna3d/libFNA3D.so.0', 'opt/quest/prepare-flatpak.py',
             'opt/quest/prepare-steam-input.py', 'opt/quest/game-launch-wrapper',
+            'opt/quest/prepare-steam-integrity.py',
             'opt/quest/prepare-fex.py',
             'opt/quest/prepare-game-runtime.sh',
             'opt/quest/stearlight-quest/bin/linuxarm64/driver_stearlight-quest.so',

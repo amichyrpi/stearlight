@@ -48,7 +48,22 @@ static struct usb_state usb_state(const char* registry){
  return cached;
 }
 static int usb_socket(int fd,const struct sockaddr *address,socklen_t length) {
+ struct sockaddr_storage peer;
+ // Connected datagrams omit msg_name. Recheck their route after USB is
+ // recreated instead of keeping the descriptor pinned to a dead Android netId.
+ if(!address&&atomic_load(&usb_bound[(unsigned)fd%1024])){
+  length=sizeof(peer);
+  if(!syscall(SYS_getpeername,fd,&peer,&length))address=(const struct sockaddr*)&peer;
+ }
  if(!address||length<sizeof(sa_family_t)||(address->sa_family!=AF_INET&&address->sa_family!=AF_INET6))return 0;
+ struct sockaddr_in mapped={.sin_family=AF_INET};
+ if(address->sa_family==AF_INET6&&length>=sizeof(struct sockaddr_in6)){
+  const struct sockaddr_in6* target=(const struct sockaddr_in6*)address;
+  if(IN6_IS_ADDR_V4MAPPED(&target->sin6_addr)){
+   memcpy(&mapped.sin_addr,&target->sin6_addr.s6_addr[12],sizeof(mapped.sin_addr));
+   mapped.sin_port=target->sin6_port;address=(const struct sockaddr*)&mapped;length=sizeof(mapped);
+  }
+ }
  const char* registry=getenv("QUEST_SOCKET_REGISTRY");if(!registry)return 0;
  struct usb_state state=usb_state(registry);int use_usb=0;
  if(address->sa_family==AF_INET&&length>=sizeof(struct sockaddr_in)&&state.address){
@@ -123,6 +138,37 @@ static void report(int fd) {
  typedef int (*function) arguments; static _Atomic(function) cached; \
  function real=atomic_load(&cached); \
  if(!real){real=(function)dlsym(RTLD_NEXT,name);if(!real){errno=ENOSYS;return -1;}atomic_store(&cached,real);}
+/* recvmmsg is not path-translated by PRoot. Use its one-message, cancellable
+ * libc entry point for Internet datagrams: their peer addresses contain no
+ * guest filesystem paths. Unix sockets, synthetic netlink devices and streams
+ * keep their original libc calls.
+ * The player opts in; this does not change the parent's syscall policy. */
+static int stream_datagram(int fd){
+ const char* enabled=getenv("QUEST_STREAM_SOCKET_BATCH");if(!enabled||strcmp(enabled,"1"))return 0;
+ int domain=0,type=0;socklen_t size=sizeof(domain);
+ if(getsockopt(fd,SOL_SOCKET,SO_DOMAIN,&domain,&size)||(domain!=AF_INET&&domain!=AF_INET6))return 0;
+ size=sizeof(type);return !getsockopt(fd,SOL_SOCKET,SO_TYPE,&type,&size)&&type==SOCK_DGRAM;
+}
+static ssize_t stream_receive(int fd,void* data,size_t length,int flags,struct sockaddr* address,socklen_t* size){
+ typedef int (*function)(int,struct mmsghdr*,unsigned,int,struct timespec*);static _Atomic(function) cached;
+ function real=atomic_load(&cached);if(!real){real=(function)dlsym(RTLD_NEXT,"recvmmsg");if(!real){errno=ENOSYS;return -1;}atomic_store(&cached,real);}
+ struct iovec io={.iov_base=data,.iov_len=length};struct mmsghdr message={.msg_hdr={.msg_name=address,.msg_namelen=address?*size:0,.msg_iov=&io,.msg_iovlen=1}};
+ int result=real(fd,&message,1,flags,NULL);
+ if(result>0&&address)*size=message.msg_hdr.msg_namelen;
+ static _Atomic int reported;
+ if(result>0&&!atomic_exchange(&reported,1))fputs("Quest streaming: native datagram receive active\n",stderr);
+ return result>0?(ssize_t)message.msg_len:result;
+}
+ssize_t recv(int fd,void* data,size_t length,int flags){
+ RESOLVE("recv",(int,void*,size_t,int));
+ if(stream_datagram(fd))return stream_receive(fd,data,length,flags,NULL,NULL);
+ return real(fd,data,length,flags);
+}
+ssize_t recvfrom(int fd,void* data,size_t length,int flags,struct sockaddr* address,socklen_t* size){
+ RESOLVE("recvfrom",(int,void*,size_t,int,struct sockaddr*,socklen_t*));
+ if((!address||size)&&stream_datagram(fd))return stream_receive(fd,data,length,flags,address,size);
+ return real(fd,data,length,flags,address,size);
+}
 int bind(int fd,const struct sockaddr *a,socklen_t size) {
  RESOLVE("bind",(int,const struct sockaddr*,socklen_t));
  if(usb_socket(fd,a,size))return -1;
@@ -132,6 +178,12 @@ int connect(int fd,const struct sockaddr *a,socklen_t size) {
  RESOLVE("connect",(int,const struct sockaddr*,socklen_t));
  if(usb_socket(fd,a,size))return -1;
  int result=real(fd,a,size);if(!result||errno==EINPROGRESS)report(fd);return result;
+}
+ssize_t send(int fd,const void* data,size_t length,int flags){
+ typedef ssize_t (*function)(int,const void*,size_t,int);static _Atomic(function) cached;
+ function real=atomic_load(&cached);if(!real){real=(function)dlsym(RTLD_NEXT,"send");if(!real){errno=ENOSYS;return -1;}atomic_store(&cached,real);}
+ if(usb_socket(fd,NULL,0))return -1;
+ return real(fd,data,length,flags);
 }
 ssize_t sendto(int fd,const void* data,size_t length,int flags,const struct sockaddr* address,socklen_t size){
  typedef ssize_t (*function)(int,const void*,size_t,int,const struct sockaddr*,socklen_t);static _Atomic(function) cached;
@@ -144,6 +196,31 @@ ssize_t sendmsg(int fd,const struct msghdr* message,int flags){
  function real=atomic_load(&cached);if(!real){real=(function)dlsym(RTLD_NEXT,"sendmsg");if(!real){errno=ENOSYS;return -1;}atomic_store(&cached,real);}
  if(message&&usb_socket(fd,(const struct sockaddr*)message->msg_name,message->msg_namelen))return -1;
  return real(fd,message,flags);
+}
+int sendmmsg(int fd,struct mmsghdr* messages,unsigned count,int flags){
+ typedef int (*function)(int,struct mmsghdr*,unsigned,int);static _Atomic(function) cached;
+ function real=atomic_load(&cached);if(!real){real=(function)dlsym(RTLD_NEXT,"sendmmsg");if(!real){errno=ENOSYS;return -1;}atomic_store(&cached,real);}
+ if(!messages||!count||!getenv("QUEST_SOCKET_REGISTRY"))return real(fd,messages,count,flags);
+ // Usually all packets in a batch share a peer. Preserve that batching, but
+ // never send a mixed USB/Wi-Fi batch with the previous socket's network mark.
+ unsigned done=0;
+ while(done<count){
+  const struct msghdr* first=&messages[done].msg_hdr;
+  if(usb_socket(fd,(const struct sockaddr*)first->msg_name,first->msg_namelen))return done?(int)done:-1;
+  unsigned end=done+1;
+  while(end<count){
+   const struct msghdr* next=&messages[end].msg_hdr;
+   if(first->msg_namelen>sizeof(struct sockaddr_storage)||first->msg_namelen!=next->msg_namelen||
+      (first->msg_namelen&&(!first->msg_name||!next->msg_name||memcmp(first->msg_name,next->msg_name,first->msg_namelen))))break;
+   ++end;
+  }
+  unsigned batch=end-done;
+  int result=real(fd,messages+done,batch,flags);
+  if(result<=0)return done?(int)done:result;
+  done+=(unsigned)result;
+  if((unsigned)result<batch)break;
+ }
+ return (int)done;
 }
 int listen(int fd,int backlog) {
  RESOLVE("listen",(int,int));

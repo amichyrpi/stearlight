@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import secrets
 import sys
+from frame_menus import enable_performance_tab
 
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('/opt/steam')
 state = Path('/home/stearlight/.local/state/stearlight-desktop')
@@ -23,7 +24,10 @@ if library is None:
 data = library.read_bytes()
 if data.startswith(begin):
     data = data.split(end, 1)[1]
-bridge = Path('/opt/quest/desktop-ui-bridge.js').read_text().replace('__STEARLIGHT_DESKTOP_TOKEN__', json.dumps(token.read_text().strip())).encode()
+data = enable_performance_tab(data.decode()).encode()
+bridge = '\n'.join(Path('/opt/quest', name).read_text() for name in
+                   ('desktop-ui-bridge.js', 'frame-menu-bridge.js'))
+bridge = bridge.replace('__STEARLIGHT_DESKTOP_TOKEN__', json.dumps(token.read_text().strip())).encode()
 temporary = library.with_suffix('.desktop-next')
 temporary.write_bytes(begin + bridge + b'\n' + end + data)
 temporary.chmod(library.stat().st_mode & 0o777)

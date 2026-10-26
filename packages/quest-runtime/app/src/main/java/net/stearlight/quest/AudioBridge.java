@@ -102,14 +102,15 @@ final class AudioBridge implements AutoCloseable {
        int minimum=AudioTrack.getMinBufferSize(RATE,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_16BIT);
        if(minimum<=0)throw new IOException("Speaker buffer: "+minimum);
        int frames=Math.max(RATE/25,(minimum+FRAME_BYTES-1)/FRAME_BYTES);
-       int capacity=Math.max(frames,RATE*80/1000);
+       int capacity=Math.max(frames,RATE*160/1000);
        track=new AudioTrack.Builder().setAudioAttributes(attributes())
         .setAudioFormat(new AudioFormat.Builder().setSampleRate(RATE).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
         .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(capacity*FRAME_BYTES).setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY).build();
        if(track.getState()!=AudioTrack.STATE_INITIALIZED)throw new IOException("Speaker initialization failed");
        if(track.setBufferSizeInFrames(frames)<0)throw new IOException("Speaker buffer configuration failed");
        if(android.os.Build.VERSION.SDK_INT>=31)track.setStartThresholdInFrames(track.getBufferSizeInFrames());
-       playback=new PcmQueue(RATE*60/1000*FRAME_BYTES,FRAME_BYTES);
+       // Capacity absorbs catch-up bursts; it is not a prebuffering target.
+       playback=new PcmQueue(RATE*160/1000*FRAME_BYTES,FRAME_BYTES,CHUNK_FRAMES);
       }
       final PcmQueue queue=playback;
       maxReadGapNs=0;
@@ -118,7 +119,8 @@ final class AudioBridge implements AutoCloseable {
       reader=new Thread(()->readSpeakers(connection,queue),"Quest PCM receiver");reader.start();
       Log.i(TAG,"Quest speakers connected: stereo 48000 Hz, buffer="+track.getBufferSizeInFrames()+" frames");
       byte[] pcm=new byte[CHUNK_FRAMES*FRAME_BYTES];
-      int underruns=track.getUnderrunCount();boolean playing=false;
+      int underruns=track.getUnderrunCount(),reportedUnderruns=underruns;
+      int baseFrames=track.getBufferSizeInFrames();boolean playing=false;
       long report=System.nanoTime();
       while(!cancelled){
        queue.take(pcm);int offset=0;
@@ -134,14 +136,23 @@ final class AudioBridge implements AutoCloseable {
        }
        int current=track.getUnderrunCount();
        if(current>underruns){
-        // Add one 5 ms burst of scheduling headroom, with an 80 ms ceiling.
-        int frames=Math.min(track.getBufferCapacityInFrames(),track.getBufferSizeInFrames()+CHUNK_FRAMES);
+        // Match measured producer jitter after an underrun. Growing by only
+        // 5 ms repeatedly empties the track during the same long sound.
+        long gapFrames=(maxReadGapNs*RATE+999_999_999L)/1_000_000_000L;
+        int requested=(int)Math.min(Integer.MAX_VALUE,gapFrames+2*CHUNK_FRAMES);
+        int frames=Math.min(track.getBufferCapacityInFrames(),Math.max(requested,track.getBufferSizeInFrames()+CHUNK_FRAMES));
         track.setBufferSizeInFrames(frames);underruns=current;
        }
        long now=System.nanoTime();
        if(now-report>=30_000_000_000L){
+        if(current==reportedUnderruns){
+         // Release launch-time headroom once delivery settles. Resizing a
+         // running track preserves its queued samples; never flush to catch up.
+         int target=Math.max(baseFrames,(int)Math.min(track.getBufferCapacityInFrames(),(maxReadGapNs*RATE+999_999_999L)/1_000_000_000L+2*CHUNK_FRAMES));
+         if(target<track.getBufferSizeInFrames())track.setBufferSizeInFrames(target);
+        }
         Log.i(TAG,"Playback: underruns="+current+" buffer_frames="+track.getBufferSizeInFrames()+" queued_frames="+queue.queuedFrames()+" dropped_frames="+queue.droppedFrames()+" max_read_gap_ms="+maxReadGapNs/1_000_000);
-        report=now;maxReadGapNs=0;
+        report=now;maxReadGapNs=0;reportedUnderruns=current;
        }
       }
      }

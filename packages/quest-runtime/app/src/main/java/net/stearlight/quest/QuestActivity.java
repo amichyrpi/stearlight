@@ -27,17 +27,26 @@ public final class QuestActivity extends NativeActivity {
  private volatile java.lang.Process linux;
  private volatile boolean closing;
  private final AtomicBoolean starting=new AtomicBoolean();
- private volatile int batteryPercent=-1, batteryStatus=BatteryManager.BATTERY_STATUS_UNKNOWN, batteryPlugged, batteryVoltage, batteryTemperature;
- private volatile boolean charging;
+ private volatile BatterySnapshot battery=new BatterySnapshot();
  private BluetoothBridge bluetoothBridge;
  private AudioBridge audioBridge;
+ private final NativeAudioServer audioServer=new NativeAudioServer();
  private NetworkBridge networkBridge;
  private UsbNetworkBridge usbNetworkBridge;
  private DesktopAppBridge desktopAppBridge;
  private ClockBridge clockBridge;
  native void setUsbNetwork(long handle);
  native int networkInterfaceIndex(String name);
- private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){int level=intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),scale=intent.getIntExtra(BatteryManager.EXTRA_SCALE,100);batteryPercent=level<0?-1:Math.round(level*100f/Math.max(1,scale));batteryStatus=intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN);charging=batteryStatus==BatteryManager.BATTERY_STATUS_CHARGING||batteryStatus==BatteryManager.BATTERY_STATUS_FULL;batteryPlugged=intent.getIntExtra(BatteryManager.EXTRA_PLUGGED,0);batteryVoltage=intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE,0);batteryTemperature=intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,0);}};
+ private synchronized void receiveBattery(Intent intent){
+  battery=battery.update(intent.getIntExtra(BatteryManager.EXTRA_LEVEL,-1),intent.getIntExtra(BatteryManager.EXTRA_SCALE,0),
+    intent.getIntExtra(BatteryManager.EXTRA_STATUS,BatteryManager.BATTERY_STATUS_UNKNOWN),intent.getIntExtra(BatteryManager.EXTRA_PLUGGED,0),
+    intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE,0),intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE,0),SystemClock.elapsedRealtime());
+ }
+ private synchronized BatterySnapshot batterySnapshot(BatteryManager manager){
+  if(manager!=null)battery=battery.capacity(manager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY),SystemClock.elapsedRealtime());
+  return battery;
+ }
+ private final BroadcastReceiver batteryReceiver=new BroadcastReceiver(){public void onReceive(Context context,Intent intent){receiveBattery(intent);}};
  @Override public void onCreate(Bundle state){
   new File(getStateDirectory(),"dashboard.ready").delete();
   new File(getStateDirectory(),"gpu-capture.request").delete();
@@ -61,8 +70,8 @@ public final class QuestActivity extends NativeActivity {
  @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);requestLinux();}
  private void requestLinux(){if(!closing&&(linux==null||!linux.isAlive())&&starting.compareAndSet(false,true))workers.execute(()->{try{startLinux();}finally{starting.set(false);}});}
  public String getStateDirectory(){File state=new File(getFilesDir(),"state");state.mkdirs();return state.toString();}
- @Override public void onResume(){super.onResume();if(audioBridge!=null)audioBridge.setResumed(true);if(usbNetworkBridge!=null)usbNetworkBridge.resumed(true);requestLinux();}
- @Override public void onPause(){if(audioBridge!=null)audioBridge.setResumed(false);if(usbNetworkBridge!=null)usbNetworkBridge.resumed(false);super.onPause();}
+ @Override public void onResume(){super.onResume();if(audioBridge!=null)audioBridge.setResumed(true);if(networkBridge!=null)networkBridge.resumed(true);if(usbNetworkBridge!=null)usbNetworkBridge.resumed(true);requestLinux();}
+ @Override public void onPause(){if(audioBridge!=null)audioBridge.setResumed(false);if(networkBridge!=null)networkBridge.resumed(false);if(usbNetworkBridge!=null)usbNetworkBridge.resumed(false);super.onPause();}
  public void onXrAudioFocus(boolean focused){runOnUiThread(()->{if(!closing&&audioBridge!=null)audioBridge.setXrFocused(focused);});}
  @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(audioBridge!=null)audioBridge.permissionsChanged();}
  private BootAnimation bootAnimation;
@@ -74,9 +83,10 @@ public final class QuestActivity extends NativeActivity {
   if(closing)return;
   syncClock();
   try {
-   JSONObject state=new JSONObject();state.put("battery_percent",batteryPercent);state.put("charging",charging);
-   state.put("battery_status",batteryStatus);state.put("battery_plugged",batteryPlugged);state.put("battery_voltage_mv",batteryVoltage);state.put("battery_temperature_tenths_c",batteryTemperature);
-   BatteryManager power=(BatteryManager)getSystemService(BATTERY_SERVICE);state.put("battery_charge_time_ms",power==null?-1:power.computeChargeTimeRemaining());
+   BatteryManager power=(BatteryManager)getSystemService(BATTERY_SERVICE);BatterySnapshot sample=batterySnapshot(power);
+   JSONObject state=new JSONObject();state.put("battery_percent",sample.percent);state.put("charging",sample.charging());
+   state.put("battery_status",sample.status);state.put("battery_plugged",sample.plugged);state.put("battery_voltage_mv",sample.voltage);state.put("battery_temperature_tenths_c",sample.temperature);
+   state.put("battery_charge_time_ms",power==null?-1:power.computeChargeTimeRemaining());
    ConnectivityManager cm=(ConnectivityManager)getSystemService(CONNECTIVITY_SERVICE);Network network=cm.getActiveNetwork();NetworkCapabilities caps=cm.getNetworkCapabilities(network);LinkProperties link=cm.getLinkProperties(network);
    state.put("connected",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET));state.put("validated",caps!=null&&caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED));state.put("wifi",caps!=null&&caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI));
    JSONArray dns=new JSONArray(),addresses=new JSONArray();if(link!=null){for(java.net.InetAddress address:link.getDnsServers())dns.put(address.getHostAddress());for(LinkAddress address:link.getLinkAddresses())addresses.put(address.toString());}state.put("dns",dns);state.put("addresses",addresses);
@@ -95,7 +105,7 @@ public final class QuestActivity extends NativeActivity {
    FileLock lock=null;
    while(!closing&&lock==null){try{lock=channel.tryLock();}catch(OverlappingFileLockException busy){}if(lock==null)Thread.sleep(50);}
    if(lock==null)return;
-   try{runLinux();}finally{stopLinux();stopSocketRegistry();lock.release();}
+   try{runLinux();}finally{stopLinux();audioServer.close();stopSocketRegistry();lock.release();}
   }catch(Exception error){if(!closing)Log.e("StearlightQuest","Linux session failed",error);}
  }
  private void stopLinux(){
@@ -167,9 +177,13 @@ public final class QuestActivity extends NativeActivity {
    args.addAll(0,Arrays.asList("/system/bin/sh","-c","printf '%s\\n' \"$$\" > \"$1\" || exit; shift; exec \"$@\"","stearlight-linux",pidFile.toString()));
    ProcessBuilder builder=new ProcessBuilder(args);Map<String,String> env=builder.environment();env.put("LD_LIBRARY_PATH",nativeDir);env.put("PROOT_LOADER",nativeDir+"/libproot_loader.so");env.put("PROOT_TMP_DIR",tmp.toString());env.remove("PROOT_NO_SECCOMP");env.put("PROOT_QUEST_ROBUST","1");env.put("TMPDIR","/tmp");env.put("HOME","/home/stearlight");env.put("USER","stearlight");env.put("LOGNAME","stearlight");env.put("PATH","/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");env.put("GLIBC_TUNABLES","glibc.pthread.rseq=0");
    builder.redirectErrorStream(true);builder.redirectOutput(new File(logs,"linux.log"));
+   env.put("QUEST_NATIVE_PULSE","1");
    while(!closing){
     status("Starting Stearlight OS");if(closing)return;
-    linux=builder.start();int result=linux.waitFor();if(closing)return;
+    int result;
+    try{audioServer.start(root,tmp,new File(getStateDirectory()),logs,new File(nativeDir,"libquest_audio_loader.so"));if(closing)return;linux=builder.start();result=linux.waitFor();}
+    finally{audioServer.close();}
+    if(closing)return;
     // Only the Remote Desktop return asks for a fresh Linux/SteamVR session.
     // PRoot's kill-on-exit has already stopped its owned service processes.
     if(result!=75){status(result==78?"Linux IPC verification failed":"Stearlight stopped ("+result+")");break;}
@@ -182,5 +196,5 @@ public final class QuestActivity extends NativeActivity {
  private InputStream rootfsStream()throws IOException {List<InputStream> parts=new ArrayList<>();try(BufferedReader list=new BufferedReader(new InputStreamReader(getAssets().open("rootfs.list"),StandardCharsets.US_ASCII))){String name;while((name=list.readLine())!=null){if(!name.matches("rootfs/part-[0-9]{3}\\.bin"))throw new IOException("Invalid rootfs part name");parts.add(getAssets().open(name));}}catch(IOException error){for(InputStream part:parts)part.close();throw error;}if(parts.isEmpty())throw new IOException("Empty rootfs payload");return new SequenceInputStream(Collections.enumeration(parts));}
  private void removeIncomplete(File path)throws IOException {removeTree(path,new File(getFilesDir(),"rootfs-install"));}
  private void removeTree(File path,File base)throws IOException {String target=path.getAbsolutePath();if(!target.equals(base.getAbsolutePath())&&!target.startsWith(base.getAbsolutePath()+File.separator))throw new IOException("Invalid runtime cleanup path");if(java.nio.file.Files.isSymbolicLink(path.toPath())){java.nio.file.Files.delete(path.toPath());return;}if(path.isDirectory()){File[] entries=path.listFiles();if(entries==null)throw new IOException("Cannot read runtime directory");for(File entry:entries)removeTree(entry,base);}if(path.exists()&&!path.delete())throw new IOException("Cannot remove runtime directory");}
- @Override public void onDestroy(){closing=true;if(desktopAppBridge!=null)desktopAppBridge.close();if(usbNetworkBridge!=null)usbNetworkBridge.close();if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);killLinux();workers.shutdownNow();super.onDestroy();}
+ @Override public void onDestroy(){closing=true;if(networkBridge!=null)networkBridge.resumed(false);if(desktopAppBridge!=null)desktopAppBridge.close();if(usbNetworkBridge!=null)usbNetworkBridge.close();if(audioBridge!=null)audioBridge.close();if(bluetoothBridge!=null)bluetoothBridge.close();unregisterReceiver(batteryReceiver);killLinux();workers.shutdownNow();super.onDestroy();}
 }

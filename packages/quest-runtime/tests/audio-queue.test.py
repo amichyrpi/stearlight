@@ -35,6 +35,15 @@ public class AudioQueueTest {
   byte[] result=new byte[count*4];q.take(result);
   if(!Arrays.equals(result,frames(start,count)))throw new AssertionError("stale or misaligned PCM");
  }
+ static byte[] tone(int value,int count){
+  byte[] result=new byte[count*4];
+  for(int i=0;i<count;i++){
+   result[i*4]=(byte)value;result[i*4+1]=(byte)(value>>8);
+   result[i*4+2]=(byte)-value;result[i*4+3]=(byte)(-value>>8);
+  }
+  return result;
+ }
+ static int sample(byte[] data,int offset){return (short)((data[offset]&255)|(data[offset+1]<<8));}
  public static void main(String[] args)throws Exception {
   final PcmQueue q=new PcmQueue(24,4);
   q.put(frames(1,4),16);expect(q,1,3); // Force ring wrap.
@@ -64,6 +73,19 @@ public class AudioQueueTest {
   PcmQueue closed=new PcmQueue(16,4);closed.put(frames(1,4),16);closed.close(new IOException("disconnected"));
   try{expect(closed,1,4);throw new AssertionError("played stale frames after disconnect");}
   catch(IOException expected){}
+  // Opposite waveform phases must not produce a full-scale click when a
+  // scheduling stall forces a skip. Preserve stereo and continue across takes.
+  PcmQueue smooth=new PcmQueue(16,4,4);
+  smooth.put(tone(10000,4),16);byte[] warm=new byte[16];smooth.take(warm);
+  if(!Arrays.equals(warm,tone(10000,4)))throw new AssertionError("ordinary audio changed");
+  smooth.put(tone(10000,4),16);smooth.put(tone(-10000,4),16);
+  byte[] first=new byte[4],rest=new byte[12];smooth.take(first);smooth.take(rest);
+  if(sample(first,0)!=5000||sample(first,2)!=-5000)throw new AssertionError("hard PCM boundary");
+  for(int i=0;i<3;i++){
+   int expected=-5000*i;
+   if(sample(rest,i*4)!=expected||sample(rest,i*4+2)!=-expected)throw new AssertionError("fade lost stereo or phase");
+  }
+  if(smooth.droppedFrames()!=4||smooth.queuedFrames()!=0)throw new AssertionError("recovery grew backlog");
  }
 }''')
             subprocess.run([javac, '-d', str(root), *map(str, package.glob('*.java'))], check=True)

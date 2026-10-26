@@ -1,0 +1,51 @@
+"""Keep physical input in Steam across repeated runtime preparation."""
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+class SteamGamepadLaunchTest(unittest.TestCase):
+    def test_preparation_is_idempotent_and_preserves_steam_command(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'steam'
+            quest = Path(folder) / 'quest'
+            (root / 'steamrtarm64').mkdir(parents=True)
+            quest.mkdir()
+            for name in ('steamwebhelper-launcher.sh', 'prepare-store-browser.sh', 'prepare-cef.sh',
+                         'prepare-steam-input.py', 'frame-steam-ipc', 'prepare-streaming-client.sh',
+                         'prepare-game-runtime.sh', 'steam_channels.py', 'prepare-desktop-ui.py'):
+                (quest / name).write_text('')
+            launcher = root / 'RUNSTEAM.sh'
+            command = 'exec "${STEAM_COMMAND[@]}" >"$HOME/steam.log" 2>&1'
+            launcher.write_text('#!/bin/bash\nSTEAM_COMMAND=(\n /bin/true -gamepadui\n)\n' + command + '\n')
+            launcher.chmod(0o755)
+            env = dict(os.environ, STEARLIGHT_STEAM_ROOT=str(root), STEARLIGHT_QUEST_ROOT=str(quest))
+            prepare = ROOT / 'packages/quest-runtime/linux/prepare-steam-client.sh'
+            subprocess.run(['sh', str(prepare)], env=env, check=True)
+            first = launcher.read_bytes()
+            first_stat = launcher.stat()
+            subprocess.run(['sh', str(prepare)], env=env, check=True)
+            self.assertEqual(launcher.read_bytes(), first)
+            # Steam's inotify watcher must not prepare forever in response to
+            # our own no-op launcher replacement during a local game launch.
+            self.assertEqual(launcher.stat().st_ino, first_stat.st_ino)
+            self.assertEqual(launcher.stat().st_mtime_ns, first_stat.st_mtime_ns)
+            text = first.decode()
+            self.assertEqual(text.count('# STEARLIGHT_ANDROID_GAMEPAD'), 1)
+            self.assertIn(command, text)
+            self.assertIn('${LD_PRELOAD:+$LD_PRELOAD:}/opt/quest/libquest_android_gamepad.so', text)
+            subprocess.run(['bash', '-n', str(launcher)], check=True)
+            # An installed test APK may already have the marker but the old
+            # interposer order. Preparation must repair that root too.
+            launcher.write_text(text.replace('${LD_PRELOAD:+$LD_PRELOAD:}/opt/quest/libquest_android_gamepad.so',
+                                             '/opt/quest/libquest_android_gamepad.so${LD_PRELOAD:+:$LD_PRELOAD}'))
+            subprocess.run(['sh', str(prepare)], env=env, check=True)
+            self.assertEqual(launcher.read_bytes(), first)
+
+
+if __name__ == '__main__':
+    unittest.main()

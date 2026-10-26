@@ -1,4 +1,5 @@
 #include "video_protocol.h"
+#include "video_sequence.h"
 #include <linux/videodev2.h>
 #include <linux/version.h>
 #include <linux/dma-buf.h>
@@ -88,24 +89,52 @@ void Device::run(){
  sockaddr_un address{};address.sun_family=AF_UNIX;strncpy(address.sun_path,socketPath(),sizeof(address.sun_path)-1);
  QuestVideoResponse response{};std::vector<unsigned char> frame;
  QuestVideoRequest config{QUEST_VIDEO_MAGIC,QUEST_VIDEO_CONFIGURE,0,width,height,codec,0};
+ if(stateful){
+  std::unique_lock<std::mutex> guard(mutex);
+  for(;;){
+   wake.wait(guard,[&]{return stopping||!packets.empty();});if(stopping)return;
+   if(codec!=5)break;
+   uint32_t parsedWidth=0,parsedHeight=0;
+   if(quest::hevcDimensions(packets.front().data.data(),packets.front().data.size(),parsedWidth,parsedHeight)&&parsedWidth>=128&&parsedHeight>=128){config.width=parsedWidth;config.height=parsedHeight;
+    // Real stateful V4L2 announces the sequence before decoding pictures.
+    // Let the player allocate/import its capture pool while Android starts,
+    // rather than blocking encoded input behind that allocation.
+    width=parsedWidth;height=parsedHeight;stride=width;sourceKnown=true;sourceChange=true;captureOn=false;signal();wake.notify_all();break;}
+   // After a stream reset the host can still send old reference pictures.
+   // A new decoder needs a sequence header first. Complete these inputs so
+   // they cannot exhaust the input pool before the next keyframe arrives.
+   completed.push_back(packets.front().index);packets.pop_front();signal();wake.notify_all();
+  }
+ }
  bool ok=socket>=0&&!connect(socket,reinterpret_cast<sockaddr*>(&address),sizeof(address))&&exchange(config,nullptr,response,frame);
  if(ok)ok=shareOutput();
- fprintf(stderr,"Quest video: decoder %ux%u codec=%u connected=%d\n",width,height,codec,ok);
+ fprintf(stderr,"Quest video: decoder %ux%u codec=%u connected=%d\n",config.width,config.height,codec,ok);
  while(ok){
   Packet packet{};bool submit=false;
   {std::unique_lock<std::mutex> guard(mutex);wake.wait_for(guard,std::chrono::milliseconds(5),[&]{return stopping||(!packets.empty()&&outputOn&&(captureOn||stateful));});
    if(stopping)break;if(!outputOn||(!stateful&&!captureOn))continue;
-   if(!packets.empty()){packet=std::move(packets.front());packets.pop_front();submit=true;}else if(pending.empty())continue;}
+   if(!packets.empty()){packet=std::move(packets.front());packets.pop_front();submit=true;}else if(pending.empty()||(stateful&&!captureOn))continue;}
   uint64_t stamp=uint64_t(packet.stamp.tv_sec)*1000000+packet.stamp.tv_usec;
-  if(submit){std::lock_guard<std::mutex> guard(mutex);pending[stamp]=packet.stamp;}
+  if(submit){std::lock_guard<std::mutex> guard(mutex);pending[stamp]=packet.stamp;
+   // Hardware may discard output during recovery; do not retain its stamps
+   // forever. Missing stamps reconstruct the same timeval from the codec PTS.
+   while(pending.size()>Slots*2)pending.erase(pending.begin());
+  }
   QuestVideoRequest r{QUEST_VIDEO_MAGIC,submit?QUEST_VIDEO_PACKET:QUEST_VIDEO_POLL,unsigned(packet.data.size()),0,0,0,stamp};
   ok=exchange(r,packet.data.data(),response,frame);
   {std::unique_lock<std::mutex> guard(mutex);if(submit){completed.push_back(packet.index);signal();wake.notify_all();}
-   if(!ok)break;if(response.status!=0)continue;
+   if(!ok)break;
+   bool formatChanged=response.status==QUEST_VIDEO_FORMAT_CHANGED;
+   if(response.status!=QUEST_VIDEO_FRAME_READY&&!formatChanged)continue;
+   if(formatChanged&&(!response.width||!response.height||(response.width|response.height)&1||response.bytes)){ok=false;break;}
    if(stateful&&(!sourceKnown||response.width!=width||response.height!=height)){
     width=response.width;height=response.height;stride=width;sourceKnown=true;sourceChange=true;captureOn=false;signal();wake.notify_all();
     wake.wait(guard,[&]{return stopping||captureOn;});if(stopping)break;
    }
+   // Stateful V4L2 announces the parsed sequence format before producing a
+   // picture. Waiting for that picture first can stall the player's input
+   // pool while it is still waiting to allocate its capture buffers.
+   if(formatChanged)continue;
    if(response.bytes!=size_t(response.width)*response.height*3/2||response.width>width||response.height>height){ok=false;break;}
    // Keep decoding reference frames when presentation falls behind. Replace
    // only a completed buffer still owned by the driver; never touch a buffer
@@ -133,7 +162,9 @@ void Device::run(){
    }
    sync.flags=DMA_BUF_SYNC_END|DMA_BUF_SYNC_WRITE;ioctlReal(c.fd,DMA_BUF_IOCTL_SYNC,&sync);
    auto it=pending.find(response.timestamp);c.stamp=it==pending.end()?timeval{long(response.timestamp/1000000),long(response.timestamp%1000000)}:it->second;
-   if(it!=pending.end())pending.erase(it);c.sequence=outputSequence;c.ready=true;signal();wake.notify_all();
+   // The Android bridge can drain older output to relieve codec backpressure.
+   // Retire those earlier timestamps along with the frame being returned.
+   pending.erase(pending.begin(),pending.upper_bound(response.timestamp));c.sequence=outputSequence;c.ready=true;signal();wake.notify_all();
    if(sequence%300==1)fprintf(stderr,"Quest video: frames=%u %ux%u capture stride=%u\n",sequence,response.width,response.height,stride);
   }
  }
@@ -198,7 +229,11 @@ extern "C" int ioctl(int fd,unsigned long request,...){
   if(f->type==V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE){if(request==VIDIOC_S_FMT){if(p.pixelformat!=V4L2_PIX_FMT_H264&&p.pixelformat!=V4L2_PIX_FMT_HEVC)return invalid();d->codec=p.pixelformat==V4L2_PIX_FMT_H264?4:5;if(!d->stateful&&p.width&&p.height){d->width=p.width;d->height=p.height;d->stride=p.width;}}p.num_planes=1;p.plane_fmt[0].sizeimage=InputSize;}
   else if(f->type==V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE){if(request==VIDIOC_S_FMT&&p.width&&p.height){d->width=p.width;d->height=p.height;d->stride=p.width;}p.width=d->width;p.height=d->height;p.pixelformat=V4L2_PIX_FMT_NV12;p.num_planes=1;p.plane_fmt[0].bytesperline=d->stride;p.plane_fmt[0].sizeimage=d->stride*d->height*3/2;p.colorspace=V4L2_COLORSPACE_REC709;p.ycbcr_enc=V4L2_YCBCR_ENC_709;p.quantization=V4L2_QUANTIZATION_LIM_RANGE;}
   else return invalid();p.field=V4L2_FIELD_NONE;return 0;}
- case VIDIOC_REQBUFS:{auto r=static_cast<v4l2_requestbuffers*>(arg);r->count=std::min(r->count,Slots);if(r->type==V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)d->count=r->count;return 0;}
+ case VIDIOC_REQBUFS:{auto r=static_cast<v4l2_requestbuffers*>(arg);
+  // MediaCodec owns the codec's reference pictures. These are presentation
+  // copies only; three suffice without allocating sixteen full VR images.
+  unsigned limit=d->stateful&&r->type==V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE?3u:Slots;
+  r->count=std::min(r->count,limit);if(r->type==V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)d->count=r->count;return 0;}
  case VIDIOC_QUERYBUF:{auto b=static_cast<v4l2_buffer*>(arg);if(b->index>=Slots||b->length<1||!b->m.planes)return invalid();b->length=1;b->m.planes[0].length=InputSize;b->m.planes[0].m.mem_offset=b->index*InputSize;return 0;}
  case VIDIOC_QBUF:{auto b=static_cast<v4l2_buffer*>(arg);if(b->index>=Slots||b->length<1||!b->m.planes)return invalid();auto& p=b->m.planes[0];
   if(b->type==V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE){unsigned size=p.bytesused?p.bytesused:b->bytesused;if(!size||size>InputSize||p.data_offset>size)return invalid();Packet packet{b->index,b->timestamp,{}};packet.data.resize(size-p.data_offset);ssize_t n=pread(fd,packet.data.data(),packet.data.size(),off_t(b->index)*InputSize+p.data_offset);if(n!=ssize_t(packet.data.size()))return invalid(EIO);d->packets.push_back(std::move(packet));}

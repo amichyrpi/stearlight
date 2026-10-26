@@ -23,6 +23,7 @@
 #include <chrono>
 #include <fstream>
 #include "quest_bridge.h"
+#include "quest_motion.h"
 #include "play_space.h"
 #include "gpu_bridge.h"
 #include "video_bridge.h"
@@ -30,6 +31,7 @@
 #include "loading_boost.h"
 #include "hand_tracking.h"
 #include "hand_render.h"
+#include "android_gamepad.h"
 
 #define LOG(...) __android_log_print(ANDROID_LOG_INFO,"StearlightXR",__VA_ARGS__)
 static void check(XrResult result,const char* name){if(XR_FAILED(result)){LOG("%s failed: %d",name,result);throw std::runtime_error(name);}}
@@ -50,7 +52,7 @@ struct Runtime {
  XrActionSet actions=XR_NULL_HANDLE;XrAction gripAction=XR_NULL_HANDLE,aimAction=XR_NULL_HANDLE,triggerAction=XR_NULL_HANDLE,squeezeAction=XR_NULL_HANDLE,stickAction=XR_NULL_HANDLE;
  XrAction buttonActions[6]{};XrAction touchAction=XR_NULL_HANDLE,hapticAction=XR_NULL_HANDLE,selectAction=XR_NULL_HANDLE;
  XrPath hands[2]{};Eye eyes[2],statusEye;XrTime statusUpdated=0;bool running=false,visible=false,focused=false;
- QuestTracking* tracking=nullptr;GLuint framebuffer=0;GpuBridge gpu;VideoBridge video;
+ QuestTracking* tracking=nullptr;QuestMotion* motion=nullptr;GLuint framebuffer=0;GpuBridge gpu;VideoBridge video;
  XrView frameViews[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};bool haveFrameViews=false;
  bool eyesDirty=true,lastLoading=true,lastPassthrough=false;
  bool haveStage=false,playSpacePublished=false;
@@ -60,6 +62,10 @@ struct Runtime {
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
  LoadingBoost loadingBoost;
  bool cpuBoosted=false;
+ bool powersave=false;
+ XrPerfSettingsLevelEXT cpuLevel=XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+ XrPerfSettingsLevelEXT gpuLevel=XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+ double profilePollAt=0;
  bool cpuThermalLimited=false;
  double boostPollAt=0,boostRetryAt=0;
  timespec boostStamp[2]{};uint32_t boostMenu=0;
@@ -68,6 +74,7 @@ struct Runtime {
  int hapticSocket=-1;
  Passthrough camera;
  HandTracking handTracking;HandRender handRender;
+ AndroidGamepad physicalGamepad;
  bool controllerProfile[2]{true,true},lastHands=false;XrPath touchProfile=XR_NULL_PATH;
  bool has(const std::vector<XrExtensionProperties>& e,const char* name){for(const auto& p:e)if(!strcmp(p.extensionName,name))return true;return false;}
  XrPath path(const char* s){XrPath p;XR(xrStringToPath(instance,s,&p));return p;}
@@ -84,11 +91,21 @@ struct Runtime {
   app=value;JNIEnv* env;app->activity->vm->AttachCurrentThread(&env,nullptr);
   jclass activityClass=env->GetObjectClass(app->activity->clazz);jmethodID getDirectory=env->GetMethodID(activityClass,"getStateDirectory","()Ljava/lang/String;");
   auto str=static_cast<jstring>(env->CallObjectMethod(app->activity->clazz,getDirectory));const char* chars=env->GetStringUTFChars(str,nullptr);directory=chars;env->ReleaseStringUTFChars(str,chars);env->DeleteLocalRef(str);env->DeleteLocalRef(activityClass);
+  physicalGamepad.initialize(env,directory);
+  app->userData=this;app->onInputEvent=[](android_app* app,AInputEvent* event)->int32_t{return static_cast<Runtime*>(app->userData)->physicalGamepad.handle(event);};
   int fd=open((directory+"/tracking").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);if(fd<0||ftruncate(fd,sizeof(QuestTracking)))throw std::runtime_error("tracking file");
   tracking=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));close(fd);if(tracking==MAP_FAILED)throw std::runtime_error("tracking mmap");
   unlink((directory+"/dashboard.ready").c_str());
   unlink((directory+"/play-space.vrchap").c_str());
   memset(tracking,0,sizeof(*tracking));tracking->magic=QUEST_BRIDGE_MAGIC;tracking->version=QUEST_BRIDGE_VERSION;for(float& b:tracking->battery)b=-1;
+  int motionFd=open((directory+"/tracking-motion").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);
+  if(motionFd>=0){
+   if(!ftruncate(motionFd,sizeof(QuestMotion))){
+    void* mapping=mmap(nullptr,sizeof(QuestMotion),PROT_READ|PROT_WRITE,MAP_SHARED,motionFd,0);
+    if(mapping!=MAP_FAILED){motion=static_cast<QuestMotion*>(mapping);memset(motion,0,sizeof(*motion));motion->magic=QUEST_MOTION_MAGIC;motion->version=QUEST_MOTION_VERSION;}
+   }close(motionFd);
+  }
+  if(!motion)LOG("Headset velocity bridge unavailable");
   auto loader=function<PFN_xrInitializeLoaderKHR>(XR_NULL_HANDLE,"xrInitializeLoaderKHR");XrLoaderInitInfoAndroidKHR loaderInfo{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};loaderInfo.applicationVM=app->activity->vm;loaderInfo.applicationContext=app->activity->clazz;XR(loader(reinterpret_cast<XrLoaderInitInfoBaseHeaderKHR*>(&loaderInfo)));
   uint32_t n=0;XR(xrEnumerateInstanceExtensionProperties(nullptr,0,&n,nullptr));std::vector<XrExtensionProperties> extensions(n,{XR_TYPE_EXTENSION_PROPERTIES});XR(xrEnumerateInstanceExtensionProperties(nullptr,n,&n,extensions.data()));
   std::vector<const char*> enabled={XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME};
@@ -217,12 +234,19 @@ struct Runtime {
   playSpacePublished=true;LOG("Quest seated/standing tracking origins published; stage rectangle %.2fx%.2f",bounds.width,bounds.height);
  }
  void frame(){
+  physicalGamepad.tick(focused&&app->activityState==APP_CMD_RESUME);
   XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO};XrFrameState state{XR_TYPE_FRAME_STATE};XR(xrWaitFrame(session,&wait,&state));XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO};XR(xrBeginFrame(session,&begin));
   XrActiveActionSet active{actions,XR_NULL_PATH};XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};sync.countActiveActionSets=1;sync.activeActionSets=&active;XrResult syncResult=xrSyncActions(session,&sync);if(syncResult!=XR_SESSION_NOT_FOCUSED)check(syncResult,"xrSyncActions");
   haptics();
   XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO};locate.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;locate.displayTime=state.predictedDisplayTime;locate.space=stage;XrViewState viewState{XR_TYPE_VIEW_STATE};XrView views[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};uint32_t count;XR(xrLocateViews(session,&locate,&viewState,2,&count,views));
   QuestTracking sample=*tracking;sample.predicted_time_ns=state.predictedDisplayTime;if(timeToMonotonic){timespec predicted{};XR(timeToMonotonic(instance,state.predictedDisplayTime,&predicted));sample.predicted_monotonic_ns=static_cast<uint64_t>(predicted.tv_sec)*1000000000+predicted.tv_nsec;}sample.session_visible=visible;sample.session_focused=focused;
-  XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};XR(xrLocateSpace(head,stage,state.predictedDisplayTime,&location));sample.headset=pose(location.pose,location.locationFlags);
+  XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
+  XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};location.next=&velocity;
+  XR(xrLocateSpace(head,stage,state.predictedDisplayTime,&location));sample.headset=pose(location.pose,location.locationFlags);
+  QuestMotion motionSample{};motionSample.predicted_time_ns=sample.predicted_time_ns;
+  if(velocity.velocityFlags&XR_SPACE_VELOCITY_LINEAR_VALID_BIT){motionSample.flags|=QUEST_LINEAR_VELOCITY_VALID;motionSample.linear[0]=velocity.linearVelocity.x;motionSample.linear[1]=velocity.linearVelocity.y;motionSample.linear[2]=velocity.linearVelocity.z;}
+  if(velocity.velocityFlags&XR_SPACE_VELOCITY_ANGULAR_VALID_BIT){motionSample.flags|=QUEST_ANGULAR_VELOCITY_VALID;motionSample.angular[0]=velocity.angularVelocity.x;motionSample.angular[1]=velocity.angularVelocity.y;motionSample.angular[2]=velocity.angularVelocity.z;}
+  location.next=nullptr;
   for(int i=0;i<2;i++){
    XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,poseState.isActive?location.locationFlags:0);XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);sample.eyes[i]=pose(views[i].pose,viewState.viewStateFlags);sample.fov[i][0]=views[i].fov.angleLeft;sample.fov[i][1]=views[i].fov.angleRight;sample.fov[i][2]=views[i].fov.angleUp;sample.fov[i][3]=views[i].fov.angleDown;
    // Query only bindings present on this hand. Keep zero inputs for sleeping
@@ -239,12 +263,16 @@ struct Runtime {
    XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));sample.thumbstick[i][0]=stick.isActive?stick.currentState.x:0;sample.thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
    }
    handTracking.update(sample,i,physical,stage,state.predictedDisplayTime);
-  }handTracking.publish(sample);questPublishTracking(tracking,sample);
+  }handTracking.publish(sample);questPublishMotion(motion,motionSample);questPublishTracking(tracking,sample);
   publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   if(!bootFinished)bootFinished=bootComplete();
   bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootFinished;
   double boostNow=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  if(boostNow>=profilePollAt){
+   profilePollAt=boostNow+1;std::string profile;std::ifstream input(directory+"/performance-profile");input>>profile;
+   if(profile=="Performance"||profile=="Powersave")powersave=profile=="Powersave";
+  }
   uint32_t menu=sample.buttons[0]&QUEST_MENU;
   if(menu&&!boostMenu)loadingBoost.request(boostNow,2);
   boostMenu=menu;
@@ -259,12 +287,20 @@ struct Runtime {
     if(std::isfinite(deadline)&&deadline>boostNow)loadingBoost.request(boostNow,deadline-boostNow);
    }
   }
-  bool boost=loadingBoost.update(boostNow,loading,focused&&!cpuThermalLimited);
-  if(setPerformance&&boost!=cpuBoosted&&boostNow>=boostRetryAt){
-   XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,boost?XR_PERF_SETTINGS_LEVEL_BOOST_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT);
+  bool boost=loadingBoost.update(boostNow,loading,focused&&!cpuThermalLimited&&!powersave);
+  auto targetCPU=powersave?XR_PERF_SETTINGS_LEVEL_SUSTAINED_LOW_EXT:boost?XR_PERF_SETTINGS_LEVEL_BOOST_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+  auto targetGPU=powersave?XR_PERF_SETTINGS_LEVEL_SUSTAINED_LOW_EXT:XR_PERF_SETTINGS_LEVEL_SUSTAINED_HIGH_EXT;
+  if(setPerformance&&targetCPU!=cpuLevel&&boostNow>=boostRetryAt){
+   XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_CPU_EXT,targetCPU);
    LOG("Activity CPU boost %d result %d",boost,result);
-   if(XR_SUCCEEDED(result))cpuBoosted=boost;
+   if(XR_SUCCEEDED(result)){cpuBoosted=boost;cpuLevel=targetCPU;}
    boostRetryAt=XR_SUCCEEDED(result)?boostNow:boostNow+2;
+  }
+  if(setPerformance&&targetGPU!=gpuLevel&&boostNow>=boostRetryAt){
+   XrResult result=setPerformance(session,XR_PERF_SETTINGS_DOMAIN_GPU_EXT,targetGPU);
+   LOG("Frame power profile %s GPU result %d",powersave?"Powersave":"Performance",result);
+   if(XR_SUCCEEDED(result))gpuLevel=targetGPU;
+   else boostRetryAt=boostNow+2;
   }
   bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;
   if(!loading&&visible&&compositionReady)camera.update();else camera.suspend();
@@ -297,9 +333,9 @@ struct Runtime {
     }
    }haveFrameViews=true;
   }
-  // The copy thread has completed this history image before publication and
-  // acknowledged Linux independently of xrWaitFrame. Retain the adopted image
-  // through both eye draws; finish only clears its fresh-frame indication.
+  // Keep the imported image leased through both eye reads. The next adoption
+  // retires it only after this iteration's glFinish. Clearing freshness here
+  // does not return the allocation to Linux.
   gpu.finish();
   bool drewEyes=state.shouldRender&&eyesDirty;
   auto eyeStart=std::chrono::steady_clock::now();
@@ -326,7 +362,7 @@ struct Runtime {
   }
   static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }
- void idle(){gpu.poll();gpu.finish();}
- void shutdown(){handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
+ void idle(){physicalGamepad.tick(false);gpu.poll();gpu.finish();}
+ void shutdown(){physicalGamepad.shutdown();handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(motion)munmap(motion,sizeof(*motion));if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
 };
 extern "C" void android_main(android_app* app){Runtime runtime;runtime.app=app;try{while(!app->destroyRequested&&(!app->window||app->activityState!=APP_CMD_RESUME)){int events;android_poll_source* source;if(ALooper_pollOnce(50,nullptr,&events,reinterpret_cast<void**>(&source))>=0&&source)source->process(app,source);}if(app->destroyRequested)return;LOG("Android VR activity resumed with a native window");runtime.initialize(app);while(!app->destroyRequested){int events;android_poll_source* source;while(ALooper_pollOnce(runtime.running?0:50,nullptr,&events,reinterpret_cast<void**>(&source))>=0){if(source)source->process(app,source);if(app->destroyRequested)break;}if(app->destroyRequested||!runtime.events())break;if(runtime.running)runtime.frame();else runtime.idle();}}catch(const std::exception& e){LOG("Native runtime stopped: %s",e.what());}runtime.shutdown();}

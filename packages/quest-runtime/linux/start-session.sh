@@ -12,6 +12,7 @@ export GLIBC_TUNABLES=glibc.pthread.rseq=0
 # CPU and repeatedly regenerates mountinfo. Keep HIDAPI's polling fallback.
 if [ "${STEARLIGHT_LINUX_HIDAPI:-0}" != 1 ];then
  export SDL_HIDAPI_UDEV=0 SDL_HIDAPI_LIBUSB=0 SDL_HIDAPI_DISABLE_LIBUSB=1
+ export SDL_HIDAPI_JOYSTICK_DISABLE_UDEV=1
 fi
 export MESA_VK_ENABLE_SUBMIT_THREAD=1
 export QUEST_SOCKET_REGISTRY=/run/stearlight/quest/socket-registry.sock
@@ -59,9 +60,12 @@ export PULSE_LATENCY_MSEC=30
 /bin/bash /opt/quest/prepare-desktop.sh
 /usr/bin/python3 /opt/quest/desktop-manager.py serve >/tmp/quest-desktop-manager.log 2>&1 &
 desktop_pid=$!
-pulseaudio -n --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
- --log-target=stderr --file=/opt/quest/audio.pa >/tmp/quest-audio.log 2>&1 &
-audio_pid=$!
+audio_pid=
+if [ "${QUEST_NATIVE_PULSE:-0}" != 1 ];then
+ pulseaudio -n --daemonize=no --exit-idle-time=-1 --use-pid-file=no \
+  --log-target=stderr --file=/opt/quest/audio.pa >/tmp/quest-audio.log 2>&1 &
+ audio_pid=$!
+fi
 pipewire_pid=
 wireplumber_pid=
 mkdir -p /var/lib/xkb
@@ -72,10 +76,10 @@ printf '%s\n' 'xkb_keymap { xkb_keycodes { include "evdev+aliases(qwerty)" }; xk
 # This is the flat sharing monitor, independent of OpenXR's per-eye resolution.
 Xvfb :0 -screen 0 1280x720x24 -xkbdir /opt/frame-gamescope/share/X11/xkb -ac -nolisten tcp -noreset > /tmp/xvfb.log 2>&1 &
 xvfb_pid=$!
-trap 'kill ${wireplumber_pid:+"$wireplumber_pid"} ${pipewire_pid:+"$pipewire_pid"} "$desktop_pid" "$audio_pid" "$xvfb_pid" "$dbus_pid" 2>/dev/null || true' EXIT
+trap 'kill ${wireplumber_pid:+"$wireplumber_pid"} ${pipewire_pid:+"$pipewire_pid"} "$desktop_pid" ${audio_pid:+"$audio_pid"} "$xvfb_pid" "$dbus_pid" 2>/dev/null || true' EXIT
 for attempt in $(seq 1 50);do
  if pactl info >/dev/null 2>&1;then echo STEARLIGHT_QUEST_AUDIO_READY;break;fi
- if ! kill -0 "$audio_pid" 2>/dev/null;then cat /tmp/quest-audio.log >&2;break;fi
+ if [ -n "$audio_pid" ] && ! kill -0 "$audio_pid" 2>/dev/null;then cat /tmp/quest-audio.log >&2;break;fi
  sleep .1
 done
 # The spatial PCVR player uses native PipeWire streams, rather than PulseAudio.
@@ -146,6 +150,7 @@ export VK_ICD_FILENAMES=/opt/quest/turnip_icd.json
 # The adapter supplies Valve's required surface extension discovery; ANGLE
 # renders offscreen. Only vrcompositor may create an OpenXR display swapchain.
 # Adapt the installed UI rather than copying a library from another version.
+/usr/bin/python3 /opt/quest/prepare-steam-integrity.py
 /bin/sh /opt/quest/prepare-steam-client.sh
 /bin/sh /opt/quest/prepare-streaming-client.sh
 # The APK verifies its rootfs payload. Steam's optional repair pass would undo

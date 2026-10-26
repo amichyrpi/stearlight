@@ -136,6 +136,75 @@ def prepare_vtol_prefix(compat):
     stamp.write_text(json.dumps({"version": 1}))
 
 
+def prepare_outerwilds_textures(game):
+    # Unity 2019's default full-size textures exhaust Quest 2's shared RAM.
+    # Omit the two largest mips and use smaller shadow maps; retain game code.
+    asset = game / "OuterWilds_Data/globalgamemanagers"
+    original = "60af32f30f99e9e539a0bd19c1425f3ee3fb7c57172acbc1b556a6d0a81d6267"
+    adjusted = "778ac7dc5a1654b1f6708a57d582c533daf60357ea0e0888b1b4c4d209a98dbf"
+    data = asset.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest == adjusted:
+        return
+    if digest != original:
+        print("Stearlight: unrecognized Outer Wilds graphics profile; keeping its settings", file=sys.stderr)
+        return
+    updated = bytearray(data)
+    for offset, before, after in (
+        (248972, b"\x03\x00\x00\x00", b"\x00\x00\x00\x00"),  # shadowResolution
+        (249016, b"\x00\x00\x00\x00", b"\x02\x00\x00\x00"),  # textureQuality
+        (249048, b"\x00\x00\x00\x44", b"\x00\x00\x00\x43"),  # mip budget: 512 -> 128 MiB
+    ):
+        if data[offset:offset + 4] != before:
+            raise ValueError("Outer Wilds graphics profile verification failed")
+        updated[offset:offset + 4] = after
+    if hashlib.sha256(updated).hexdigest() != adjusted:
+        raise ValueError("Outer Wilds graphics profile checksum mismatch")
+    backup = asset.with_name(asset.name + ".quest-original")
+    if not backup.exists():
+        backup.write_bytes(data)
+    temporary = asset.with_name(asset.name + ".quest-next")
+    temporary.write_bytes(updated)
+    temporary.replace(asset)
+
+
+def prepare_outerwilds_settings(compat):
+    # The game replaces Unity's initial quality settings when a profile loads.
+    # Apply a Quest default once, retaining saves and subsequent user choices.
+    saves = compat / "pfx/drive_c/users/steamuser/AppData/LocalLow/Mobius Digital/Outer Wilds/SteamSaves"
+    defaults = dict(fullScreen=False, displayResWidth=960, displayResHeight=540, refreshRate=30,
+                    antiAlias=0, antiAliasQuality=0, textureQuality=2, oceanQuality=0,
+                    shadowQuality=0, ambientOcclusionQuality=0, lightingQuality=0, vSyncEnabled=True)
+    for player in saves.glob("*/player.owsett"):
+        settings = player.with_name("graphics.owsett")
+        stamp = settings.with_name(settings.name + ".quest-profile")
+        previous = stamp.read_text().strip() if stamp.exists() else None
+        if previous == "2":
+            continue
+        original = settings.read_bytes() if settings.exists() else None
+        try:
+            data = json.loads(original) if original is not None else {}
+            if not isinstance(data, dict):
+                raise ValueError("Unknown graphics settings format")
+        except (ValueError, UnicodeError):
+            print("Stearlight: unrecognized Outer Wilds settings; leaving them unchanged", file=sys.stderr)
+            continue
+        backup = settings.with_name(settings.name + ".quest-original")
+        if original is not None and not backup.exists():
+            backup.write_bytes(original)
+        if previous != "1":
+            data.update(defaults)
+        # Unity 2019 JsonUtility does not run this class's constructor. Supply
+        # brightness and camera defaults explicitly when creating partial JSON.
+        for key, value in dict(displayNumber=0, aspectRatio=4, gammaValue=0.5,
+                               fieldOfView=70.0, dithering=0.2, consolePerformanceMode=0).items():
+            data.setdefault(key, value)
+        temporary = settings.with_name(settings.name + ".quest-next")
+        temporary.write_text(json.dumps(data))
+        temporary.replace(settings)
+        stamp.write_text("2\n")
+
+
 def prepare_vtol_bindings(game):
     root = game / "VTOLVR_Data/StreamingAssets/SteamVR"
     manifest = root / "actions.json"
@@ -223,9 +292,9 @@ def release_streaming_audio():
     raise RuntimeError("Streaming audio did not release the local VR process budget")
 
 
-def prepare_garden_boot(game):
-    # Use the tested single-thread graphics path for this Unity build.
-    boot = game / "Garden of Witches_Data/boot.config"
+def prepare_flat_unity_boot(game, directory):
+    # Keep flat Unity games on the direct graphics path inside Gamescope.
+    boot = game / directory / "boot.config"
     data = boot.read_text()
     updated = re.sub(r"(?m)^(gfx-enable-(?:native-)?gfx-jobs)=1$", r"\1=0", data)
     if updated != data:
@@ -237,7 +306,7 @@ def prepare_garden_boot(game):
         temporary.replace(boot)
 
 
-def prepare_garden_prefix(compat):
+def prepare_flat_prefix(compat):
     # Called after Proton has finished and waited for prefix initialization.
     # Keep Wine's SDL/HID input and RPC; omit desktop-only autostart services.
     registry = compat / "pfx/system.reg"
@@ -250,7 +319,7 @@ def prepare_garden_prefix(compat):
         pattern = r'(\[System\\\\ControlSet001\\\\Services\\\\' + name + r'\][^\n]*\n)(.*?)(?=\n\[|\Z)'
         updated = re.sub(pattern, lambda m: m[1] + m[2].replace('"Group"="WinePlugPlay"', '"Group"="System Bus Extender"'), updated, flags=re.S | re.I)
     if updated != data:
-        backup = registry.with_name(registry.name + ".quest-garden-original")
+        backup = registry.with_name(registry.name + ".quest-flat-original")
         if not backup.exists():
             backup.write_text(data)
         temporary = registry.with_name(registry.name + ".quest-next")
@@ -268,11 +337,13 @@ def launch_flat_panel(entry, arguments, environment, appid):
     env.pop("LD_LIBRARY_PATH", None)
     env.pop("MESA_VK_WSI_DEBUG", None)
     loader = "/opt/frame-gamescope/lib/ld-linux-aarch64.so.1"
-    width, height = (960, 540) if env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0" else (1280, 720)
+    profile = env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0"
+    width, height = (960, 540) if profile else (1280, 720)
+    rate = "30" if profile and appid == "753640" else "60"
     command = [loader, "--preload", "/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so.0",
                "--library-path", "/opt/frame-gamescope/lib:/usr/lib/aarch64-linux-gnu",
                "/opt/frame-gamescope/bin/gamescope", "--backend", "openvr", "--expose-wayland",
-               "--xwayland-count", "1", "-w", str(width), "-h", str(height), "-W", str(width), "-H", str(height), "-r", "60",
+               "--xwayland-count", "1", "-w", str(width), "-h", str(height), "-W", str(width), "-H", str(height), "-r", rate,
                "--steam", "--virtual-connector-strategy", "SingleApplication",
                "--vr-overlay-key", "valve.steam.desktopgame." + appid,
                "--vr-app-overlay-key", "valve.steam.desktopgame",
@@ -291,7 +362,7 @@ def exec_proton(arguments, environment, compat):
         if (isinstance(command, (list, tuple)) and len(command) > 2
                 and Path(command[0]).name == "wine"
                 and command[1].lower() == r"c:\windows\system32\steam.exe"):
-            prepare_garden_prefix(compat)
+            prepare_flat_prefix(compat)
             for key, fd in (("stdout", 1), ("stderr", 2)):
                 target = options.get(key)
                 if target is not None:
@@ -332,13 +403,39 @@ def main():
         os.close(fd)
     files = prepare_platform(platforms[-1].parent)
     env = launch_environment(files, os.environ)
-    if appid == "2530470":
+    # Outer Wilds remains unsupported; see docs/outer-wilds-investigation.md.
+    flat_unity = {"2530470": "Garden of Witches_Data", "753640": "OuterWilds_Data"}
+    if appid in flat_unity:
         if env.get("STEARLIGHT_PROTON_GAMESCOPE") != "1":
             release_streaming_audio()
             launch_flat_panel(entry, sys.argv[2:], env, appid)
             return
-        prepare_garden_boot(Path(env["STEAM_COMPAT_INSTALL_PATH"]))
-        env.setdefault("PROTON_USE_WINED3D", "1")
+        prepare_flat_unity_boot(Path(env["STEAM_COMPAT_INSTALL_PATH"]), flat_unity[appid])
+        if appid == "753640" and env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
+            prepare_outerwilds_textures(Path(env["STEAM_COMPAT_INSTALL_PATH"]))
+            prepare_outerwilds_settings(Path(env["STEAM_COMPAT_DATA_PATH"]))
+            env.setdefault("MALLOC_ARENA_MAX", "2")
+            # Limit compilation concurrency and queued frames on Quest 2.
+            # Later user DXVK settings retain precedence over these defaults.
+            defaults = ("dxvk.numCompilerThreads = 2; dxgi.maxDeviceMemory = 512; "
+                        "dxgi.maxSharedMemory = 512; dxgi.maxFrameLatency = 1; dxgi.maxFrameRate = 30")
+            env["DXVK_CONFIG"] = defaults + "; " + env.get("DXVK_CONFIG", "")
+        if appid == "2530470" and env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
+            # Use the tested D3D11 Vulkan path instead of WineD3D -> Zink.
+            # Bound worker/allocator pressure alongside the full VR dashboard.
+            env.setdefault("MALLOC_ARENA_MAX", "2")
+            defaults = ("dxvk.numCompilerThreads = 2; dxgi.maxDeviceMemory = 1024; "
+                        "dxgi.maxSharedMemory = 512; dxgi.maxFrameLatency = 1")
+            env["DXVK_CONFIG"] = defaults + "; " + env.get("DXVK_CONFIG", "")
+        env.setdefault("PROTON_USE_WINED3D", "0")
+        if appid == "2530470":
+            # Requires the payload's software-X11 PresentWait2 correction.
+            env["MESA_VK_WSI_DEBUG"] = "sw,noshm"
+        if appid == "753640":
+            # XPutImage avoids software MIT-SHM Present bookkeeping. The
+            # payload's Mesa patch disables unsupported PresentWait2 here.
+            env["MESA_VK_WSI_DEBUG"] = "sw,noshm"
+            env["MESA_VK_ENABLE_SUBMIT_THREAD"] = "true"
         env["STEARLIGHT_WINE_GAMEPAD"] = "1"
         # SDL's virtual joystick has no USB vendor/product ID. Steam's list
         # of controllers handled through Steam Input includes 0000/0000;
@@ -359,12 +456,15 @@ def main():
         release_streaming_audio()
         overrides = "winebus.sys=d;wineusb.sys=d;winebth.sys=d;winemenubuilder.exe=d;tabtip.exe=d;UnityCrashHandler64.exe=d"
         env["WINEDLLOVERRIDES"] = overrides + ";" + env.get("WINEDLLOVERRIDES", "")
-    if appid == "2530470":
+    if appid in flat_unity:
         width, height = (960, 540) if env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0" else (1280, 720)
-        args += ["-force-gfx-direct", "-screen-fullscreen", "0", "-screen-width", str(width), "-screen-height", str(height)]
+        graphics_thread = "-force-gfx-mt" if appid == "2530470" else "-force-gfx-direct"
+        args += [graphics_thread, "-screen-fullscreen", "0", "-screen-width", str(width), "-screen-height", str(height)]
+        if env.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0":
+            args += ["-job-worker-count", "2"]
     # The official Proton Python script still owns Wine, Steam identity,
     # per-game prefixes, and game exit. No extra supervisor is kept alive.
-    if appid == "2530470" and Path(args[0]).name == "proton":
+    if appid in flat_unity and Path(args[0]).name == "proton":
         exec_proton(args, env, Path(env["STEAM_COMPAT_DATA_PATH"]))
     elif Path(args[0]).name == "proton":
         os.execve("/usr/bin/python3", ["/usr/bin/python3", *args], env)

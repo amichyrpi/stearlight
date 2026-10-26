@@ -26,7 +26,11 @@
 #include "roomview_shaders.h"
 #include "pcvr_color_shader.h"
 #include "gpu_bridge.h"
+#include "gpu_frames.h"
+#include <poll.h>
+#include <climits>
 #include "quest_bridge.h"
+#include "display-pulse.h"
 #include "video_image_layout.h"
 
 namespace {
@@ -72,6 +76,20 @@ struct Swapchain {
  VkDevice device=VK_NULL_HANDLE;int socket=-1;QuestGpuHello hello{};VkFormat imageFormat=VK_FORMAT_UNDEFINED;VkImage images[QUEST_GPU_BUFFERS]{};VkDeviceMemory memory[QUEST_GPU_BUFFERS]{};uint32_t next=0;uint64_t frame=0,presented=0;std::mutex lock;std::condition_variable presentedCondition;
  uint32_t queueFamily=0;VkCommandPool pool=VK_NULL_HANDLE;VkCommandBuffer acquireCommands[QUEST_GPU_BUFFERS]{},releaseCommands[QUEST_GPU_BUFFERS]{};bool released[QUEST_GPU_BUFFERS]{};
  VkFence releaseFence=VK_NULL_HANDLE;
+ quest::FramePool framePool;uint64_t presentIds[QUEST_GPU_BUFFERS]{};
+ VkResult receiveEvent(uint64_t timeout){
+  int milliseconds=timeout==UINT64_MAX?-1:static_cast<int>(std::min<uint64_t>(INT_MAX,timeout/1000000+(timeout%1000000!=0)));
+  pollfd event{socket,POLLIN,0};int ready;do ready=::poll(&event,1,milliseconds);while(ready<0&&errno==EINTR);
+  if(!ready)return VK_TIMEOUT;
+  if(ready<0||event.revents&(POLLERR|POLLHUP|POLLNVAL))return VK_ERROR_SURFACE_LOST_KHR;
+  QuestGpuRelease release{};ssize_t size=recv(socket,&release,sizeof(release),MSG_DONTWAIT|MSG_TRUNC);
+  if(size<0&&(errno==EAGAIN||errno==EINTR))return VK_TIMEOUT;
+  if(size!=sizeof(release)||release.slot>=QUEST_GPU_BUFFERS)return VK_ERROR_SURFACE_LOST_KHR;
+  if(release.magic==QUEST_GPU_ACCEPTED_MAGIC){
+   if(framePool.matches(release.slot,release.frame_id))presented=std::max(presented,presentIds[release.slot]);
+  }else if(release.magic!=QUEST_GPU_MAGIC||!framePool.release(release.slot,release.frame_id))return VK_ERROR_SURFACE_LOST_KHR;
+  return VK_SUCCESS;
+ }
  const QuestTracking* tracking=nullptr;QuestGpuPresent inputPoses[QUEST_GPU_BUFFERS]{};
  std::chrono::steady_clock::time_point acquired[QUEST_GPU_BUFFERS]{},reportSince=std::chrono::steady_clock::now();
  double cpuMs=0,gpuMs=0,displayMs=0;uint32_t reportFrames=0;
@@ -221,7 +239,7 @@ struct Swapchain {
   fprintf(stderr,"QUEST_STEAM_CAPTURE_SWAPCHAIN_READY %ux%u format=%d\n",info->imageExtent.width,info->imageExtent.height,info->imageFormat);
   return VK_SUCCESS;
  }
- VkResult initialize(VkDevice value,VkFormat format){device=value;queueFamily=activeQueueFamily;imageFormat=format;socket=::socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);sockaddr_un address{};address.sun_family=AF_UNIX;strcpy(address.sun_path,"/run/stearlight/quest/gpu.sock");int connected=-1;for(int attempt=0;attempt<200&&socket>=0;attempt++){connected=connect(socket,(sockaddr*)&address,sizeof(address));if(!connected)break;if(errno!=ECONNREFUSED&&errno!=ENOENT)break;usleep(50000);}if(socket<0||connected){fprintf(stderr,"Quest GPU socket connect: %s (%d)\n",strerror(errno),errno);return VK_ERROR_INITIALIZATION_FAILED;}timeval timeout{15,0};setsockopt(socket,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));int fds[QUEST_GPU_BUFFERS]={-1,-1,-1};char control[CMSG_SPACE(sizeof(fds))]{};iovec io{&hello,sizeof(hello)};msghdr message{};message.msg_iov=&io;message.msg_iovlen=1;message.msg_control=control;message.msg_controllen=sizeof(control);ssize_t received=recvmsg(socket,&message,MSG_CMSG_CLOEXEC);if(received!=sizeof(hello)||hello.magic!=QUEST_GPU_MAGIC||hello.version!=QUEST_GPU_VERSION||hello.count!=QUEST_GPU_BUFFERS){fprintf(stderr,"Quest GPU hello: bytes=%zd expected=%zu errno=%d magic=%x count=%u\n",received,sizeof(hello),errno,hello.magic,hello.count);return VK_ERROR_INITIALIZATION_FAILED;}cmsghdr* header=CMSG_FIRSTHDR(&message);if(!header||header->cmsg_level!=SOL_SOCKET||header->cmsg_type!=SCM_RIGHTS||header->cmsg_len!=CMSG_LEN(sizeof(fds)))return VK_ERROR_INITIALIZATION_FAILED;memcpy(fds,CMSG_DATA(header),sizeof(fds));
+ VkResult initialize(VkDevice value,VkFormat format){device=value;queueFamily=activeQueueFamily;imageFormat=format;socket=::socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);sockaddr_un address{};address.sun_family=AF_UNIX;strcpy(address.sun_path,"/run/stearlight/quest/gpu.sock");int connected=-1;for(int attempt=0;attempt<200&&socket>=0;attempt++){connected=connect(socket,(sockaddr*)&address,sizeof(address));if(!connected)break;if(errno!=ECONNREFUSED&&errno!=ENOENT)break;usleep(50000);}if(socket<0||connected){fprintf(stderr,"Quest GPU socket connect: %s (%d)\n",strerror(errno),errno);return VK_ERROR_INITIALIZATION_FAILED;}timeval timeout{15,0};setsockopt(socket,SOL_SOCKET,SO_RCVTIMEO,&timeout,sizeof(timeout));int fds[QUEST_GPU_BUFFERS]={-1,-1,-1};char control[CMSG_SPACE(sizeof(fds))]{};iovec io{&hello,sizeof(hello)};msghdr message{};message.msg_iov=&io;message.msg_iovlen=1;message.msg_control=control;message.msg_controllen=sizeof(control);ssize_t received=recvmsg(socket,&message,MSG_CMSG_CLOEXEC);if(received!=sizeof(hello)||hello.magic!=QUEST_GPU_MAGIC||hello.version!=QUEST_GPU_VERSION||hello.count!=QUEST_GPU_BUFFERS){fprintf(stderr,"Quest GPU hello: bytes=%zd expected=%zu errno=%d magic=%x count=%u\n",received,sizeof(hello),errno,hello.magic,hello.count);return VK_ERROR_INITIALIZATION_FAILED;}cmsghdr* header=CMSG_FIRSTHDR(&message);if(!header||header->cmsg_level!=SOL_SOCKET||header->cmsg_type!=SCM_RIGHTS||header->cmsg_len!=CMSG_LEN(sizeof(fds)))return VK_ERROR_INITIALIZATION_FAILED;memcpy(fds,CMSG_DATA(header),sizeof(fds));if(!framePool.initialize(hello.available_mask))return VK_ERROR_INITIALIZATION_FAILED;
   for(int i=0;i<QUEST_GPU_BUFFERS;i++){
    const auto& buffer=hello.buffers[i];VkExternalMemoryImageCreateInfo external{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};external.handleTypes=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};image.pNext=&external;image.imageType=VK_IMAGE_TYPE_2D;image.format=format;image.extent={buffer.stride,buffer.height,1};image.mipLevels=1;image.arrayLayers=1;image.samples=VK_SAMPLE_COUNT_1_BIT;image.tiling=VK_IMAGE_TILING_LINEAR;image.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT|VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT;image.sharingMode=VK_SHARING_MODE_EXCLUSIVE;VkResult result=D(vkCreateImage)(device,&image,nullptr,&images[i]);if(result!=VK_SUCCESS)return result;VkImageSubresource sub{VK_IMAGE_ASPECT_COLOR_BIT,0,0};VkSubresourceLayout layout;D(vkGetImageSubresourceLayout)(device,images[i],&sub,&layout);VkMemoryRequirements requirement;D(vkGetImageMemoryRequirements)(device,images[i],&requirement);fprintf(stderr,"Quest DMA-BUF import image %d: row=%llu expected=%u bytes=%llu allocation=%llu\n",i,(unsigned long long)layout.rowPitch,buffer.stride*4,(unsigned long long)requirement.size,(unsigned long long)buffer.allocation_size);if(layout.rowPitch!=buffer.stride*4||layout.offset!=0||requirement.size>buffer.allocation_size)return VK_ERROR_FORMAT_NOT_SUPPORTED;
    VkMemoryFdPropertiesKHR properties{VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};result=D(vkGetMemoryFdPropertiesKHR)(device,VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,fds[i],&properties);if(result!=VK_SUCCESS)return result;uint32_t bits=properties.memoryTypeBits&requirement.memoryTypeBits;if(!bits)return VK_ERROR_INVALID_EXTERNAL_HANDLE;VkImportMemoryFdInfoKHR import{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};import.handleType=VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;import.fd=fds[i];VkMemoryDedicatedAllocateInfo dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};dedicated.pNext=&import;dedicated.image=images[i];VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};allocate.pNext=&dedicated;allocate.allocationSize=buffer.allocation_size;allocate.memoryTypeIndex=__builtin_ctz(bits);result=D(vkAllocateMemory)(device,&allocate,nullptr,&memory[i]);if(result!=VK_SUCCESS)return result;fds[i]=-1;result=D(vkBindImageMemory)(device,images[i],memory[i],0);if(result!=VK_SUCCESS)return result;
@@ -264,9 +282,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateSwapchainKHR(VkDevice device,const VkSwap
 }
 VKAPI_ATTR void VKAPI_CALL vkDestroySwapchainKHR(VkDevice,VkSwapchainKHR swap,const VkAllocationCallbacks*){delete object<Swapchain>(swap);}
 VKAPI_ATTR VkResult VKAPI_CALL vkGetSwapchainImagesKHR(VkDevice,VkSwapchainKHR handle,uint32_t* count,VkImage* images){auto swap=object<Swapchain>(handle);if(!images){*count=QUEST_GPU_BUFFERS;return VK_SUCCESS;}uint32_t n=std::min(*count,(uint32_t)QUEST_GPU_BUFFERS);memcpy(images,swap->images,n*sizeof(VkImage));*count=n;return n<QUEST_GPU_BUFFERS?VK_INCOMPLETE:VK_SUCCESS;}
-VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR handle,uint64_t,VkSemaphore semaphore,VkFence fence,uint32_t* index){
+VKAPI_ATTR VkResult VKAPI_CALL vkAcquireNextImageKHR(VkDevice device,VkSwapchainKHR handle,uint64_t timeout,VkSemaphore semaphore,VkFence fence,uint32_t* index){
  roomViewMode=roomViewReady&&access("/run/stearlight/quest/passthrough.enabled",F_OK)==0;
- auto swap=object<Swapchain>(handle);std::lock_guard<std::mutex> guard(swap->lock);*index=swap->next++%QUEST_GPU_BUFFERS;
+ auto swap=object<Swapchain>(handle);std::lock_guard<std::mutex> guard(swap->lock);
+ if(swap->offscreen)*index=swap->next++%QUEST_GPU_BUFFERS;
+ else{
+  auto start=std::chrono::steady_clock::now();
+  for(;;){
+   int slot=swap->framePool.acquire();if(slot>=0){*index=slot;break;}
+   uint64_t elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
+   uint64_t left=timeout==UINT64_MAX?timeout:elapsed>=timeout?0:timeout-elapsed;
+   VkResult result=swap->receiveEvent(left);
+   if(result==VK_TIMEOUT)return timeout?VK_TIMEOUT:VK_NOT_READY;
+   if(result!=VK_SUCCESS)return result;
+  }
+ }
  swap->sampleInputPose(*index);
  swap->acquired[*index]=std::chrono::steady_clock::now();
  VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};if(semaphore){submit.signalSemaphoreCount=1;submit.pSignalSemaphores=&semaphore;}
@@ -316,17 +346,17 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue,const VkPresentIn
    swap->publishMirror(slot,mirrorCopied);
    swap->released[slot]=true;QuestGpuPresent present=swap->inputPoses[slot];
    present.magic=QUEST_GPU_MAGIC;present.slot=slot;present.frame_id=++swap->frame;
-   present.vk_format=static_cast<uint32_t>(swap->imageFormat);QuestGpuRelease release{};
+   present.vk_format=static_cast<uint32_t>(swap->imageFormat);
+   swap->framePool.submitted(slot,present.frame_id);swap->presentIds[slot]=0;
+   for(auto node=(const VkBaseInStructure*)info->pNext;node;node=node->pNext)if(node->sType==VK_STRUCTURE_TYPE_PRESENT_ID_KHR){auto ids=(const VkPresentIdKHR*)node;if(i<ids->swapchainCount)swap->presentIds[slot]=ids->pPresentIds[i];}
    if(present.frame_id<=2)fprintf(stderr,"Quest present frame=%llu format=%u bytes=%zu\n",(unsigned long long)present.frame_id,present.vk_format,sizeof(present));
-   if(send(swap->socket,&present,sizeof(present),MSG_NOSIGNAL)!=sizeof(present)||
-      recv(swap->socket,&release,sizeof(release),0)!=sizeof(release)||
-      release.magic!=QUEST_GPU_MAGIC||release.frame_id!=present.frame_id)result=VK_ERROR_SURFACE_LOST_KHR;
+   if(send(swap->socket,&present,sizeof(present),MSG_NOSIGNAL)!=sizeof(present))result=VK_ERROR_SURFACE_LOST_KHR;
   }
   if(result==VK_SUCCESS){
    auto done=std::chrono::steady_clock::now();swap->displayMs+=std::chrono::duration<double,std::milli>(done-rendered).count();
    ++swap->reportFrames;double elapsed=std::chrono::duration<double>(done-swap->reportSince).count();
    if(elapsed>=10){fprintf(stderr,"Quest frame timing: %.1f fps; record %.2f ms, GPU wait %.2f ms, display wait %.2f ms\n",swap->reportFrames/elapsed,swap->cpuMs/swap->reportFrames,swap->gpuMs/swap->reportFrames,swap->displayMs/swap->reportFrames);swap->cpuMs=swap->gpuMs=swap->displayMs=0;swap->reportFrames=0;swap->reportSince=done;}
-   for(auto node=(const VkBaseInStructure*)info->pNext;node;node=node->pNext)if(node->sType==VK_STRUCTURE_TYPE_PRESENT_ID_KHR){auto ids=(const VkPresentIdKHR*)node;if(i<ids->swapchainCount)swap->presented=std::max(swap->presented,ids->pPresentIds[i]);}
+   // Native acceptance preserves the previous handoff-completion semantics.
    swap->presentedCondition.notify_all();
   }
   if(info->pResults)info->pResults[i]=result;if(result!=VK_SUCCESS)return result;
@@ -335,29 +365,39 @@ VKAPI_ATTR VkResult VKAPI_CALL vkQueuePresentKHR(VkQueue queue,const VkPresentIn
 }
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physical,VkPhysicalDeviceFeatures2* features){I(vkGetPhysicalDeviceFeatures2)(physical,features);for(auto node=(VkBaseOutStructure*)features->pNext;node;node=node->pNext){if(node->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR)((VkPhysicalDevicePresentIdFeaturesKHR*)node)->presentId=VK_TRUE;if(node->sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR)((VkPhysicalDevicePresentWaitFeaturesKHR*)node)->presentWait=VK_TRUE;}}
 VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2KHR(VkPhysicalDevice physical,VkPhysicalDeviceFeatures2* features){vkGetPhysicalDeviceFeatures2(physical,features);}
-VKAPI_ATTR VkResult VKAPI_CALL vkWaitForPresentKHR(VkDevice,VkSwapchainKHR handle,uint64_t id,uint64_t timeout){auto swap=object<Swapchain>(handle);std::unique_lock<std::mutex> lock(swap->lock);auto ready=[&]{return swap->presented>=id;};if(ready())return VK_SUCCESS;if(!timeout)return VK_TIMEOUT;if(timeout==UINT64_MAX){swap->presentedCondition.wait(lock,ready);return VK_SUCCESS;}return swap->presentedCondition.wait_for(lock,std::chrono::nanoseconds(timeout),ready)?VK_SUCCESS:VK_TIMEOUT;}
+VKAPI_ATTR VkResult VKAPI_CALL vkWaitForPresentKHR(VkDevice,VkSwapchainKHR handle,uint64_t id,uint64_t timeout){
+ auto swap=object<Swapchain>(handle);std::unique_lock<std::mutex> lock(swap->lock);
+ auto ready=[&]{return swap->presented>=id;};if(ready())return VK_SUCCESS;
+ if(swap->offscreen){if(!timeout)return VK_TIMEOUT;if(timeout==UINT64_MAX){swap->presentedCondition.wait(lock,ready);return VK_SUCCESS;}return swap->presentedCondition.wait_for(lock,std::chrono::nanoseconds(timeout),ready)?VK_SUCCESS:VK_TIMEOUT;}
+ auto start=std::chrono::steady_clock::now();
+ while(!ready()){
+  uint64_t elapsed=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count();
+  uint64_t left=timeout==UINT64_MAX?timeout:elapsed>=timeout?0:timeout-elapsed;
+  VkResult result=swap->receiveEvent(left);if(result!=VK_SUCCESS)return result;
+ }
+ return VK_SUCCESS;
+}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateSemaphore(VkDevice device,const VkSemaphoreCreateInfo* info,const VkAllocationCallbacks* allocator,VkSemaphore* value){VkResult result=D(vkCreateSemaphore)(device,info,allocator,value);if(result<0){fprintf(stderr,"Quest Vulkan failure vkCreateSemaphore: %d\n",result);for(auto node=(const VkBaseInStructure*)info->pNext;node;node=node->pNext){fprintf(stderr,"Quest semaphore structure %d\n",node->sType);if(node->sType==VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO)fprintf(stderr,"Quest semaphore export handles=%x\n",((const VkExportSemaphoreCreateInfo*)node)->handleTypes);if(node->sType==VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO)fprintf(stderr,"Quest semaphore type=%d value=%llu\n",((const VkSemaphoreTypeCreateInfo*)node)->semaphoreType,(unsigned long long)((const VkSemaphoreTypeCreateInfo*)node)->initialValue);}}return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkCreateFence(VkDevice device,const VkFenceCreateInfo* info,const VkAllocationCallbacks* allocator,VkFence* value){VkResult result=D(vkCreateFence)(device,info,allocator,value);if(result<0)fprintf(stderr,"Quest Vulkan failure vkCreateFence: %d\n",result);return result;}
 VKAPI_ATTR VkResult VKAPI_CALL vkRegisterDisplayEventEXT(VkDevice device,VkDisplayKHR,const VkDisplayEventInfoEXT*,const VkAllocationCallbacks* allocator,VkFence* fence){
  static std::once_flag logged;std::call_once(logged,[]{fprintf(stderr,"Quest OpenXR display-event pacing active\n");});
  // Turnip has no Android display event source. SteamVR otherwise spins its
  // VulkanVblankThread through the unsupported display-control entry point.
- // Complete registration at the next OpenXR display boundary, then return a
- // genuine signaled Vulkan fence; its wait/status/destruction stay with Turnip.
- thread_local const QuestTracking* timing=nullptr;
- if(!timing){int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd>=0){void* mapped=mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0);close(fd);if(mapped!=MAP_FAILED)timing=static_cast<const QuestTracking*>(mapped);}}
+ // A genuine signaled Vulkan fence preserves normal Turnip wait/destruction.
+ thread_local const QuestTracking* timing=nullptr;thread_local QuestDisplayPulse pulse;
+ if(!timing){
+  int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);
+  if(fd>=0){struct stat data{};if(!fstat(fd,&data)&&data.st_size==sizeof(QuestTracking)){void* mapped=mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0);if(mapped!=MAP_FAILED)timing=static_cast<const QuestTracking*>(mapped);}close(fd);}
+ }
  QuestTracking sample{};
  if(timing)for(int attempt=0;attempt<8;attempt++){uint32_t before=__atomic_load_n(&timing->sequence,__ATOMIC_ACQUIRE);if(before&1)continue;memcpy(&sample,timing,sizeof(sample));if(before==__atomic_load_n(&timing->sequence,__ATOMIC_ACQUIRE))break;sample={};}
- timespec now{};clock_gettime(CLOCK_MONOTONIC,&now);
- uint64_t current=uint64_t(now.tv_sec)*1000000000+now.tv_nsec;
  float rate=sample.refresh_hz;uint64_t period=1000000000ull/(rate>=60&&rate<=144?rate:72);
  displayPeriodNs=period;
- uint64_t next=sample.predicted_monotonic_ns;
- if(!next)next=current+period;
- else if(next<=current)next+=((current-next)/period+1)*period;
- else next-=((next-current-1)/period)*period;
- timespec deadline{static_cast<time_t>(next/1000000000),static_cast<long>(next%1000000000)};
- while(clock_nanosleep(CLOCK_MONOTONIC,TIMER_ABSTIME,&deadline,nullptr)==EINTR){}
+ if(!pulse.wait(timing,period)){
+  // No running OpenXR session: remain bounded and avoid a vblank busy loop.
+  timespec pause{static_cast<time_t>(period/1000000000),static_cast<long>(period%1000000000)};
+  while(nanosleep(&pause,&pause)&&errno==EINTR){}
+ }
  VkFenceCreateInfo create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};create.flags=VK_FENCE_CREATE_SIGNALED_BIT;
  return D(vkCreateFence)(device,&create,allocator,fence);
 }

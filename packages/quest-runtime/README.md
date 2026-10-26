@@ -25,6 +25,10 @@ It installs the bundled rootfs and starts Linux, SteamVR, and Steam itself.
 The PC launcher and an ADB connection are optional developer tools. First
 installation takes longer while the rootfs is extracted; later launches reuse
 it and preserve Steam's account data.
+Startup checks Steam's UI library and can restore a damaged copy from the
+matching verified Valve package. It preserves accounts, games and runtime
+adapters. The first repair may require internet; a verified cached package can
+be reused offline.
 
 The Linux guest identifies itself as `frame` in Steam settings, Remote Play
 and desktop applications. Its PRoot adapter changes only the guest's uname
@@ -37,6 +41,14 @@ memory uses anonymous memfd files inside the session's IPC namespace. Browser
 launchers avoid zygote and separate audio service processes to reduce Android's
 child-process count. Network and GPU services remain separate processes for
 Steam's browser ownership checks and shared GPU textures.
+
+PulseAudio runs directly as an app-owned child through the bundled musl
+loader, so game and browser syscalls in PRoot cannot delay its audio clock.
+Android owns its startup and cleanup with the Linux session. The speaker
+bridge keeps a bounded PCM queue, adapts playback headroom to measured stalls,
+and smooths forced backlog skips. `adb logcat -s StearlightAudio` reports
+underruns, queued/dropped frames and delivery gaps; the server log is
+`files/logs/audio-server.log` inside the app's data directory.
 
 Steam's native sign-in panel, separate left dock, bottom dock, and Touch lasers
 are supplied by Valve's runtime.
@@ -52,6 +64,15 @@ games can map a stick to it in Steam Input. Original per-hand VR
 input paths remain available. Losing focus or a controller releases its inputs.
 The local adapter adds no background process and needs no kernel input-device
 permission. SDL3 and applications that bypass SDL are not covered by this fallback.
+Physical Bluetooth and USB gamepads paired in Horizon use Android's input
+events. The first connected external gamepad is exposed to Steam through SDL3
+and takes priority over the Touch pair in the SDL2 local-game adapter. It does
+not require selecting Touch gamepad mode. Sticks, D-pad, face/shoulder buttons,
+stick clicks, Start/Select and analog or digital triggers are forwarded;
+disconnect and loss of app focus release held input. Home remains owned by
+Horizon. Rumble, motion sensors and multiple simultaneous physical pads are
+not bridged. Steam's VR-controller pairing dialog does not scan Android HID
+gamepads; pair in Horizon's Bluetooth settings, then return to Stearlight.
 Enable Hand Tracking in Horizon settings and set the Touch controllers down to
 use hands in Steam's dashboard. Quest supplies articulated hand meshes and aim
 poses; index-thumb pinch selects, and holding a pinch drags Steam's controls.
@@ -61,8 +82,9 @@ pinch input, and a hand must open before clicking again. Picking up Touch
 controllers restores their models, buttons, sticks and gamepad input. Hands do
 not synthesize gamepad buttons or sticks. An optional shared mapping carries
 the 26 tracked OpenXR joints to the Linux driver, which publishes SteamVR's
-31-bone skeleton for each hand. Forwarding and presentation in streamed games
-still need headset verification. No hand-tracking history is recorded.
+31-bone skeleton for each hand. Hand tracking is local only; PCVR streaming
+uses the Touch controllers. Streamed hand tracking is not supported.
+No hand-tracking history is recorded.
 The streaming player uses the matching Mesa 26.1.6 EGL vendor with a
 surfaceless display. EGL/Vulkan pixel sharing is checked on the Quest;
 the older rootfs EGL driver produces black shared images. Its V4L2 decoder
@@ -83,7 +105,10 @@ the full image over a socket. Older APKs retain the socket fallback. Capture
 buffers are presented in completion order; when rendering falls behind, only
 completed buffers still owned by the decoder can be replaced. Encoded reference
 packets remain intact. The Quest launcher removes Frame's additional 6 ms
-submission delay; `STEARLIGHT_VRLINK_SUBMIT_DELAY_US=6000` restores it for comparison.
+submission delay. When MediaCodec's input slots fill, the Android bridge drains
+completed output while retrying input instead of resetting the stream. Decoder
+timestamp bookkeeping is bounded across recovery and skipped output.
+`STEARLIGHT_VRLINK_SUBMIT_DELAY_US=6000` restores the additional delay for comparison.
 The Quest compositor adapter converts the shipped spatial-video final-pass
 shader's reconstructed RGB to linear light before its sRGB output. It matches
 that shader exactly and leaves packed depth, motion and tracking data intact;
@@ -153,7 +178,9 @@ still need separate checks.
 The Mesa build also releases its owned DMA-heap/ION allocation descriptors
 after import, so freeing an exported GPU buffer can reclaim its memory.
 Startup uses the OS's original boot movie and loading loop in a stereo OpenXR
-layer, until the main panel and bottom dock are ready. Display buffers use
+layer. Once Valve's native bootstrapper overlay has textures, its own Frame
+boot/update UI replaces the loading loop; ordinary startup waits for the main
+panel and bottom dock. Display buffers use
 explicit Vulkan ownership transfers before Android reads them. A memory
 barrier makes earlier compositor pass writes visible before the next pass reads
 color and depth attachments, preventing stale right-eye trails on Turnip.
@@ -224,7 +251,10 @@ and activates the runtime on the next launch. The previous runtime is restored
 if the new dashboard fails to start. APK upgrades preserve an installed OS
 runtime update. Empty image extents remain sparse. The required free space is
 calculated from the selected image's data plus 2 GiB for staging and recovery;
-interrupted downloads resume. Stable and Beta may publish the same OS image,
+interrupted downloads resume. Completed images are verified before reuse; a
+failed chunk cancels queued work. Confirmed obsolete rollback runtimes are
+reclaimed before the next download. Storage failures report the required and
+available space. Stable and Beta may publish the same OS image,
 and the OS feed may lag SteamVR's separately distributed Beta releases.
 The October 15 image (0.5.6 Beta, build `20261015.6141207`) has completed this
 update path on Quest, and Steam's native client and OS update checks succeed.
@@ -292,7 +322,10 @@ Steam and Plasma receive the Quest's real battery percentage and charger state
 through the same thread's UPower adapter. Android also supplies battery voltage,
 temperature, and time to full charge when available. Changes are published over
 D-Bus once per second; Android continues to manage charging and low-battery
-shutdown. Unsupported battery-health and remaining-time estimates stay unknown.
+shutdown. Battery level and charger state are sampled together; unavailable
+readings retain the last valid level for at most 30 seconds. SteamVR receives
+related battery properties in one batch, only when they change. Unsupported
+battery-health and remaining-time estimates stay unknown.
 
 Passthrough uses a real OpenXR compositor layer. Native room-view style,
 monochrome hue, edge color and strength settings are forwarded to that layer.
@@ -339,6 +372,17 @@ The bottom dock's **+ > Desktop** action opens Valve's KDE Plasma workspace in a
 headset window. **Return to Gaming Mode** on the desktop closes it and restores
 Steam. The workspace includes Dolphin, Konsole, System Settings, Discover, VLC,
 KDE utilities, Valve's Vapor theme, and the Frame wallpaper catalog.
+The dock's **+** menu also lists installed desktop applications and open Plasma
+windows. Selecting an application starts Desktop when needed; selecting an open
+window restores it and brings its desktop panel forward.
+
+Quick access **Performance** retains Valve's controls. Scaling filter and mode
+apply to Gamescope's 2D game/desktop windows. The optional Frame MangoApp overlay
+shows their FPS and frame timing and stops when disabled. Android-restricted
+CPU/GPU sensor readings and manual clock/TDP controls are unavailable.
+Performance/Playtime profiles request the corresponding OpenXR performance
+levels; Horizon still owns clock and thermal decisions.
+
 Chromium is bundled separately from pinned Debian ARM64 packages, with private
 font and NSS libraries. It uses software rendering to avoid another GPU service.
 PRoot cannot supply Chromium's Linux namespace sandbox; the surrounding Android
@@ -393,6 +437,10 @@ scoped IPv6 link are bound to that Android network; Wi-Fi remains the internet
 connection. Socket bindings refresh after cable reconnection. If Horizon drops
 an established USB network, the app renews its request after a short recovery
 interval; unavailable requests retain their retry delay.
+The socket adapter also handles IPv4-mapped IPv6 destinations, batched UDP,
+and connected datagrams after the USB network changes. Wi-Fi stays on Android's
+normal internet route. While the Activity is resumed it holds Android's
+low-latency Wi-Fi lock; pausing or closing releases it.
 On Windows, run `post_process/quest/usb-network.ps1 -Adb /path/to/adb.exe`
 from an Administrator PowerShell after opening Stearlight and approving the
 USB-network prompt. It assigns a compatible IPv4 address only to the USB NCM
@@ -467,8 +515,18 @@ Configure the repository Actions secret `QUEST_SIGNING_KEYSTORE_BASE64` with
 a base64-encoded PKCS12 keystore, alias `androiddebugkey`, and store/key password
 `android`. The keystore itself is private; its password is the standard
 development password. The workflow fails rather than publishing with a new,
-incompatible key if the secret is missing. PR and nonpublishing builds use
-temporary debug certificates and do not receive this secret.
+incompatible key if the secret is missing. PR builds use temporary debug
+certificates and do not receive this secret. A trusted manual build can select
+`sign_test_apk` to retain the installed identity without publishing a release.
+
+For local Windows builds, `build-apk.ps1` accepts `-SigningStore PATH`. It also
+uses `.android/stearlight-signing/quest-continuous.keystore` in the current
+user's profile automatically when that file exists. Keep this key outside the
+checkout; it is not part of the APK payload. If its only surviving copy is the
+repository secret, the manual `recover_signing_public_key` workflow option
+encrypts it for a locally generated RSA public key (at least 3072 bits), skips
+the APK build and uploads only the encrypted result for one day. The matching
+private decryption key stays on the destination PC.
 
 For initial repository setup, generate a dedicated key outside the checkout
 and store it in GitHub with the GitHub CLI:

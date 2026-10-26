@@ -1,6 +1,7 @@
 // Run with LD_PRELOAD pointing at libquest_gamepad_x86_64.so. This uses the
 // real system SDL2 through dlopen/dlsym, as Mono's native imports do.
 #include "gamepad_state.h"
+#include "external_gamepad.h"
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -16,6 +17,8 @@ int main(int argc,char** argv){
  auto* shared=static_cast<QuestGamepadState*>(mmap(nullptr,sizeof(QuestGamepadState),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(shared!=MAP_FAILED);close(fd);
  *shared=QuestGamepadState{};setenv("STEARLIGHT_GAMEPAD_STATE",path,1);
  QuestTracking input{};input.session_visible=input.session_focused=1;input.grip[0].flags=input.grip[1].flags=15;
+ char externalPath[]="/tmp/stearlight-external-test-XXXXXX";fd=mkstemp(externalPath);assert(fd>=0);assert(ftruncate(fd,sizeof(QuestExternalGamepad))==0);
+ auto* physical=static_cast<QuestExternalGamepad*>(mmap(nullptr,sizeof(QuestExternalGamepad),PROT_READ|PROT_WRITE,MAP_SHARED,fd,0));assert(physical!=MAP_FAILED);close(fd);*physical=QuestExternalGamepad{};setenv("STEARLIGHT_EXTERNAL_GAMEPAD_STATE",externalPath,1);
  input.buttons[1]=QUEST_A;input.buttons[0]=QUEST_X;input.thumbstick[0][1]=.75f;input.trigger[1]=1;
  auto publish=[&](bool left,bool right){timespec now{};clock_gettime(CLOCK_MONOTONIC,&now);quest::publishGamepad(shared,quest::gamepadState(input,left,right,uint64_t(now.tv_sec)*1000000000+now.tv_nsec));};
  publish(true,true);
@@ -61,7 +64,7 @@ int main(int argc,char** argv){
  }
  if(getenv("STEARLIGHT_STEAM_INPUT")&&!strcmp(getenv("STEARLIGHT_STEAM_INPUT"),"0")){
   assert(count()==0);quit();
-  munmap(shared,sizeof(QuestGamepadState));unlink(path);puts("SDL2 graphics adapter preserves gamepad opt-out");return 0;
+  munmap(physical,sizeof(*physical));unlink(externalPath);munmap(shared,sizeof(QuestGamepadState));unlink(path);puts("SDL2 graphics adapter preserves gamepad opt-out");return 0;
  }
  assert(count()==1&&isController(0));void* controller=open(0);assert(controller);
  pump();assert(button(controller,0)&&button(controller,2));assert(axis(controller,1)<-24000);assert(axis(controller,5)==32767);
@@ -69,7 +72,12 @@ int main(int argc,char** argv){
  input.session_focused=0;publish(true,true);pump();assert(!button(controller,2)&&axis(controller,1)==0);
  input.session_focused=1;publish(true,true);pump();assert(button(controller,0));
  quest::publishGamepad(shared,QuestGamepadState{});pump();assert(!button(controller,0)&&axis(controller,5)==0);
+ QuestExternalGamepad pad{};pad.connected=1;pad.input.monotonic_ns=shared->monotonic_ns;timespec stamp{};clock_gettime(CLOCK_MONOTONIC,&stamp);pad.input.monotonic_ns=uint64_t(stamp.tv_sec)*1000000000+stamp.tv_nsec;
+ pad.input.buttons=(1<<1)|(1<<11);pad.input.axes[0]=.9f;pad.input.axes[4]=1;quest::publishExternalGamepad(physical,pad);pump();
+ assert(button(controller,1)&&button(controller,11)&&!button(controller,0));assert(axis(controller,0)>29000&&axis(controller,4)==32767);
+ pad.input.monotonic_ns=0;quest::publishExternalGamepad(physical,pad);pump();assert(!button(controller,1)&&axis(controller,0)==0);
+ pad.connected=0;quest::publishExternalGamepad(physical,pad);pump();assert(!button(controller,11));
  symbol<void(*)(void*)>(sdl,"SDL_GameControllerClose")(controller);quit();
  assert(init(0x2000)==0&&count()==1);quit();
- munmap(shared,sizeof(QuestGamepadState));unlink(path);puts("SDL2 gamepad buttons, axes, mode gates and release passed");
+ munmap(physical,sizeof(*physical));unlink(externalPath);munmap(shared,sizeof(QuestGamepadState));unlink(path);puts("SDL2 Touch/physical gamepad priority, buttons, axes, mode gates and release passed");
 }

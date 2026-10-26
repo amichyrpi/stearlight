@@ -12,6 +12,10 @@ on:
         description: Update the Continuous build release from the default branch
         type: boolean
         default: false
+      recover_signing_public_key:
+        description: Optional RSA public key for encrypted local signing recovery; skips the APK build
+        type: string
+        default: ''
       sign_test_apk:
         description: Sign this manual test APK with the continuous identity without publishing
         type: boolean
@@ -26,6 +30,7 @@ permissions:
 
 jobs:
   source-checks:
+    if: ${{ !inputs.recover_signing_public_key }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -183,3 +188,42 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: bash post_process/quest/publish-continuous.sh release-assets
+
+  recover-local-signing:
+    if: github.event_name == 'workflow_dispatch' && inputs.recover_signing_public_key != '' && !github.event.repository.fork
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install encryption support
+        run: sudo apt-get update && sudo apt-get install -y python3-cryptography
+      - name: Encrypt the existing identity for the destination PC
+        env:
+          RECOVERY_PUBLIC_KEY: ${{ inputs.recover_signing_public_key }}
+          QUEST_SIGNING_KEYSTORE_BASE64: ${{ secrets.QUEST_SIGNING_KEYSTORE_BASE64 }}
+        run: |
+          /usr/bin/python3 - <<'PY'
+          import base64, json, os
+          from pathlib import Path
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding, rsa
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+          public = serialization.load_pem_public_key(os.environ['RECOVERY_PUBLIC_KEY'].encode())
+          if not isinstance(public, rsa.RSAPublicKey) or public.key_size < 3072:
+              raise ValueError('A destination RSA public key of at least 3072 bits is required')
+          payload = base64.b64decode(os.environ['QUEST_SIGNING_KEYSTORE_BASE64'], validate=True)
+          if not payload:
+              raise ValueError('The continuous signing identity is not configured')
+          key, nonce = AESGCM.generate_key(bit_length=256), os.urandom(12)
+          context = b'Stearlight local signing recovery v1'
+          encrypted = AESGCM(key).encrypt(nonce, payload, context)
+          wrapped = public.encrypt(key, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=context))
+          result = {'version': 1, **{name: base64.b64encode(value).decode() for name, value in
+                    [('key', wrapped), ('nonce', nonce), ('ciphertext', encrypted)]}}
+          Path('encrypted-keystore.json').write_text(json.dumps(result))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quest-local-signing
+          path: encrypted-keystore.json
+          retention-days: 1
+          if-no-files-found: error

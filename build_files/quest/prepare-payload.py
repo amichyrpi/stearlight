@@ -135,6 +135,8 @@ def build_mesa(root, work, downloads):
         with tarfile.open(source_archive) as archive:
             archive.extractall(sources, filter="data")
     run(sys.executable, REPO / "build_files/quest/patch-mesa.py", mesa)
+    for test in ("mesa-kgsl-poll.test.py", "mesa-kgsl-merge.test.py"):
+        run(sys.executable, REPO / "packages/quest-runtime/tests" / test, mesa)
     sysroot = work / "sysroot/lib"
     (sysroot / "pkgconfig").mkdir(parents=True, exist_ok=True)
     zlib = sorted((root / "usr/lib/aarch64-linux-gnu").glob("libz.so.1.*"))
@@ -307,6 +309,7 @@ def main():
     stage_update_helpers(overlay, downloads)
     run(sys.executable, REPO / "build_files/quest/patch-gamescope.py",
         root / "opt/frame-gamescope/bin/gamescope", overlay / "opt/frame-gamescope/bin/gamescope")
+    shutil.copyfile(root / 'opt/frame-gamescope/bin/mangoapp', overlay / 'opt/frame-gamescope/bin/mangoapp')
     for spec in LOCK["audio"].values():
         run("dpkg-deb", "-x", fetch(spec, downloads), overlay)
     for spec in LOCK["gaming"].values():
@@ -347,7 +350,8 @@ def main():
     else:
         parser.error("Provide --frame-desktop-root to stage Chromium and its ARM64 dependencies")
     for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-launcher.sh", "desktop-manager.py", "steam_channels.py", "chromium-launcher.sh",
-                 "desktop-ui-bridge.js", "plasma-core-session.sh", "prepare-desktop.sh",
+                 "desktop-ui-bridge.js", "frame-menu-bridge.js", "frame_menus.py", "gamescope-perf.py", "desktop-windows.js", "desktop-run-app.sh",
+                 "plasma-core-session.sh", "prepare-desktop.sh",
                  "prepare-desktop-ui.py", "prepare-desktop-kio.py", "desktop-shell.sh", "adb-command.py", "desktop-remote.sh", "desktop-fonts.conf",
                  "flatpak-launcher.py", "prepare-flatpak.py", "flathub.flatpakrepo", "prepare-desktop-cli.sh", "desktop-defaults.py", "desktop-device-settings.sh"):
         shutil.copyfile(REPO / "packages/quest-runtime/linux" / name, quest / name)
@@ -400,10 +404,17 @@ def main():
         linux / "socket-report.c", "-ldl", "-o", quest / "libquest_socket.so")
     verify_musl_preload(quest / "libquest_socket.so", root)
     run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
+        linux / "mango-sensors.c", "-ldl", "-o", quest / "libquest_mango_sensors.so")
+    # No libc dependency: resolve the small identity adapter in musl itself.
+    run("aarch64-linux-gnu-gcc", "-O2", "-shared", "-fPIC", "-nostdlib",
+        linux / "audio-identity.c", "-o", quest / "libquest_audio_identity.so")
+    run("aarch64-linux-gnu-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
         linux / "wine-pe-memory.c", "-ldl", "-o", quest / "libquest_wine_pe.so")
     for compiler, architecture in (("x86_64-linux-gnu-g++", "x86_64"), ("aarch64-linux-gnu-g++", "aarch64")):
         run(compiler, "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-Wl,-Bsymbolic-functions", "-std=c++17",
             f"-I{includes}", linux / "sdl-gamepad.cpp", "-ldl", "-o", quest / f"libquest_gamepad_{architecture}.so")
+    run("aarch64-linux-gnu-g++", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-Wl,-Bsymbolic-functions", "-std=c++17",
+        f"-I{includes}", linux / "sdl3-gamepad.cpp", "-ldl", "-o", quest / "libquest_android_gamepad.so")
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
         f"-I{includes}", linux / "video-bridge.cpp", "-ldl", "-pthread",
         "-o", quest / "libquest_video.so")
@@ -411,6 +422,7 @@ def main():
     run("aarch64-linux-gnu-gcc", "-O2", linux / "streaming-client-launcher.c",
         "-o", quest / "streaming-client-launcher")
     shutil.copyfile(linux / "prepare-streaming-client.sh", quest / "prepare-streaming-client.sh")
+    shutil.copyfile(linux / "prepare-streaming-input.py", quest / "prepare-streaming-input.py")
     run("aarch64-linux-gnu-gcc", "-O2", linux / "shader-replay-launcher.c",
         "-o", quest / "shader-replay-launcher")
     run("aarch64-linux-gnu-gcc", "-O2", linux / "gamescopereaper.c",
@@ -468,6 +480,7 @@ def main():
     shutil.copyfile(linux / "steam-update-bridge.js", quest / "steam-update-bridge.js")
     shutil.copyfile(linux / "prepare-store-browser.sh", quest / "prepare-store-browser.sh")
     shutil.copyfile(linux / "prepare-steam-client.sh", quest / "prepare-steam-client.sh")
+    shutil.copyfile(linux / "prepare-steam-integrity.py", quest / "prepare-steam-integrity.py")
     shutil.copyfile(linux / "steam-channel-args.sh", quest / "steam-channel-args.sh")
     shutil.copyfile(linux / "prepare-cef.sh", quest / "prepare-cef.sh")
     shutil.copyfile(linux / "prepare-steam-input.py", quest / "prepare-steam-input.py")
@@ -501,6 +514,9 @@ def main():
     prefix = proot / "data/data/com.termux/files/usr"
     jni = output / "jniLibs/arm64-v8a"
     jni.mkdir(parents=True, exist_ok=True)
+    # Android permits exec from the APK's native library directory. The
+    # bundled musl loader keeps audio scheduling outside the PRoot tracer.
+    shutil.copyfile(root / "lib/ld-musl-aarch64.so.1", jni / "libquest_audio_loader.so")
     for source, name in [("lib/libtalloc.so.2.5.0", "libtalloc.so"), ("lib/libandroid-shmem.so", "libandroid-shmem.so")]:
         shutil.copyfile(prefix / source, jni / name)
     run(sys.executable, REPO / "build_files/quest/build-proot.py",

@@ -7,7 +7,7 @@
 #include <linux/futex.h>
 #include <linux/seccomp.h>
 
-/* ARM64 FUTEX_WAKE, TCGETS and Adreno KGSL ioctls need no PRoot translation. Let the
+/* ARM64 futex wake/requeue, TCGETS and KGSL ioctls need no PRoot translation. Let the
  * kernel handle these directly. Waits whose expected owner TID is 0, 1 or 2
  * also need no robust-list adaptation: app tracees cannot be Android's init
  * or kernel process. If the actual word differs, the kernel returns EAGAIN.
@@ -19,17 +19,20 @@
  * TCGETS2, terminal setters and other translated requests still fall through. */
 static const struct sock_filter quest_syscall_fast_path[] = {
  BPF_STMT(BPF_LD+BPF_W+BPF_ABS, offsetof(struct seccomp_data,arch)),
- BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, AUDIT_ARCH_AARCH64,0,16),
+ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, AUDIT_ARCH_AARCH64,0,19),
  BPF_STMT(BPF_LD+BPF_W+BPF_ABS, offsetof(struct seccomp_data,nr)),
  BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,29,0,4),
  BPF_STMT(BPF_LD+BPF_W+BPF_ABS, offsetof(struct seccomp_data,args[1])),
- BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,0x5401,11,0),
+ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,0x5401,14,0),
  BPF_STMT(BPF_ALU+BPF_AND+BPF_K,0xff00),
- BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,0x0900,9,10),
- BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,98,0,9),
+ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,0x0900,12,13),
+ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,98,0,12),
  BPF_STMT(BPF_LD+BPF_W+BPF_ABS, offsetof(struct seccomp_data,args[1])),
  BPF_STMT(BPF_ALU+BPF_AND+BPF_K,FUTEX_CMD_MASK),
- BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,FUTEX_WAKE,5,0),
+ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,FUTEX_WAKE,8,0),
+ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,FUTEX_REQUEUE,7,0),
+ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,FUTEX_CMP_REQUEUE,6,0),
+ BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,FUTEX_WAKE_OP,5,0),
  BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,FUTEX_WAIT,1,0),
  BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K,FUTEX_WAIT_BITSET,0,4),
  BPF_STMT(BPF_LD+BPF_W+BPF_ABS, offsetof(struct seccomp_data,args[2])),

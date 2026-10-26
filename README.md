@@ -56,6 +56,7 @@ It includes:
 - Standalone capability for VR and non-VR games
 - Desktop mode
 - Hand tracking
+- Controller support
 
 ## Known-issues
 
