@@ -56,7 +56,7 @@ struct Runtime {
  XrView frameViews[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};bool haveFrameViews=false;
  bool eyesDirty=true,lastLoading=true,lastPassthrough=false;
  bool haveStage=false,playSpacePublished=false;
- std::chrono::steady_clock::time_point eyeReport{};double eyeMs=0,eyeWaitMs=0,poseAgeMs=0,maxPoseAgeMs=0;unsigned eyeFrames=0;
+ std::chrono::steady_clock::time_point eyeReport{};double eyeMs=0;unsigned eyeFrames=0;
  PFN_xrConvertTimeToTimespecTimeKHR timeToMonotonic=nullptr;
  PFN_xrGetDisplayRefreshRateFB getRate=nullptr;PFN_xrRequestDisplayRefreshRateFB requestRate=nullptr;
  PFN_xrPerfSettingsSetPerformanceLevelEXT setPerformance=nullptr;
@@ -313,19 +313,6 @@ struct Runtime {
   eyesDirty=eyesDirty||loading!=lastLoading||passthroughActive!=lastPassthrough||(!loading&&gpu.ready())||showHands||lastHands;
   lastHands=showHands;
   lastLoading=loading;lastPassthrough=passthroughActive;
-  bool drewEyes=state.shouldRender&&eyesDirty;
-  auto eyeStart=std::chrono::steady_clock::now();
-  uint32_t eyeIndices[2]{};double swapWaitMs=0;
-  if(drewEyes){
-   for(int i=0;i<2;i++){
-    XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eyes[i].chain,&acquire,&eyeIndices[i]));
-    XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eyes[i].chain,&imageWait));
-   }
-   swapWaitMs=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-eyeStart).count();
-   // Buffer availability can lag behind xrWaitFrame. Select the newest
-   // completed Linux image after those waits, once for the whole stereo pair.
-   gpu.poll();
-  }
   // Repeated submissions of the same pixels must keep the same layer pose.
   // Updating it every xrWaitFrame incorrectly head-locks a stalled Linux image.
   if(gpu.ready()||!haveFrameViews){
@@ -346,32 +333,32 @@ struct Runtime {
     }
    }haveFrameViews=true;
   }
-  // The copy thread has completed this history image before publication and
-  // acknowledged Linux independently of xrWaitFrame. Retain the adopted image
-  // through both eye draws; finish only clears its fresh-frame indication.
+  // Keep the imported image leased through both eye reads. The next adoption
+  // retires it only after this iteration's glFinish. Clearing freshness here
+  // does not return the allocation to Linux.
   gpu.finish();
+  bool drewEyes=state.shouldRender&&eyesDirty;
+  auto eyeStart=std::chrono::steady_clock::now();
   // OpenXR reuses the most recently released image. Reproject repeated Linux
   // frames without redrawing seven million pixels at every headset tick.
   if(state.shouldRender)for(int i=0;i<2;i++){
    Eye& eye=eyes[i];
    if(eyesDirty){
-   glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[eyeIndices[i]].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loading){gpu.draw(i,passthroughActive);if(showHands)handRender.draw(handTracking,frameViews[i],eye.width,eye.height);}glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));
+   uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eye.chain,&acquire,&index));XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eye.chain,&imageWait));glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[index].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loading){gpu.draw(i,passthroughActive);if(showHands)handRender.draw(handTracking,frameViews[i],eye.width,eye.height);}glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));
    }
    projectionViews[i].pose=frameViews[i].pose;projectionViews[i].fov=frameViews[i].fov;projectionViews[i].subImage={eye.chain,{{0,0},{static_cast<int32_t>(eye.width),static_cast<int32_t>(eye.height)}},0};
   }
-  if(drewEyes&&!loading)gpu.endRead();
   if(state.shouldRender)eyesDirty=false;
   XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};projection.space=stage;projection.layerFlags=passthroughActive?XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT:0;projection.viewCount=2;projection.views=projectionViews;
   XrCompositionLayerPassthroughFB pass{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};pass.layerHandle=camera.layer;XrCompositionLayerQuad status{XR_TYPE_COMPOSITION_LAYER_QUAD};status.space=head;status.eyeVisibility=XR_EYE_VISIBILITY_BOTH;status.subImage={statusEye.chain,{{0,0},{450,450}},0};status.pose=identity();status.pose.position.z=-1.7f;status.size={.8f,.8f};const XrCompositionLayerBaseHeader* layers[3];uint32_t layerCount=0;if(state.shouldRender){if(passthroughActive)layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&pass);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);if(loading){updateStatus(state.predictedDisplayTime);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&status);}}
   XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};end.displayTime=state.predictedDisplayTime;end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;end.layerCount=layerCount;end.layers=layers;XR(xrEndFrame(session,&end));
+  // Preserve completion of each newly drawn stereo image, independently of
+  // the already completed DMA-BUF copy. Repeated images need no extra wait.
+  if(drewEyes)glFinish();
   if(drewEyes){
    auto done=std::chrono::steady_clock::now();eyeMs+=std::chrono::duration<double,std::milli>(done-eyeStart).count();++eyeFrames;
-   eyeWaitMs+=swapWaitMs;
-   auto stamp=gpu.inputPose().predicted_monotonic_ns;
-   double age=stamp&&sample.predicted_monotonic_ns>stamp?(sample.predicted_monotonic_ns-stamp)*1e-6:0;
-   poseAgeMs+=age;maxPoseAgeMs=std::max(maxPoseAgeMs,age);
    if(eyeReport.time_since_epoch().count()==0)eyeReport=done;
-   if(std::chrono::duration<double>(done-eyeReport).count()>=5){LOG("Stereo draw/submit %.2f ms, buffer wait %.2f ms; local image pose age %.2f ms (max %.2f)",eyeMs/eyeFrames,eyeWaitMs/eyeFrames,poseAgeMs/eyeFrames,maxPoseAgeMs);eyeMs=eyeWaitMs=poseAgeMs=maxPoseAgeMs=0;eyeFrames=0;eyeReport=done;}
+   if(std::chrono::duration<double>(done-eyeReport).count()>=5){LOG("Stereo eye draw/submit %.2f ms/frame",eyeMs/eyeFrames);eyeMs=0;eyeFrames=0;eyeReport=done;}
   }
   static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }

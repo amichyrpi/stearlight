@@ -6,7 +6,8 @@ export DISPLAY=${DISPLAY:-:0} LIBGL_KOPPER_DISABLE=true
 export LD_PRELOAD=/opt/quest/libquest_socket.so
 . /opt/quest/cef-arguments.sh
 # Android limits unmanaged child processes. Keep renderers separate while
-# avoiding the two zygotes for each CEF browser.
-exec taskset 0x7c "$directory/steamwebhelper" "${quest_cef_args[@]}" \
- --no-zygote --renderer-process-limit=1 \
+# avoiding the two zygotes for each CEF browser. Let Android choose CPU placement;
+# two raster workers prepare UI tiles without adding another child process.
+exec "$directory/steamwebhelper" "${quest_cef_args[@]}" \
+ --no-zygote --renderer-process-limit=1 --num-raster-threads=2 \
  >"$HOME/.steam/steam/logs/steamwebhelper.log" 2>&1
