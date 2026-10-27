@@ -4,6 +4,7 @@
   const chunks = globalThis.webpackChunksteamui = globalThis.webpackChunksteamui || [];
   const push = chunks.push.bind(chunks), listeners = new Set();
   let state, State, Update, HMD, Windows, lastWindows = '', publishing = false;
+  let lastFocus = 0;
   async function call(operation, fields = {}) {
     const response = await fetch('http://127.0.0.1:27771/', { method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
@@ -60,6 +61,13 @@
     if (!value) return;
     const changed = ['advanced', 'overlay', 'filter', 'scaler', 'sharpness'].some(key => state?.[key] !== value[key]);
     state = value;
+    if (state.focus_token && state.focus_token !== lastFocus) {
+      lastFocus = state.focus_token;
+      const overlay = state.focus_overlay;
+      setTimeout(() => globalThis.SteamClient?.OpenVR?.VROverlay?.ShowDashboard(overlay), 300);
+    }
+    globalThis.__stearlightFrameWindowIcons = Object.fromEntries((state.windows || [])
+      .map(window => [window.window_id, window.icon_base64 ? 'data:image/png;base64,' + window.icon_base64 : '']));
     if (changed) emit();
     publishPaths();
     const profile = globalThis.settingsStore?.clientSettings?.steamos_platform_performance_profile;
@@ -99,8 +107,10 @@
       if (!onlyVR) return native;
       try {
         if (!state) state = (await call('status')).frame;
-        return [...native, ...(state?.apps || []).map(app => ({ bIsApplication: true,
-          strAppName: app.name, strExePath: 'stearlight-desktop-app', strArguments: '',
+        return [...native.filter(app => app.strCmdline === 'steamos-nested-desktop'),
+          ...(state?.apps || []).map(app => ({ bIsApplication: true,
+          strAppName: app.name, strExePath: 'stearlight-desktop-app:' + app.id, strArguments: '',
+          strIconDataBase64: app.icon_base64, strIconDataFormat: 'png',
           strCmdline: 'stearlight-desktop-app:' + app.id }))];
       } catch { return native; }
     };

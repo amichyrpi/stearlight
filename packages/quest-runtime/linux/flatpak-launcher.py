@@ -175,7 +175,7 @@ def request(app, custom_command=None, arguments=()):
 
 
 def launch(value):
-    if not (STATE / 'desktop-mode.active').is_file():
+    if not (STATE / 'desktop-mode.active').is_file() and os.environ.get('STEARLIGHT_DESKTOP_APP_WINDOW') != '1':
         raise ValueError('Open Desktop before starting a desktop application')
     directory = STATE / 'desktop-app-requests'
     directory.mkdir(exist_ok=True)

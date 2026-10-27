@@ -209,6 +209,7 @@ int main(int argc, char** argv) {
     std::fflush(stdout);
     if (!session.startClient()) { vr::VR_Shutdown(); return 1; }
     bool passthroughRequested = false;
+    bool passthroughApplied = false;
     const char* passthrough = "/run/stearlight/quest/passthrough.enabled";
     unlink(passthrough);
     auto* settings = vr::VRSettings();
@@ -218,8 +219,11 @@ int main(int argc, char** argv) {
         settings->SetInt32("camera", "roomView", 2);
     }
     const char* ready = "/run/stearlight/quest/dashboard.ready";
+    const char* bootstrapperReady = "/run/stearlight/quest/bootstrapper.ready";
     unlink(ready);
+    unlink(bootstrapperReady);
     bool dashboardRequested = false, dashboardReady = false, steamRequested = false;
+    bool bootstrapperShown = false;
     bool failed = false, desktopShown = false, desktopWasActive = false, remoteMode = false;
     std::string previousCameraStyle;
     std::chrono::steady_clock::time_point cameraPollAt{};
@@ -229,7 +233,7 @@ int main(int argc, char** argv) {
         if(desktopKind=="remote"){
             if(!remoteMode){
                 remoteMode=true;vr::VR_Shutdown();session.stopVR();
-                unlink(ready);std::puts("QUEST_REMOTE_DESKTOP_VR_RELEASED");
+                unlink(ready);unlink(bootstrapperReady);std::puts("QUEST_REMOTE_DESKTOP_VR_RELEASED");
             }
             audio.poll(true);
             if(!session.poll(access("/run/stearlight/quest/local-vr-audio.paused",F_OK)==0)){failed=true;break;}
@@ -276,9 +280,6 @@ int main(int argc, char** argv) {
             }
             bool requested = settings->GetBool("stearlight_quest", "passthrough_enabled", &settingError);
             if (settingError == vr::VRSettingsError_None && requested != passthroughRequested) {
-                if (requested && access("/run/stearlight/quest/passthrough.supported", F_OK) == 0) {
-                    if (FILE* marker = std::fopen(passthrough, "w")) std::fclose(marker);
-                } else unlink(passthrough);
                 passthroughRequested = requested;
                 std::printf("QUEST_NATIVE_ROOMVIEW_REQUESTED %d\n", requested);
                 std::fflush(stdout);
@@ -286,6 +287,35 @@ int main(int argc, char** argv) {
         }
         vr::VROverlayHandle_t overlay;
         auto* overlays = vr::VROverlay();
+        vr::VROverlayHandle_t bootstrapper;
+        bool nativeStartup = !dashboardReady && overlays &&
+            overlays->FindOverlay("valve.steam.gamepadui.bootstrapper", &bootstrapper) == vr::VROverlayError_None;
+        if (nativeStartup && !bootstrapperShown) {
+            overlays->ShowDashboard("valve.steam.gamepadui.bootstrapper");
+            bootstrapperShown = true;
+            dashboardRequested = true;
+        }
+        // Show Valve's real startup surface over the room. This temporary
+        // camera request does not change the user's room-view preference.
+        bool cameraRequested = (passthroughRequested || nativeStartup) &&
+            access("/run/stearlight/quest/passthrough.supported", F_OK) == 0;
+        if (cameraRequested != passthroughApplied) {
+            if (cameraRequested) {
+                if (FILE* marker = std::fopen(passthrough, "w")) std::fclose(marker);
+            } else unlink(passthrough);
+            passthroughApplied = cameraRequested;
+        }
+        uint32_t startupWidth = 0, startupHeight = 0;
+        vr::VROverlayHandle_t startupSystem;
+        if (nativeStartup && access("/run/stearlight/quest/passthrough.composition-ready", F_OK) == 0 &&
+            overlays->FindOverlay("system.systemui", &startupSystem) == vr::VROverlayError_None &&
+            overlays->GetOverlayTextureSize(startupSystem, &startupWidth, &startupHeight) == vr::VROverlayError_None &&
+            startupWidth && startupHeight) {
+            if (access(bootstrapperReady, F_OK) != 0) {
+                if (FILE* marker = std::fopen(bootstrapperReady, "w")) std::fclose(marker);
+                std::puts("QUEST_NATIVE_BOOTSTRAPPER_READY");
+            }
+        } else unlink(bootstrapperReady);
         bool desktopMode = access("/run/stearlight/quest/desktop-mode.active", F_OK) == 0;
         if (!desktopMode && desktopWasActive) { desktopShown = false; steamRequested = false; }
         desktopWasActive = desktopMode;
@@ -294,8 +324,9 @@ int main(int argc, char** argv) {
             vr::VROverlayHandle_t desktop;
             // Gamescope's master dashboard overlay owns connector surfaces;
             // the master itself need not have a texture size.
-            if (overlays->FindOverlay("stearlight.plasma.desktop", &desktop) == vr::VROverlayError_None) {
-                overlays->ShowDashboard("stearlight.plasma.desktop");
+            if (overlays->FindOverlay("stearlight.desktop.app.2000000000", &desktop) == vr::VROverlayError_None) {
+                overlays->SetOverlayName(desktop, "Desktop");
+                overlays->ShowDashboard("stearlight.desktop.app.2000000000");
                 desktopShown = true;
                 unlink(desktopFocus);
             }
@@ -357,6 +388,7 @@ int main(int argc, char** argv) {
     }
     vr::VR_Shutdown();
     unlink(passthrough);
+    unlink(bootstrapperReady);
     unlink(ready);
     return failed ? 1 : 0;
 }

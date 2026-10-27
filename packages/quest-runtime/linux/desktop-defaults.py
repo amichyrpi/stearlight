@@ -21,7 +21,37 @@ def write(path, value):
         value.write(stream, space_around_delimiters=False)
 
 
-def configure(home, settings):
+def configure(home, settings, desktop=Path('/opt/stearlight-desktop')):
+    face = home / '.face.icon'
+    source = desktop / 'usr/share/pixmaps/steamos.png'
+    legacy = desktop / 'usr/share/steamos/steam_icon.png'
+    default_face = not face.exists() or (legacy.is_file() and face.read_bytes() == legacy.read_bytes())
+    if default_face and source.is_file():
+        temporary = face.with_suffix('.next')
+        temporary.write_bytes(source.read_bytes())
+        temporary.replace(face)
+    header = desktop / 'usr/share/plasma/plasmoids/org.kde.plasma.kickoff/contents/ui/Header.qml'
+    if header.is_file():
+        source = header.read_text()
+        gate = 'visible: KConfig.KAuthorized.authorizeControlModule("kcm_users")'
+        if gate in source:
+            # The account editor is unavailable in PRoot; the real KUser
+            # identity/avatar should still be visible as a read-only profile.
+            source = source.replace(gate,
+                'visible: true\n            enabled: KConfig.KAuthorized.authorizeControlModule("kcm_users")')
+        # Kirigami's compiled avatar uses a shader unsupported by Qt Quick's
+        # software renderer. Override only this menu's image, preserving the
+        # native KUser identity and the user's selected face icon.
+        if '// Stearlight profile image' not in source:
+            source = source.replace('source: kuser.faceIconUrl', '''source: kuser.faceIconUrl
+
+            // Stearlight profile image
+            contentItem: Image {
+                source: kuser.faceIconUrl
+                fillMode: Image.PreserveAspectFit
+                cache: false
+            }''')
+        header.write_text(source)
     profile = home / '.local/share/konsole/Stearlight.profile'
     if not profile.exists():
         profile.parent.mkdir(parents=True, exist_ok=True)

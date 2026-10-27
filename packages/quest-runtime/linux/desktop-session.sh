@@ -32,7 +32,7 @@ export KDE_SKIP_SYSTEMD_BOOT=1
 export GLIBC_TUNABLES=glibc.pthread.rseq=0
 mkdir -p "$XDG_CONFIG_HOME" "$HOME/Desktop" "$HOME/.local/share/applications"
 printf '[General]\nsystemdBoot=false\n' >"$XDG_CONFIG_HOME/startkderc"
-printf '[KSplash]\nEngine=none\nTheme=None\n' >"$XDG_CONFIG_HOME/ksplashrc"
+printf '[KSplash]\nEngine=KSplashQML\nTheme=org.kde.breeze.desktop\n' >"$XDG_CONFIG_HOME/ksplashrc"
 printf '[Basic Settings]\nIndexing-Enabled=false\n' >"$XDG_CONFIG_HOME/baloofilerc"
 if [ ! -f "$XDG_CONFIG_HOME/kdeglobals" ];then
  printf '[KDE]\nLookAndFeelPackage=com.valve.vapor.desktop\nwidgetStyle=Breeze\n[General]\nColorScheme=Vapor\n[Icons]\nTheme=breeze-dark\n' >"$XDG_CONFIG_HOME/kdeglobals"
@@ -134,22 +134,17 @@ PY
 /usr/bin/python3 /opt/quest/desktop-defaults.py
 # The minimal session does not run the full login autostart that normally
 # initializes KDE's application database.
-"$desktop/usr/bin/kbuildsycoca6" --noincremental
 if [ "${1:-remote}" = headset ];then
  parent_runtime="$XDG_RUNTIME_DIR"
- parent_wayland=gamescope-0
- for attempt in {1..100};do
-  [ -S "$parent_runtime/$parent_wayland" ] && break
-  sleep 0.1
- done
- case "$parent_wayland" in /*) ;; *) parent_wayland="$parent_runtime/$parent_wayland" ;; esac
  export XDG_RUNTIME_DIR="$parent_runtime/stearlight-plasma"
  mkdir -p "$XDG_RUNTIME_DIR/pulse"
  chmod 700 "$XDG_RUNTIME_DIR"
  ln -sf "$parent_runtime/pulse/native" "$XDG_RUNTIME_DIR/pulse/native"
- export WAYLAND_DISPLAY="$parent_wayland" XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM=wayland
+ export WAYLAND_DISPLAY=wayland-0 XDG_SESSION_TYPE=wayland QT_QPA_PLATFORM=xcb
  export KWIN_COMPOSE=Q QT_QPA_OFFSCREEN_NO_GLX=1
- unset DISPLAY
+ # Plasma uses nested Wayland; KWin's outer window uses the shared Xwayland
+ # so Gamescope can give Desktop its own app identity and input focus.
+ # Legacy X11 clients also share that server, avoiding a second Xwayland.
  # The APK already owns a private bus. Reuse it rather than adding another
  # permanent child just for the headset workspace. KDE's activation services
  # inherit the nested display and the relocated Frame libraries.
@@ -163,8 +158,9 @@ if [ "${1:-remote}" = headset ];then
   QML_IMPORT_PATH QML2_IMPORT_PATH QT_QUICK_BACKEND QT_XCB_NO_MITSHM \
   FONTCONFIG_PATH FONTCONFIG_FILE LANG LC_ALL LANGUAGE VLC_PLUGIN_PATH SPA_PLUGIN_DIR STEARLIGHT_DESKTOP_INSTANCE
  exec "$desktop/usr/bin/kwin_wayland" --socket wayland-0 \
-  --wayland-display "$parent_wayland" --width 1280 --height 800 --no-lockscreen \
-  --xwayland --exit-with-session /opt/quest/plasma-core-session.sh
+  --x11-display "$DISPLAY" --width 1280 --height 800 --no-lockscreen \
+  -qwindowicon /opt/quest/desktop-icons/desktop.png \
+  --exit-with-session /opt/quest/plasma-core-session.sh
 fi
 export DBUS_SESSION_BUS_ADDRESS=$("$desktop/usr/bin/dbus-daemon" --session --fork --print-address)
 exec /opt/quest/plasma-core-session.sh remote

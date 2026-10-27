@@ -3,7 +3,7 @@
 let previous = '';
 function publish() {
     const windows = workspace.stackingOrder.filter(w => w.normalWindow && !w.skipTaskbar)
-        .map(w => ({ id: String(w.internalId), title: w.caption }));
+        .map(w => ({ id: String(w.internalId), title: w.caption, app_id: w.desktopFileName }));
     const value = JSON.stringify(windows);
     if (value !== previous) { previous = value; print('STEARLIGHT_WINDOWS ' + value); }
 }

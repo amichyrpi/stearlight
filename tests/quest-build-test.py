@@ -27,11 +27,14 @@ class QuestBuildTest(unittest.TestCase):
     def apk(self, omit=None, corrupt=False):
         overlay = io.BytesIO()
         names = ('opt/quest/start-session.sh opt/quest/runtime-monitor opt/quest/libquest_vulkan.so '
+                 'opt/quest/desktop-app-session.sh opt/quest/desktop-icons/desktop.png '
                  'opt/quest/libquest_socket.so opt/quest/libquest_video.so opt/quest/libquest_streaming_drm.so '
                  'opt/quest/libquest_gamepad_aarch64.so opt/quest/libquest_gamepad_x86_64.so '
                  'opt/quest/libquest_android_gamepad.so opt/quest/libquest_audio_identity.so '
                  'opt/frame-gamescope/bin/mangoapp opt/quest/libquest_mango_sensors.so '
                  'opt/quest/prepare-steam-integrity.py opt/quest/frame_menus.py opt/quest/frame-menu-bridge.js opt/quest/gamescope-perf.py '
+                 'opt/stearlight-desktop/usr/share/pixmaps/steamos.png '
+                 'opt/quest/libquest_steam_update_ui.so '
                  'opt/quest/desktop-windows.js opt/quest/desktop-run-app.sh '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so '

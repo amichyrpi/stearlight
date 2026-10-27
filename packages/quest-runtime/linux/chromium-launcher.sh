@@ -18,7 +18,7 @@ platform=x11
 [ -z "${WAYLAND_DISPLAY:-}" ] || platform=wayland
 site_options=()
 disabled=AudioServiceOutOfProcess,SpareRendererForSitePerProcess,BackForwardCache,NativeNotifications,WebUIOmniboxPopup,WebUIOmniboxAimPopup,WebUIOmniboxFullPopup,OptimizationGuideModelExecution,LogOnDeviceMetricsOnStartup
-if [[ "${XDG_RUNTIME_DIR:-}" = */stearlight-plasma ]];then
+if [[ "${XDG_RUNTIME_DIR:-}" = */stearlight-plasma || "${STEARLIGHT_DESKTOP_APP_WINDOW:-}" = 1 ]];then
  # The headset keeps SteamVR and its UI alive alongside KDE. Per-site
  # renderers exceed Android's unchanged process cap even with one tab.
  # Remote Desktop releases that stack and retains normal site isolation.

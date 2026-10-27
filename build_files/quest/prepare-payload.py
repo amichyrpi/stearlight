@@ -351,11 +351,12 @@ def main():
         parser.error("Provide --frame-desktop-root to stage Chromium and its ARM64 dependencies")
     for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-launcher.sh", "desktop-manager.py", "steam_channels.py", "chromium-launcher.sh",
                  "desktop-ui-bridge.js", "frame-menu-bridge.js", "frame_menus.py", "gamescope-perf.py", "desktop-windows.js", "desktop-run-app.sh",
-                 "plasma-core-session.sh", "prepare-desktop.sh",
+                 "plasma-core-session.sh", "prepare-desktop.sh", "desktop-app-session.sh",
                  "prepare-desktop-ui.py", "prepare-desktop-kio.py", "desktop-shell.sh", "adb-command.py", "desktop-remote.sh", "desktop-fonts.conf",
                  "flatpak-launcher.py", "prepare-flatpak.py", "flathub.flatpakrepo", "prepare-desktop-cli.sh", "desktop-defaults.py", "desktop-device-settings.sh"):
         shutil.copyfile(REPO / "packages/quest-runtime/linux" / name, quest / name)
         (quest / name).chmod(0o755)
+    run(sys.executable, REPO / "build_files/quest/stage-desktop-icons.py", overlay)
     pam_headers = work / "desktop-pam-headers"
     pam_headers.mkdir(exist_ok=True)
     shutil.copytree('/usr/include/security', pam_headers / 'security', dirs_exist_ok=True)
@@ -415,6 +416,8 @@ def main():
             f"-I{includes}", linux / "sdl-gamepad.cpp", "-ldl", "-o", quest / f"libquest_gamepad_{architecture}.so")
     run("aarch64-linux-gnu-g++", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-Wl,-Bsymbolic-functions", "-std=c++17",
         f"-I{includes}", linux / "sdl3-gamepad.cpp", "-ldl", "-o", quest / "libquest_android_gamepad.so")
+    run("aarch64-linux-gnu-g++", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-std=c++17",
+        linux / "steam-update-ui.cpp", "-ldl", "-o", quest / "libquest_steam_update_ui.so")
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
         f"-I{includes}", linux / "video-bridge.cpp", "-ldl", "-pthread",
         "-o", quest / "libquest_video.so")
