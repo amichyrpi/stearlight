@@ -197,11 +197,11 @@
   },
   "chromium": {
     "chromium": {
-      "url": "https://security.debian.org/debian-security/pool/updates/main/c/chromium/chromium_155.0.8059.79-1~deb13u1_arm64.deb",
+      "url": "https://snapshot.debian.org/archive/debian-security/20261015T173155Z/pool/updates/main/c/chromium/chromium_155.0.8059.79-1~deb13u1_arm64.deb",
       "sha256": "bb4334a065801d7482df4783b535ab16654fb71e6eac8a89bd49eb2e7082be27"
     },
     "chromium-common": {
-      "url": "https://security.debian.org/debian-security/pool/updates/main/c/chromium/chromium-common_155.0.8059.79-1~deb13u1_arm64.deb",
+      "url": "https://snapshot.debian.org/archive/debian-security/20261015T173155Z/pool/updates/main/c/chromium/chromium-common_155.0.8059.79-1~deb13u1_arm64.deb",
       "sha256": "2f8d97e652adc2afa8cc96f79141ffdff0ca4f11c3a35671e7b61f60d10eb2b5"
     },
     "libflac14": {
