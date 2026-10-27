@@ -55,6 +55,8 @@ def verify(apk):
         if digest.hexdigest() != archive.read('assets/rootfs.sha256').decode('ascii').strip():
             raise ValueError('Rootfs content SHA-256 mismatch')
         required = {
+            'opt/quest/desktop-app-session.sh', 'opt/quest/desktop-icons/desktop.png',
+            'opt/stearlight-desktop/usr/share/pixmaps/steamos.png',
             'opt/frame-gamescope/bin/mangoapp',
             'opt/quest/libquest_mango_sensors.so',
             'opt/quest/start-session.sh', 'opt/quest/runtime-monitor', 'opt/quest/libquest_vulkan.so',

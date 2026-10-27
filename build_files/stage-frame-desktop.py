@@ -164,6 +164,7 @@ def stage(root, destination, append=False):
     for name in ['deckard-nested-desktop.desktop', 'org.chromium.Chromium.desktop', 'uxterm.desktop']:
         copy('usr/share/applications/' + name)
     copy("usr/share/wallpapers/Steam Deck Logo Default.jpg")
+    copy('usr/share/pixmaps/steamos.png')
     for relative in TREES:
         copy(relative)
     for name in ['org.kde.konsole.desktop', 'org.kde.dolphin.desktop',

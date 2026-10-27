@@ -294,8 +294,9 @@ int main(int argc, char** argv) {
             vr::VROverlayHandle_t desktop;
             // Gamescope's master dashboard overlay owns connector surfaces;
             // the master itself need not have a texture size.
-            if (overlays->FindOverlay("stearlight.plasma.desktop", &desktop) == vr::VROverlayError_None) {
-                overlays->ShowDashboard("stearlight.plasma.desktop");
+            if (overlays->FindOverlay("stearlight.desktop.app.2000000000", &desktop) == vr::VROverlayError_None) {
+                overlays->SetOverlayName(desktop, "Desktop");
+                overlays->ShowDashboard("stearlight.desktop.app.2000000000");
                 desktopShown = true;
                 unlink(desktopFocus);
             }

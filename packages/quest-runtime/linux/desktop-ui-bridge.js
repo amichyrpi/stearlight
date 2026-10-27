@@ -103,7 +103,7 @@
       if (result.ok && result.value.desktop_running && result.value.focus_id &&
           result.value.focus_id !== desktopFocus) {
         desktopFocus = result.value.focus_id;
-        setTimeout(() => overlay.ShowDashboard('stearlight.plasma.desktop'), 300);
+        setTimeout(() => overlay.ShowDashboard('stearlight.desktop.app.2000000000'), 300);
       }
     } catch {} finally { checkingFocus = false; }
   }, 1000);

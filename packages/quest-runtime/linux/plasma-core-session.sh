@@ -14,6 +14,27 @@ for attempt in {1..100};do
 done
  /usr/bin/dbus-update-activation-environment WAYLAND_DISPLAY DISPLAY
 fi
+# Use KDE's shipped splash and real startup stages. The desktop stage comes
+# from plasmashell once its workspace is ready; no replacement animation.
+"$desktop/usr/bin/ksplashqml" org.kde.breeze.desktop --nofork &
+splash=$!
+cleanup() {
+ kill "$splash" "${shell:-}" 2>/dev/null || true
+ wait "$splash" 2>/dev/null || true
+}
+trap cleanup EXIT
+for attempt in {1..30};do
+ /usr/bin/dbus-send --session --print-reply --dest=org.kde.KSplash /KSplash \
+  org.kde.KSplash.setStage string:startPlasma >/dev/null 2>&1 && break
+ sleep 0.1
+done
+/usr/bin/dbus-send --session --print-reply --dest=org.kde.KSplash /KSplash \
+ org.kde.KSplash.setStage string:kcminit >/dev/null 2>&1 || true
+"$desktop/usr/bin/kbuildsycoca6" --noincremental
+for stage in ksmserver wm;do
+ /usr/bin/dbus-send --session --print-reply --dest=org.kde.KSplash /KSplash \
+  org.kde.KSplash.setStage "string:$stage" >/dev/null 2>&1 || true
+done
 # The workspace, window manager and activity service supply the desktop.
 # Full login-session autostart exceeds Quest's Android child-process limit.
 /usr/bin/python3 - <<'PY'
@@ -31,4 +52,18 @@ temporary.write_text(''.join('export ' + key + '=' + shlex.quote(os.environ[key]
 temporary.chmod(0o600)
 temporary.replace(path)
 PY
-exec "$desktop/usr/bin/plasmashell"
+"$desktop/usr/bin/plasmashell" &
+shell=$!
+# Finish the startup stages when the actual shell accepts requests. Sending
+# every stage before launching it interrupts Breeze's logo fade-in.
+for attempt in {1..100};do
+ if /usr/bin/dbus-send --session --print-reply --dest=org.kde.plasmashell /PlasmaShell \
+  org.freedesktop.DBus.Peer.Ping >/dev/null 2>&1;then
+  /usr/bin/dbus-send --session --print-reply --dest=org.kde.KSplash /KSplash \
+   org.kde.KSplash.setStage string:ready >/dev/null 2>&1 || true
+  break
+ fi
+ kill -0 "$shell" 2>/dev/null || break
+ sleep 0.1
+done
+wait "$shell"

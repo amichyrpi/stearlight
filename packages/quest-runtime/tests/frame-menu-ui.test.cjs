@@ -24,7 +24,13 @@ async function main() {
     UpdateSettings() { nativeUpdates++; },
   };
   const context = {
-    webpackChunksteamui: chunks, SteamClient: { System: { Perf: perf } },
+    webpackChunksteamui: chunks, SteamClient: { System: { Perf: perf }, Apps: {
+      ScanForInstalledNonSteamApps: async () => [
+        {strCmdline: 'steamos-nested-desktop', strAppName: 'Desktop'},
+        {strCmdline: 'unused-native-app', strAppName: 'Never used'},
+      ],
+      LaunchNonSteamApp: async command => command,
+    } },
     setTimeout: callback => callback(), console,
     fetch: async (_, options) => {
       const request = JSON.parse(options.body);
@@ -37,6 +43,18 @@ async function main() {
   const source = fs.readFileSync(path.join(__dirname, '../linux/frame-menu-bridge.js'), 'utf8')
     .replace('__STEARLIGHT_DESKTOP_TOKEN__', '"test-token"');
   vm.runInNewContext(source, context);
+  context.__stearlightFrameMenusStatus(state);
+  context.__stearlightFrameMenusStatus({...state, desktop_icon: 'desktop-png', apps: [
+    {id: 'org.kde.dolphin', name: 'Dolphin', icon_base64: 'dolphin-png'},
+  ]});
+  const programs = await context.SteamClient.Apps.ScanForInstalledNonSteamApps(true);
+  assert.equal(programs.length, 2);
+  assert.equal(programs[0].strIconDataBase64, undefined);
+  assert.equal(programs[1].strIconDataBase64, 'dolphin-png');
+  assert.equal(programs[1].strExePath, 'stearlight-desktop-app:org.kde.dolphin');
+  assert.equal((await context.SteamClient.Apps.ScanForInstalledNonSteamApps(false)).length, 2);
+  await context.SteamClient.Apps.LaunchNonSteamApp(programs[1].strCmdline);
+  assert.deepEqual(requests.at(-1), {operation: 'launch-app', id: 'org.kde.dolphin'});
   context.__stearlightFrameMenusStatus(state);
   const registration = perf.RegisterForStateChanges(raw => received.push(JSON.parse(raw)));
   nativeCallback('generic Linux state must not replace Quest limits');

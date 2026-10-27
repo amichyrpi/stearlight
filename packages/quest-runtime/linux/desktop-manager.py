@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import re
 import signal
 import socket
 import select
@@ -93,7 +94,7 @@ class Manager:
     def status(self):
         return {'enabled': self.settings['enabled'], 'has_password': bool(self.settings['password_hash']),
                 'desktop_available': (RUNTIME / 'usr/bin/plasmashell').is_file(),
-                'desktop_running': self.running('desktop') or self.remote, 'ssh_running': self.running('ssh'),
+                'desktop_running': self.running('workspace') or self.remote, 'ssh_running': self.running('ssh'),
                 'rdp_running': self.running('rdp'), 'ssh_port': 2222, 'rdp_port': 3389,
                 'username': 'stearlight', 'default_session': self.settings['default_session'],
                 'focus_id': self.focus_id, 'error': self.error, 'updates': steam_channels.status(),
@@ -103,6 +104,25 @@ class Manager:
         if name == 'ssh':
             return self.ssh_socket is not None
         return name in self.processes and self.processes[name].poll() is None
+
+    def ensure_display(self):
+        if not self.running('desktop'):
+            self.start('desktop', ['/bin/bash', '/opt/quest/desktop-headset.sh'])
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                log = (STATE / 'desktop.log').read_text(errors='replace')
+                wayland = re.search(r"Running compositor on wayland display '(gamescope-\d+)'", log)
+                display = re.search(r'Starting Xwayland on (:\d+)', log)
+                if (wayland and display and Path('/tmp/.X11-unix/X' + display[1][1:]).is_socket()
+                    and (Path(os.environ.get('XDG_RUNTIME_DIR', '/tmp/stearlight-runtime')) / wayland[1]).is_socket()):
+                    return {'DISPLAY': display[1], 'WAYLAND_DISPLAY': wayland[1]}
+            except OSError:
+                pass
+            if not self.running('desktop'):
+                break
+            time.sleep(.1)
+        raise ValueError('The desktop display did not start')
 
     def start(self, name, command, environment=None, connection=None):
         if self.running(name):
@@ -182,15 +202,29 @@ class Manager:
             if self.running('desktop') and MODE.exists():
                 atomic(FOCUS, 'desktop\n')
                 self.focus_id = str(time.time_ns())
-        if self.running('desktop') and not MODE.exists():
+        if self.running('workspace') and not MODE.exists():
             self.call('stop', {})
         for name in list(self.processes):
+            if name.startswith('app-') and not self.running(name):
+                self.stop(name)
             if name.startswith('ssh-session-') and not self.running(name):
                 self.stop(name)
-        if ('desktop' in self.processes and not self.running('desktop')) or ('workspace' in self.processes and not self.running('workspace')):
+        if (self.running('desktop') and not self.running('workspace') and not MODE.exists()
+            and not any(name.startswith('app-') and self.running(name) for name in self.processes)):
+            self.stop('desktop')
+        display_closed = 'desktop' in self.processes and not self.running('desktop')
+        workspace_closed = 'workspace' in self.processes and not self.running('workspace')
+        if display_closed or workspace_closed:
             self.clear_headset_activation()
             self.stop('workspace')
-            self.stop('desktop')
+            # An independent app still owns the shared display when Plasma
+            # exits. Only a failed display requires closing its clients.
+            if display_closed:
+                for name in list(self.processes):
+                    if name.startswith('app-'):
+                        self.stop(name)
+            if display_closed or not any(name.startswith('app-') and self.running(name) for name in self.processes):
+                self.stop('desktop')
             self.reconcile()
             MODE.unlink(missing_ok=True)
             self.error = 'The desktop closed; Steam is restarting.'
@@ -454,9 +488,10 @@ param={STATE}/xorg.%s.log
                         except (OSError, StopIteration):
                             pass
             else:
-                self.start('desktop', ['/bin/bash', '/opt/quest/desktop-headset.sh'])
+                environment = self.ensure_display()
+                environment.update(SteamAppId='2000000000', SteamGameId='2000000000')
                 self.start('workspace', ['/bin/bash', '/opt/quest/desktop-session.sh', 'headset'],
-                           {'STEARLIGHT_DESKTOP_INSTANCE': self.instances['desktop']})
+                           environment)
                 # Selecting Desktop must also raise an existing workspace.
                 # Let Steam finish closing its launcher menu before raising
                 # the overlay; its completion otherwise steals focus back.
@@ -464,12 +499,9 @@ param={STATE}/xorg.%s.log
             self.error = ''
         elif operation in ('stop', 'remote-stop'):
             self.clear_headset_activation()
-            self.menus.pending.clear()
-            for name in list(self.processes):
-                if name.startswith('app-'):
-                    self.stop(name)
             self.stop('workspace')
-            self.stop('desktop')
+            if not any(name.startswith('app-') and self.running(name) for name in self.processes):
+                self.stop('desktop')
             if self.remote:
                 self.remote = False
                 # Stop detached KDE workers before the headset runtime starts.
