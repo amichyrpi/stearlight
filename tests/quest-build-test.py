@@ -34,6 +34,7 @@ class QuestBuildTest(unittest.TestCase):
                  'opt/frame-gamescope/bin/mangoapp opt/quest/libquest_mango_sensors.so '
                  'opt/quest/prepare-steam-integrity.py opt/quest/frame_menus.py opt/quest/frame-menu-bridge.js opt/quest/gamescope-perf.py '
                  'opt/stearlight-desktop/usr/share/pixmaps/steamos.png '
+                 'opt/quest/libquest_steam_update_ui.so '
                  'opt/quest/desktop-windows.js opt/quest/desktop-run-app.sh '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/python '
                  'opt/quest/renpy/7.5.3/lib/py2-linux-aarch64/librenpython.so '

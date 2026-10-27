@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import secrets
 import sys
-from frame_menus import enable_performance_tab, enable_window_icons
+from frame_menus import enable_performance_tab, enable_window_icons, enable_playspace_icon
 
 root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('/opt/steam')
 state = Path('/home/stearlight/.local/state/stearlight-desktop')
@@ -24,7 +24,7 @@ if library is None:
 data = library.read_bytes()
 if data.startswith(begin):
     data = data.split(end, 1)[1]
-data = enable_window_icons(enable_performance_tab(data.decode())).encode()
+data = enable_playspace_icon(enable_window_icons(enable_performance_tab(data.decode()))).encode()
 bridge = '\n'.join(Path('/opt/quest', name).read_text() for name in
                    ('desktop-ui-bridge.js', 'frame-menu-bridge.js'))
 bridge = bridge.replace('__STEARLIGHT_DESKTOP_TOKEN__', json.dumps(token.read_text().strip())).encode()

@@ -56,6 +56,7 @@ def verify(apk):
             raise ValueError('Rootfs content SHA-256 mismatch')
         required = {
             'opt/quest/desktop-app-session.sh', 'opt/quest/desktop-icons/desktop.png',
+            'opt/quest/libquest_steam_update_ui.so',
             'opt/stearlight-desktop/usr/share/pixmaps/steamos.png',
             'opt/frame-gamescope/bin/mangoapp',
             'opt/quest/libquest_mango_sensors.so',

@@ -271,6 +271,16 @@ class FrameMenusTests(unittest.TestCase):
         self.assertEqual(menus.enable_performance_tab(result), result)
         self.assertEqual(menus.enable_performance_tab(gate), gate)
 
+    def test_frame_playspace_artwork_preserves_native_action_and_other_icons(self):
+        mapping = 'case f.YZ.BZ:return(0,e.jsx)(V.Recenter,{});case f.YZ.yD:return(0,e.jsx)(V.Playspace,{})'
+        source = 'action("Recenter");other(V.Recenter);' + mapping + ';invokeNativeAction()'
+        actual = menus.enable_playspace_icon(source)
+        self.assertTrue(actual.startswith('action("Recenter");other(V.Recenter);'))
+        self.assertTrue(actual.endswith(';invokeNativeAction()'))
+        self.assertIn('case f.YZ.BZ:return(0,e.jsx)(V.Playspace,{})', actual)
+        self.assertEqual(menus.enable_playspace_icon(actual), actual)
+        self.assertEqual(menus.enable_playspace_icon('unknown UI'), 'unknown UI')
+
 
 if __name__ == '__main__':
     unittest.main()

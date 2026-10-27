@@ -91,6 +91,7 @@ struct Runtime {
   app=value;JNIEnv* env;app->activity->vm->AttachCurrentThread(&env,nullptr);
   jclass activityClass=env->GetObjectClass(app->activity->clazz);jmethodID getDirectory=env->GetMethodID(activityClass,"getStateDirectory","()Ljava/lang/String;");
   auto str=static_cast<jstring>(env->CallObjectMethod(app->activity->clazz,getDirectory));const char* chars=env->GetStringUTFChars(str,nullptr);directory=chars;env->ReleaseStringUTFChars(str,chars);env->DeleteLocalRef(str);env->DeleteLocalRef(activityClass);
+  unlink((directory+"/bootstrapper.ready").c_str());
   physicalGamepad.initialize(env,directory);
   app->userData=this;app->onInputEvent=[](android_app* app,AInputEvent* event)->int32_t{return static_cast<Runtime*>(app->userData)->physicalGamepad.handle(event);};
   int fd=open((directory+"/tracking").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);if(fd<0||ftruncate(fd,sizeof(QuestTracking)))throw std::runtime_error("tracking file");
@@ -268,6 +269,8 @@ struct Runtime {
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   if(!bootFinished)bootFinished=bootComplete();
   bool loading=access((directory+"/dashboard.ready").c_str(),F_OK)!=0||!bootFinished;
+  bool nativeStartup=loading&&bootFinished&&access((directory+"/bootstrapper.ready").c_str(),F_OK)==0;
+  bool loadingMovie=loading&&!nativeStartup;
   double boostNow=std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
   if(boostNow>=profilePollAt){
    profilePollAt=boostNow+1;std::string profile;std::ifstream input(directory+"/performance-profile");input>>profile;
@@ -303,16 +306,16 @@ struct Runtime {
    else boostRetryAt=boostNow+2;
   }
   bool compositionReady=access((directory+"/passthrough.composition-ready").c_str(),F_OK)==0;
-  if(!loading&&visible&&compositionReady)camera.update();else camera.suspend();
+  if(!loadingMovie&&visible&&compositionReady)camera.update();else camera.suspend();
   bool passthroughActive=camera.active;
   // The desktop SteamVR output currently has an opaque background. Keep the
   // working camera view available; mixed composition needs transparent output.
   XrCompositionLayerProjectionView projectionViews[2]={{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
   gpu.poll();
   bool showHands=!loading&&handTracking.visible();
-  eyesDirty=eyesDirty||loading!=lastLoading||passthroughActive!=lastPassthrough||(!loading&&gpu.ready())||showHands||lastHands;
+  eyesDirty=eyesDirty||loadingMovie!=lastLoading||passthroughActive!=lastPassthrough||(!loadingMovie&&gpu.ready())||showHands||lastHands;
   lastHands=showHands;
-  lastLoading=loading;lastPassthrough=passthroughActive;
+  lastLoading=loadingMovie;lastPassthrough=passthroughActive;
   // Repeated submissions of the same pixels must keep the same layer pose.
   // Updating it every xrWaitFrame incorrectly head-locks a stalled Linux image.
   if(gpu.ready()||!haveFrameViews){
@@ -344,13 +347,13 @@ struct Runtime {
   if(state.shouldRender)for(int i=0;i<2;i++){
    Eye& eye=eyes[i];
    if(eyesDirty){
-   uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eye.chain,&acquire,&index));XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eye.chain,&imageWait));glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[index].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loading){gpu.draw(i,passthroughActive);if(showHands)handRender.draw(handTracking,frameViews[i],eye.width,eye.height);}glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));
+   uint32_t index;XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};XR(xrAcquireSwapchainImage(eye.chain,&acquire,&index));XrSwapchainImageWaitInfo imageWait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};imageWait.timeout=XR_INFINITE_DURATION;XR(xrWaitSwapchainImage(eye.chain,&imageWait));glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,eye.images[index].image,0);glViewport(0,0,eye.width,eye.height);glDisable(GL_SCISSOR_TEST);glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);glClearColor(0,0,0,passthroughActive?0:1);glClear(GL_COLOR_BUFFER_BIT);if(!loadingMovie){gpu.draw(i,passthroughActive);if(showHands)handRender.draw(handTracking,frameViews[i],eye.width,eye.height);}glBindFramebuffer(GL_FRAMEBUFFER,0);glFlush();XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};XR(xrReleaseSwapchainImage(eye.chain,&release));
    }
    projectionViews[i].pose=frameViews[i].pose;projectionViews[i].fov=frameViews[i].fov;projectionViews[i].subImage={eye.chain,{{0,0},{static_cast<int32_t>(eye.width),static_cast<int32_t>(eye.height)}},0};
   }
   if(state.shouldRender)eyesDirty=false;
   XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};projection.space=stage;projection.layerFlags=passthroughActive?XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT:0;projection.viewCount=2;projection.views=projectionViews;
-  XrCompositionLayerPassthroughFB pass{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};pass.layerHandle=camera.layer;XrCompositionLayerQuad status{XR_TYPE_COMPOSITION_LAYER_QUAD};status.space=head;status.eyeVisibility=XR_EYE_VISIBILITY_BOTH;status.subImage={statusEye.chain,{{0,0},{450,450}},0};status.pose=identity();status.pose.position.z=-1.7f;status.size={.8f,.8f};const XrCompositionLayerBaseHeader* layers[3];uint32_t layerCount=0;if(state.shouldRender){if(passthroughActive)layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&pass);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);if(loading){updateStatus(state.predictedDisplayTime);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&status);}}
+  XrCompositionLayerPassthroughFB pass{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};pass.layerHandle=camera.layer;XrCompositionLayerQuad status{XR_TYPE_COMPOSITION_LAYER_QUAD};status.space=head;status.eyeVisibility=XR_EYE_VISIBILITY_BOTH;status.subImage={statusEye.chain,{{0,0},{450,450}},0};status.pose=identity();status.pose.position.z=-1.7f;status.size={.8f,.8f};const XrCompositionLayerBaseHeader* layers[3];uint32_t layerCount=0;if(state.shouldRender){if(passthroughActive)layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&pass);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&projection);if(loadingMovie){updateStatus(state.predictedDisplayTime);layers[layerCount++]=reinterpret_cast<XrCompositionLayerBaseHeader*>(&status);}}
   XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO};end.displayTime=state.predictedDisplayTime;end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE;end.layerCount=layerCount;end.layers=layers;XR(xrEndFrame(session,&end));
   // Preserve completion of each newly drawn stereo image, independently of
   // the already completed DMA-BUF copy. Repeated images need no extra wait.

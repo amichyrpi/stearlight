@@ -45,6 +45,18 @@ fi
 if grep -Fqx 'export LD_PRELOAD="/opt/quest/libquest_android_gamepad.so${LD_PRELOAD:+:$LD_PRELOAD}"' "$root/RUNSTEAM.sh";then
  sed -i 's|^export LD_PRELOAD="/opt/quest/libquest_android_gamepad.so${LD_PRELOAD:+:$LD_PRELOAD}"$|export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}/opt/quest/libquest_android_gamepad.so"|' "$root/RUNSTEAM.sh"
 fi
+# Route Valve's original graphical startup/update child to a temporary VR
+# compositor. Steam, CEF and games retain their existing render paths.
+if ! grep -Fq '# STEARLIGHT_NATIVE_UPDATE_UI' "$root/RUNSTEAM.sh";then
+ temporary="$root/RUNSTEAM.sh.quest-next"
+ awk '/^exec "\$\{STEAM_COMMAND\[@\]\}"/ {
+  print "# STEARLIGHT_NATIVE_UPDATE_UI";
+  print "export LD_PRELOAD=\"${LD_PRELOAD:+$LD_PRELOAD:}/opt/quest/libquest_steam_update_ui.so\""
+ } {print}' "$root/RUNSTEAM.sh" >"$temporary"
+ chmod --reference="$root/RUNSTEAM.sh" "$temporary"
+ mv "$temporary" "$root/RUNSTEAM.sh"
+ temporary=
+fi
 /bin/sh "$quest/prepare-cef.sh" || true
 /usr/bin/python3 "$quest/prepare-steam-input.py"
 /bin/sh "$quest/frame-steam-ipc" || true

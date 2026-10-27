@@ -58,6 +58,19 @@ def enable_window_icons(source):
     return source[:match.start()] + replacement + source[match.end():]
 
 
+def enable_playspace_icon(source):
+    # Quest owns boundary setup, so the native action remains Recenter. Frame
+    # uses the Playspace artwork for this dock control; both icons are shipped
+    # by Valve. Change only the dashboard's enum renderer, not the action.
+    pattern = re.compile(r'(case [\w$]+\.[\w$]+\.[\w$]+:return\(0,[\w$]+\.jsx\)\([\w$]+\.)'
+                         r'Recenter(,\{\}\);case [\w$]+\.[\w$]+\.[\w$]+:return\(0,[\w$]+\.jsx\)\([\w$]+\.Playspace,\{\}\))')
+    matches = list(pattern.finditer(source))
+    if len(matches) != 1:
+        return source
+    match = matches[0]
+    return source[:match.start()] + match[1] + 'Playspace' + match[2] + source[match.end():]
+
+
 def applications():
     result = {}
     for directory in APPLICATIONS:
