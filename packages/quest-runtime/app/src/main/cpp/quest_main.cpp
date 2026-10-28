@@ -30,6 +30,8 @@
 #include "passthrough.h"
 #include "loading_boost.h"
 #include "hand_tracking.h"
+#include "device_profile.h"
+#include <sys/system_properties.h>
 #include "hand_render.h"
 #include "android_gamepad.h"
 
@@ -75,7 +77,8 @@ struct Runtime {
  Passthrough camera;
  HandTracking handTracking;HandRender handRender;
  AndroidGamepad physicalGamepad;
- bool controllerProfile[2]{true,true},lastHands=false;XrPath touchProfile=XR_NULL_PATH;
+ bool controllerProfile[2]{true,true},plusProfile[2]{},lastHands=false;XrPath touchProfile=XR_NULL_PATH,touchPlusProfile=XR_NULL_PATH;
+ quest::Headset device=quest::Headset::Unknown;bool touchPlusSupported=false;
  bool has(const std::vector<XrExtensionProperties>& e,const char* name){for(const auto& p:e)if(!strcmp(p.extensionName,name))return true;return false;}
  XrPath path(const char* s){XrPath p;XR(xrStringToPath(instance,s,&p));return p;}
  void egl(){
@@ -111,6 +114,8 @@ struct Runtime {
   uint32_t n=0;XR(xrEnumerateInstanceExtensionProperties(nullptr,0,&n,nullptr));std::vector<XrExtensionProperties> extensions(n,{XR_TYPE_EXTENSION_PROPERTIES});XR(xrEnumerateInstanceExtensionProperties(nullptr,n,&n,extensions.data()));
   std::vector<const char*> enabled={XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME};
   for(const auto& extension:extensions)LOG("OpenXR extension %s",extension.extensionName);
+  touchPlusSupported=has(extensions,XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME);
+  if(touchPlusSupported)enabled.push_back(XR_META_TOUCH_CONTROLLER_PLUS_EXTENSION_NAME);
   bool handSupport=has(extensions,XR_EXT_HAND_TRACKING_EXTENSION_NAME)&&has(extensions,XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);
   bool handMesh=handSupport&&has(extensions,XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME);
   if(handSupport){enabled.push_back(XR_EXT_HAND_TRACKING_EXTENSION_NAME);enabled.push_back(XR_FB_HAND_TRACKING_AIM_EXTENSION_NAME);if(handMesh)enabled.push_back(XR_FB_HAND_TRACKING_MESH_EXTENSION_NAME);}
@@ -120,6 +125,13 @@ struct Runtime {
   XrInstanceProperties properties{XR_TYPE_INSTANCE_PROPERTIES};XR(xrGetInstanceProperties(instance,&properties));LOG("OpenXR runtime %s",properties.runtimeName);
   if(has(extensions,XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME))timeToMonotonic=function<PFN_xrConvertTimeToTimespecTimeKHR>(instance,"xrConvertTimeToTimespecTimeKHR");
   XrSystemGetInfo systemInfo{XR_TYPE_SYSTEM_GET_INFO};systemInfo.formFactor=XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;XR(xrGetSystem(instance,&systemInfo,&system));
+  XrSystemProperties headset{XR_TYPE_SYSTEM_PROPERTIES};XR(xrGetSystemProperties(instance,system,&headset));
+  device=quest::headsetFromName(headset.systemName);
+  char androidModel[PROP_VALUE_MAX]{};__system_property_get("ro.product.model",androidModel);
+  if(device==quest::Headset::Unknown)device=quest::headsetFromName(androidModel);
+  auto profile=directory+"/headset-profile",next=profile+".next";
+  {std::ofstream output(next);output<<1<<' '<<quest::headsetId(device)<<'\n';output.close();if(!output||rename(next.c_str(),profile.c_str()))throw std::runtime_error("Headset profile publication");}
+  LOG("Headset %s; runtime %s; Android %s",quest::headsetId(device),headset.systemName,androidModel);
   egl();auto requirements=function<PFN_xrGetOpenGLESGraphicsRequirementsKHR>(instance,"xrGetOpenGLESGraphicsRequirementsKHR");XrGraphicsRequirementsOpenGLESKHR graphicsRequirements{XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_ES_KHR};XR(requirements(instance,system,&graphicsRequirements));
   XrGraphicsBindingOpenGLESAndroidKHR binding{XR_TYPE_GRAPHICS_BINDING_OPENGL_ES_ANDROID_KHR};binding.display=display;binding.config=config;binding.context=context;
   XrSessionCreateInfo sessionInfo{XR_TYPE_SESSION_CREATE_INFO};sessionInfo.next=&binding;sessionInfo.systemId=system;XR(xrCreateSession(instance,&sessionInfo,&session));
@@ -142,9 +154,9 @@ struct Runtime {
   std::vector<XrViewConfigurationView> views(viewsCount,{XR_TYPE_VIEW_CONFIGURATION_VIEW});XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,viewsCount,&viewsCount,views.data()));
   uint32_t formatCount;XR(xrEnumerateSwapchainFormats(session,0,&formatCount,nullptr));std::vector<int64_t> formats(formatCount);XR(xrEnumerateSwapchainFormats(session,formatCount,&formatCount,formats.data()));int64_t format=GL_SRGB8_ALPHA8;if(std::find(formats.begin(),formats.end(),format)==formats.end())format=GL_RGBA8;
   for(int i=0;i<2;i++){
-   // Preserve the Quest 2's native display detail through the final projection.
-   // A 75% projection softens PCVR even when the encoded stream is sharper.
-   Eye& eye=eyes[i];eye.width=std::min(1832u,views[i].maxImageRectWidth);eye.height=std::min(1920u,views[i].maxImageRectHeight);
+   // Preserve each headset's display detail, within the runtime's limits.
+   auto size=quest::eyeSize(device,views[i].recommendedImageRectWidth,views[i].recommendedImageRectHeight,views[i].maxImageRectWidth,views[i].maxImageRectHeight);
+   Eye& eye=eyes[i];eye.width=size.width;eye.height=size.height;
    LOG("Eye %d requested %ux%u; recommended %ux%u; maximum %ux%u",i,eye.width,eye.height,views[i].recommendedImageRectWidth,views[i].recommendedImageRectHeight,views[i].maxImageRectWidth,views[i].maxImageRectHeight);
    XrSwapchainCreateInfo swap{XR_TYPE_SWAPCHAIN_CREATE_INFO};swap.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;swap.format=format;swap.sampleCount=1;swap.width=eye.width;swap.height=eye.height;swap.faceCount=1;swap.arraySize=1;swap.mipCount=1;XR(xrCreateSwapchain(session,&swap,&eye.chain));uint32_t count=0;XR(xrEnumerateSwapchainImages(eye.chain,0,&count,nullptr));eye.images.resize(count,{XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_ES_KHR});XR(xrEnumerateSwapchainImages(eye.chain,count,&count,reinterpret_cast<XrSwapchainImageBaseHeader*>(eye.images.data())));
   }
@@ -155,7 +167,8 @@ struct Runtime {
   if(has(extensions,XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME)){
    getRate=function<PFN_xrGetDisplayRefreshRateFB>(instance,"xrGetDisplayRefreshRateFB");requestRate=function<PFN_xrRequestDisplayRefreshRateFB>(instance,"xrRequestDisplayRefreshRateFB");auto enumerate=function<PFN_xrEnumerateDisplayRefreshRatesFB>(instance,"xrEnumerateDisplayRefreshRatesFB");uint32_t count=0;XR(enumerate(session,0,&count,nullptr));std::vector<float> rates(count);XR(enumerate(session,count,&count,rates.data()));for(float rate:rates)LOG("Supported display refresh %.0f Hz",rate);XR(getRate(session,&tracking->refresh_hz));if(std::find(rates.begin(),rates.end(),requestedRate)==rates.end())requestedRate=tracking->refresh_hz;XR(requestRate(session,requestedRate));LOG("Current display refresh %.0f Hz; requested %.0f Hz",tracking->refresh_hz,requestedRate);
   }
-  camera.initialize(instance,system,session,directory,has(extensions,XR_FB_PASSTHROUGH_EXTENSION_NAME));
+  bool passthroughCapabilities2=false;for(const auto& e:extensions)if(!strcmp(e.extensionName,XR_FB_PASSTHROUGH_EXTENSION_NAME))passthroughCapabilities2=e.extensionVersion>=3;
+  camera.initialize(instance,system,session,directory,has(extensions,XR_FB_PASSTHROUGH_EXTENSION_NAME),passthroughCapabilities2);
   if(has(extensions,XR_FB_RENDER_MODEL_EXTENSION_NAME))saveModels();
   LOG("OPENXR_READY");
  }
@@ -174,6 +187,11 @@ struct Runtime {
    if(hand){bind(buttonActions[0],"/input/a/click");bind(buttonActions[1],"/input/b/click");}else{bind(buttonActions[2],"/input/x/click");bind(buttonActions[3],"/input/y/click");bind(buttonActions[5],"/input/menu/click");}
   }
   XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};suggested.interactionProfile=path("/interaction_profiles/oculus/touch_controller");suggested.countSuggestedBindings=bindings.size();suggested.suggestedBindings=bindings.data();XR(xrSuggestInteractionProfileBindings(instance,&suggested));
+  if(touchPlusSupported){
+   touchPlusProfile=path("/interaction_profiles/meta/touch_controller_plus");suggested.interactionProfile=touchPlusProfile;
+   XrResult result=xrSuggestInteractionProfileBindings(instance,&suggested);
+   if(XR_FAILED(result)){LOG("Touch Plus bindings unavailable: %d; retaining Touch fallback",result);touchPlusProfile=XR_NULL_PATH;}
+  }
   XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};attach.countActionSets=1;attach.actionSets=&actions;XR(xrAttachSessionActionSets(session,&attach));
   for(int i=0;i<2;i++){XrActionSpaceCreateInfo space{XR_TYPE_ACTION_SPACE_CREATE_INFO};space.poseInActionSpace=identity();space.subactionPath=hands[i];space.action=gripAction;XR(xrCreateActionSpace(session,&space,&grip[i]));space.action=aimAction;XR(xrCreateActionSpace(session,&space,&aim[i]));}
  }
@@ -200,7 +218,7 @@ struct Runtime {
     cpuThermalLimited=performance.toLevel!=XR_PERF_SETTINGS_NOTIF_LEVEL_NORMAL_EXT;
     LOG("CPU thermal boost limit %d",cpuThermalLimited);
    }
-  }else if(event.type==XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB){auto& rate=*reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(&event);tracking->refresh_hz=rate.toDisplayRefreshRate;LOG("Display refresh changed to %.0f Hz",rate.toDisplayRefreshRate);}else if(event.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED){for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size=0;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d interaction profile %s",i,name);}}event={XR_TYPE_EVENT_DATA_BUFFER};}return true;
+  }else if(event.type==XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB){auto& rate=*reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(&event);tracking->refresh_hz=rate.toDisplayRefreshRate;LOG("Display refresh changed to %.0f Hz",rate.toDisplayRefreshRate);}else if(event.type==XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED){for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));plusProfile[i]=touchPlusProfile!=XR_NULL_PATH&&profile.interactionProfile==touchPlusProfile;controllerProfile[i]=profile.interactionProfile==touchProfile||plusProfile[i];char name[XR_MAX_PATH_LENGTH]="none";uint32_t size=0;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d interaction profile %s",i,name);}}event={XR_TYPE_EVENT_DATA_BUFFER};}return true;
  }
  float value(XrAction action,int i){XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};info.action=action;info.subactionPath=hands[i];XrActionStateFloat state{XR_TYPE_ACTION_STATE_FLOAT};XR(xrGetActionStateFloat(session,&info,&state));return state.isActive?state.currentState:0;}
  bool button(XrAction action,int i){XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};info.action=action;info.subactionPath=hands[i];XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};XR(xrGetActionStateBoolean(session,&info,&state));return state.isActive&&state.currentState;}
@@ -249,7 +267,16 @@ struct Runtime {
   if(velocity.velocityFlags&XR_SPACE_VELOCITY_ANGULAR_VALID_BIT){motionSample.flags|=QUEST_ANGULAR_VELOCITY_VALID;motionSample.angular[0]=velocity.angularVelocity.x;motionSample.angular[1]=velocity.angularVelocity.y;motionSample.angular[2]=velocity.angularVelocity.z;}
   location.next=nullptr;
   for(int i=0;i<2;i++){
-   XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,poseState.isActive?location.locationFlags:0);XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);sample.eyes[i]=pose(views[i].pose,viewState.viewStateFlags);sample.fov[i][0]=views[i].fov.angleLeft;sample.fov[i][1]=views[i].fov.angleRight;sample.fov[i][2]=views[i].fov.angleUp;sample.fov[i][3]=views[i].fov.angleDown;
+   XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));
+   if(poseState.isActive){
+    XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,location.locationFlags);
+    XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);
+   }else{
+    // Preserve the last pose but publish disconnection immediately. Inactive
+    // action spaces cannot supply a tracked pose; hand input is applied below.
+    sample.grip[i].flags=sample.aim[i].flags=0;
+   }
+   sample.eyes[i]=pose(views[i].pose,viewState.viewStateFlags);sample.fov[i][0]=views[i].fov.angleLeft;sample.fov[i][1]=views[i].fov.angleRight;sample.fov[i][2]=views[i].fov.angleUp;sample.fov[i][3]=views[i].fov.angleDown;
    // Query only bindings present on this hand. Keep zero inputs for sleeping
    // controllers, so wake/disconnect still publishes a complete new sample.
    sample.trigger[i]=sample.squeeze[i]=0;sample.buttons[i]=sample.touches[i]=0;
@@ -264,6 +291,7 @@ struct Runtime {
    XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO};get.action=stickAction;get.subactionPath=hands[i];XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};XR(xrGetActionStateVector2f(session,&get,&stick));sample.thumbstick[i][0]=stick.isActive?stick.currentState.x:0;sample.thumbstick[i][1]=stick.isActive?stick.currentState.y:0;
    }
    handTracking.update(sample,i,physical,stage,state.predictedDisplayTime);
+   if(physical&&(plusProfile[i]||quest::touchPlus(device))){if(sample.grip[i].flags)sample.grip[i].flags|=QUEST_POSE_TOUCH_PLUS;if(sample.aim[i].flags)sample.aim[i].flags|=QUEST_POSE_TOUCH_PLUS;}
   }handTracking.publish(sample);questPublishMotion(motion,motionSample);questPublishTracking(tracking,sample);
   publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
@@ -344,6 +372,7 @@ struct Runtime {
   auto eyeStart=std::chrono::steady_clock::now();
   // OpenXR reuses the most recently released image. Reproject repeated Linux
   // frames without redrawing seven million pixels at every headset tick.
+  if(state.shouldRender&&eyesDirty&&showHands)handRender.update(handTracking);
   if(state.shouldRender)for(int i=0;i<2;i++){
    Eye& eye=eyes[i];
    if(eyesDirty){
@@ -363,7 +392,7 @@ struct Runtime {
    if(eyeReport.time_since_epoch().count()==0)eyeReport=done;
    if(std::chrono::duration<double>(done-eyeReport).count()>=5){LOG("Stereo eye draw/submit %.2f ms/frame",eyeMs/eyeFrames);eyeMs=0;eyeFrames=0;eyeReport=done;}
   }
-  static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));controllerProfile[i]=profile.interactionProfile==touchProfile;char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
+  static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));plusProfile[i]=touchPlusProfile!=XR_NULL_PATH&&profile.interactionProfile==touchPlusProfile;controllerProfile[i]=profile.interactionProfile==touchProfile||plusProfile[i];char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }
  void idle(){physicalGamepad.tick(false);gpu.poll();gpu.finish();}
  void shutdown(){physicalGamepad.shutdown();handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(motion)munmap(motion,sizeof(*motion));if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}

@@ -190,6 +190,106 @@ for before, after in replacements:
         source = source.replace(before, after)
 target.write_text(source)
 
+# Some Horizon KGSL kernels reject the legacy allocation ioctl while exposing
+# the GPUOBJ interface used by Android's driver. Preserve the exact size and
+# cache/access flags; never reinterpret a genuine ENOMEM as API incompatibility.
+source = target.read_text()
+helper = """static int
+quest_kgsl_free(int fd, unsigned int id)
+{
+   struct kgsl_gpumem_free_id legacy = { .id = id };
+   int ret = safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &legacy);
+   if (!ret || (errno != EACCES && errno != EPERM &&
+                errno != ENOTTY))
+      return ret;
+   struct kgsl_gpuobj_free modern = { .id = id };
+   return safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_FREE, &modern);
+}
+
+static int
+quest_kgsl_allocate(int fd, struct kgsl_gpumem_alloc_id *request)
+{
+   int ret = safe_ioctl(fd, IOCTL_KGSL_GPUMEM_ALLOC_ID, request);
+   if (!ret || (errno != EACCES && errno != EPERM &&
+                errno != ENOTTY))
+      return ret;
+
+   struct kgsl_gpuobj_alloc allocation = {
+      .size = request->size,
+      .flags = request->flags,
+   };
+   ret = safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_ALLOC, &allocation);
+   if (ret)
+      return ret;
+
+   struct kgsl_gpuobj_info info = { .id = allocation.id };
+   ret = safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_INFO, &info);
+   /* Cache modes are a bitfield, not independent capability bits. */
+   if (!ret && (((info.flags & request->flags) != request->flags) ||
+                ((info.flags ^ request->flags) & KGSL_CACHEMODE_MASK))) {
+      errno = EINVAL;
+      ret = -1;
+   }
+   if (ret) {
+      const int error = errno;
+      struct kgsl_gpuobj_free release = { .id = allocation.id };
+      safe_ioctl(fd, IOCTL_KGSL_GPUOBJ_FREE, &release);
+      errno = error;
+      return ret;
+   }
+   request->id = allocation.id;
+   request->gpuaddr = info.gpuaddr;
+   request->mmapsize = allocation.mmapsize;
+   request->size = info.size;
+   request->flags = info.flags;
+   return 0;
+}
+
+"""
+if helper not in source:
+    anchor = "static VkResult\nkgsl_bo_init("
+    if source.count(anchor) != 1:
+        raise SystemExit("Unsupported Mesa KGSL BO allocation")
+    source = source.replace(anchor, helper + anchor)
+    before = """   ret = safe_ioctl(dev->physical_device->local_fd,
+                    IOCTL_KGSL_GPUMEM_ALLOC_ID, &req);"""
+    if source.count(before) != 1:
+        raise SystemExit("Unsupported Mesa KGSL legacy BO ioctl")
+    source = source.replace(before, "   ret = quest_kgsl_allocate(dev->physical_device->local_fd, &req);")
+    before_free = "   safe_ioctl(dev->physical_device->local_fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req);"
+    if source.count(before_free) != 1:
+        raise SystemExit("Unsupported Mesa KGSL BO release")
+    source = source.replace(before_free, "   quest_kgsl_free(dev->physical_device->local_fd, req.id);")
+    source = source.replace('"GPUMEM_ALLOC_ID failed (%s)", strerror(errno)',
+                            '"KGSL allocation failed: size=%llu flags=%x errno=%d (%s)",\n'
+                            '                       (unsigned long long) size, req.flags, errno, strerror(errno)')
+target.write_text(source)
+
+# Allocation alone is insufficient: denied legacy capability probes hide the
+# cached/coherent memory types required by SteamVR. Use the same strict fallback
+# for probes, retaining the kernel's actual flags and releasing every test BO.
+# Probe fallback identified by leplayitisplayiting-bot/stearlight3patch:
+# https://github.com/leplayitisplayiting-bot/stearlight3patch/commit/7117fc451c7b2e1174822306b340bb17a3aee5af
+source = target.read_text()
+before_probe = "   int ret = safe_ioctl(fd, IOCTL_KGSL_GPUMEM_ALLOC_ID, &req_alloc);"
+after_probe = "   int ret = quest_kgsl_allocate(fd, &req_alloc);"
+if after_probe not in source:
+    if source.count(before_probe) != 1:
+        raise SystemExit("Unsupported Mesa KGSL memory capability probe")
+    source = source.replace(before_probe, after_probe)
+    before_release = """   struct kgsl_gpumem_free_id req_free = { .id = req_alloc.id };
+
+   safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req_free);"""
+    if source.count(before_release) != 1:
+        raise SystemExit("Unsupported Mesa KGSL memory probe release")
+    source = source.replace(before_release, "   quest_kgsl_free(fd, req_alloc.id);")
+    # Cache modes are encoded values: zero-valued write-combine must not accept
+    # a silently substituted write-back mode just because no bits were requested.
+    source = source.replace("   bool supported = (req_alloc.flags & flags) == flags;",
+                            "   bool supported = (req_alloc.flags & flags) == flags &&\n"
+                            "                    !((req_alloc.flags ^ flags) & KGSL_CACHEMODE_MASK);")
+    target.write_text(source)
+
 # Mesa a70d2af590db192f87b3af01f83a68b450edb4c3 (26.2): Adreno 630/650
 # can hang with D32S8, fragment discard and combined early/late depth tests.
 # Keep the upstream workaround while this payload uses Mesa 26.1.6.

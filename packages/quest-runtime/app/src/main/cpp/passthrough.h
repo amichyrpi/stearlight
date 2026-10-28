@@ -25,6 +25,7 @@ class Passthrough {
  std::string lastStyle;
  std::string directory;
  bool previousRequest=false;
+ bool colorCamera=false;
  template<class T> bool load(XrInstance instance,const char* name,T& output){
   PFN_xrVoidFunction function=nullptr;
   if(XR_FAILED(xrGetInstanceProcAddr(instance,name,&function)))return false;
@@ -42,8 +43,8 @@ class Passthrough {
   std::istringstream input(text);if(!(input>>version>>mode>>hue>>r>>g>>b>>a>>strength)||version!=1)return;
   hue=std::isfinite(hue)?hue-std::floor(hue):.67f;
   auto clamp=[](float v){return std::isfinite(v)?std::clamp(v,0.f,1.f):0.f;};
-  // Quest 2 has monochrome cameras. Recolor their luminance through the
-  // compositor's LUT; camera images remain inside Horizon's compositor.
+  // Preserve color-camera passthrough in the transparent style. Frame's
+  // explicitly tinted styles still use the compositor's luminance LUT.
   float h=hue*6, x=1-std::fabs(std::fmod(h,2.f)-1);std::array<float,3> tint;
   if(h<1)tint={1,x,0};else if(h<2)tint={x,1,0};else if(h<3)tint={0,1,x};
   else if(h<4)tint={0,x,1};else if(h<5)tint={x,0,1};else tint={1,0,x};
@@ -52,7 +53,7 @@ class Passthrough {
    float level=float(i)/(XR_PASSTHROUGH_COLOR_MAP_MONO_SIZE_FB-1);
    colors.textureColorMap[i]={level*tint[0],level*tint[1],level*tint[2],1};
   }
-  XrPassthroughStyleFB style{XR_TYPE_PASSTHROUGH_STYLE_FB};style.next=&colors;
+  XrPassthroughStyleFB style{XR_TYPE_PASSTHROUGH_STYLE_FB};style.next=!colorCamera||mode==0||mode==2?&colors:nullptr;
   style.textureOpacityFactor=mode==1?0.f:mode==3?.5f:1.f;
   if(mode==0||mode==1||mode==2)style.edgeColor={clamp(r),clamp(g),clamp(b),clamp(a)*clamp(strength)};
   XrResult result=setStyle(layer,&style);
@@ -62,12 +63,16 @@ class Passthrough {
 public:
  XrPassthroughLayerFB layer=XR_NULL_HANDLE;
  bool active=false;
- void initialize(XrInstance instance,XrSystemId system,XrSession session,const std::string& stateDirectory,bool enabled){
+ void initialize(XrInstance instance,XrSystemId system,XrSession session,const std::string& stateDirectory,bool enabled,bool capabilities2=false){
   directory=stateDirectory;unlink((directory+"/passthrough.supported").c_str());
   if(!enabled){status("unavailable");return;}
   XrSystemPassthroughPropertiesFB support{XR_TYPE_SYSTEM_PASSTHROUGH_PROPERTIES_FB};
   XrSystemProperties properties{XR_TYPE_SYSTEM_PROPERTIES};properties.next=&support;
   if(XR_FAILED(xrGetSystemProperties(instance,system,&properties))||!support.supportsPassthrough){status("unavailable");return;}
+  if(capabilities2){
+   XrSystemPassthroughProperties2FB camera{XR_TYPE_SYSTEM_PASSTHROUGH_PROPERTIES2_FB};properties.next=&camera;
+   if(XR_SUCCEEDED(xrGetSystemProperties(instance,system,&properties)))colorCamera=(camera.capabilities&XR_PASSTHROUGH_CAPABILITY_COLOR_BIT_FB)!=0;
+  }
   PFN_xrCreatePassthroughFB create=nullptr;PFN_xrCreatePassthroughLayerFB createLayer=nullptr;
   if(!load(instance,"xrCreatePassthroughFB",create)||!load(instance,"xrCreatePassthroughLayerFB",createLayer)||
      !load(instance,"xrPassthroughStartFB",start)||!load(instance,"xrPassthroughPauseFB",pause)||

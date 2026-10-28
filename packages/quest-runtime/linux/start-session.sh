@@ -45,8 +45,14 @@ case "$real_name" in ''|Stearlight) real_name='SteamOS User';; esac
 sed -i '/^stearlight:/d' /etc/passwd
 printf 'stearlight:x:%s:%s:%s:/home/stearlight:/bin/bash\n' "$app_uid" "$(id -g)" "$real_name" >> /etc/passwd
 echo "STEARLIGHT_QUEST_NATIVE_LINUX uid=$app_uid arch=$(uname -m)"
-/lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu:/opt/quest /opt/quest/gpu-probe
-/lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu:/opt/quest /opt/quest/gpu-probe --bridge
+if ! /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu:/opt/quest /opt/quest/gpu-probe;then
+ printf '%s' 'Linux GPU initialization failed; see files/logs/linux.log' >/run/stearlight/quest/linux-status
+ exit 78
+fi
+if ! /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu:/opt/quest /opt/quest/gpu-probe --bridge;then
+ printf '%s' 'Linux GPU sharing verification failed; see files/logs/linux.log' >/run/stearlight/quest/linux-status
+ exit 78
+fi
 if ! /lib/ld-linux-aarch64.so.1 --library-path /usr/lib/aarch64-linux-gnu /opt/quest/ipc-probe;then
  printf '%s' 'Linux IPC verification failed' >/run/stearlight/quest/linux-status
  exit 78

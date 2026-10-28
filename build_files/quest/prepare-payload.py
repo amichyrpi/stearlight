@@ -135,7 +135,7 @@ def build_mesa(root, work, downloads):
         with tarfile.open(source_archive) as archive:
             archive.extractall(sources, filter="data")
     run(sys.executable, REPO / "build_files/quest/patch-mesa.py", mesa)
-    for test in ("mesa-kgsl-poll.test.py", "mesa-kgsl-merge.test.py"):
+    for test in ("mesa-kgsl-poll.test.py", "mesa-kgsl-merge.test.py", "mesa-kgsl-alloc.test.py"):
         run(sys.executable, REPO / "packages/quest-runtime/tests" / test, mesa)
     sysroot = work / "sysroot/lib"
     (sysroot / "pkgconfig").mkdir(parents=True, exist_ok=True)

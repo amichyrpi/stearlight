@@ -11,6 +11,8 @@
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
+#include <array>
+#include <mutex>
 
 namespace {
 using Lookup=void*(*)(void*,const char*);
@@ -38,6 +40,10 @@ struct API {
 const QuestGamepadState* shared=nullptr;void* joystick=nullptr;
 ExternalGamepadReader external;
 thread_local bool busy=false;
+std::recursive_mutex inputMutex;
+std::array<int16_t,6> previousAxes{};
+uint32_t knownAxes=0,knownButtons=0,previousButtons=0;
+void resetInputs(){knownAxes=knownButtons=previousButtons=0;}
 thread_local int frameInterval=0;
 thread_local uint64_t previousFrame=0;
 bool framePacing(){const char* mode=getenv("STEARLIGHT_RENPY_SDL");return mode&&!strcmp(mode,"1");}
@@ -67,6 +73,7 @@ bool map(){
  shared=static_cast<const QuestGamepadState*>(mapping);return true;
 }
 void feed(){
+ std::unique_lock<std::recursive_mutex> guard(inputMutex,std::try_to_lock);if(!guard.owns_lock())return;
  if(const char* enabled=getenv("STEARLIGHT_STEAM_INPUT");enabled&&!strcmp(enabled,"0"))return;
  if(busy||!api.attach||!api.open||!api.axis||!api.button)return;
  timespec now{};clock_gettime(CLOCK_MONOTONIC,&now);
@@ -74,25 +81,32 @@ void feed(){
  QuestExternalGamepad physical{};bool physicalActive=external.read(physical,ns);
  if(!physicalActive&&!map())return;
  busy=true;
- if(!joystick){int index=api.attach(1,6,15,0);if(index>=0){joystick=api.open(index);if(joystick){const char message[]="Quest SDL gamepad attached\n";[[maybe_unused]] auto written=write(STDERR_FILENO,message,sizeof(message)-1);}}}
+ if(!joystick){int index=api.attach(1,6,15,0);if(index>=0){joystick=api.open(index);if(joystick){resetInputs();const char message[]="Quest SDL gamepad attached\n";[[maybe_unused]] auto written=write(STDERR_FILENO,message,sizeof(message)-1);}}}
  if(joystick){
   QuestGamepadState value;
   if(physicalActive)value=physical.input;
   else if(!shared||!quest::readGamepad(shared,value)||ns<value.monotonic_ns||ns-value.monotonic_ns>500000000)value=QuestGamepadState{};
   for(int i=0;i<6;i++){
    float axis=std::isfinite(value.axes[i])?std::clamp(value.axes[i],-1.f,1.f):(i>=4?-1.f:0.f);
-   api.axis(joystick,i,static_cast<int16_t>(axis<0?axis*32768:axis*32767));
+   int16_t converted=static_cast<int16_t>(axis<0?axis*32768:axis*32767);
+   // Keep trigger initialization fresh; only cache values SDL accepted.
+   if((i>=4||!(knownAxes&(1u<<i))||previousAxes[i]!=converted)&&api.axis(joystick,i,converted)==0){previousAxes[i]=converted;knownAxes|=1u<<i;}
   }
-  for(int i=0;i<15;i++)api.button(joystick,i,(value.buttons>>i)&1);
+  for(int i=0;i<15;i++){
+   uint32_t bit=1u<<i;
+   if((!(knownButtons&bit)||((value.buttons^previousButtons)&bit))&&api.button(joystick,i,(value.buttons>>i)&1)==0){knownButtons|=bit;previousButtons=(previousButtons&~bit)|(value.buttons&bit);}
+  }
  }
  busy=false;
 }
 void reset(){
+ std::lock_guard<std::recursive_mutex> guard(inputMutex);
  if(busy)return;
  busy=true;
  // SDL's subsystem shutdown owns its joystick handles and virtual devices.
  // Closing them again here races its controller-removal callbacks.
  joystick=nullptr;
+ resetInputs();
  // Retain this single read-only page across SDL subsystem restarts. The
  // process releases it on exit; restarting SDL allocates no additional page.
  busy=false;
@@ -135,8 +149,8 @@ int SDL_PollEvent(void* event){feed();return api.poll?api.poll(event):0;}
 int SDL_WaitEventTimeout(void* event,int timeout){feed();return api.wait?api.wait(event,timeout):0;}
 void SDL_JoystickUpdate(){feed();if(api.update)api.update();}
 void SDL_GameControllerUpdate(){feed();if(api.controllerUpdate)api.controllerUpdate();}
-void SDL_Quit(){reset();bool previous=busy;busy=true;if(api.quit)api.quit();busy=previous;}
-void SDL_QuitSubSystem(uint32_t flags){bool previous=busy;busy=true;if(api.quitSubsystem)api.quitSubsystem(flags);busy=previous;if((flags&0x2200)&&api.wasInit&&!api.wasInit(0x200))reset();}
+void SDL_Quit(){std::lock_guard<std::recursive_mutex> guard(inputMutex);reset();bool previous=busy;busy=true;if(api.quit)api.quit();busy=previous;}
+void SDL_QuitSubSystem(uint32_t flags){std::lock_guard<std::recursive_mutex> guard(inputMutex);bool previous=busy;busy=true;if(api.quitSubsystem)api.quitSubsystem(flags);busy=previous;if((flags&0x2200)&&api.wasInit&&!api.wasInit(0x200))reset();}
 int SDL_DYNAPI_entry(uint32_t version,void* table,uint32_t bytes){
  // SDL2's append-only Linux API v1 fixes the dispatch slots below.
  // Ren'Py embeds SDL and calls its internal dispatch table, bypassing ELF

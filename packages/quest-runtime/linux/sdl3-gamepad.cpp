@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <mutex>
 #include <string>
+#include <array>
 
 
 // The ELF loader has already loaded us in Steam. Restore its inherited list
@@ -69,7 +70,10 @@ void load(void* lib){
 }
 uint32_t id=0;void* joystick=nullptr;thread_local bool busy=false;
 uint32_t vendor=0,product=0;
-void disconnect(){if(joystick)api.close(joystick);joystick=nullptr;if(id)api.detach(id);id=0;}
+std::array<int16_t,6> previousAxes{};
+uint32_t knownAxes=0,knownButtons=0,previousButtons=0;
+void resetInputs(){knownAxes=knownButtons=previousButtons=0;}
+void disconnect(){if(joystick)api.close(joystick);joystick=nullptr;if(id)api.detach(id);id=0;resetInputs();}
 void feed(){
  std::unique_lock<std::recursive_mutex> guard(mutex,std::try_to_lock);if(!guard.owns_lock())return;
  if(busy)return;
@@ -85,7 +89,7 @@ void feed(){
   physical.name[sizeof(physical.name)-1]=0;
   Descriptor desc{};desc.version=sizeof(desc);desc.type=1;desc.vendor=physical.vendor;desc.product=physical.product;
   desc.axes=6;desc.buttons=15;desc.axisMask=0x3f;desc.buttonMask=0x7fff;desc.name=physical.name;
-  id=api.attach(&desc);if(id){joystick=api.open(id);vendor=physical.vendor;product=physical.product;
+  id=api.attach(&desc);if(id){resetInputs();joystick=api.open(id);vendor=physical.vendor;product=physical.product;
    std::fprintf(stderr,"Quest physical SDL3 gamepad attached: %s\n",physical.name);
    if(!joystick){api.detach(id);id=0;}
   }
@@ -93,8 +97,18 @@ void feed(){
  if(!fresh)physical.input=QuestGamepadState{};
  if(joystick){for(int i=0;i<6;i++){
   float value=physical.input.axes[i];if(!std::isfinite(value))value=i>=4?-1:0;value=std::clamp(value,-1.f,1.f);
-  api.axis(joystick,i,static_cast<int16_t>(value<0?value*32768:value*32767));
- }for(int i=0;i<15;i++)api.button(joystick,i,(physical.input.buttons>>i)&1);}
+  int16_t axis=static_cast<int16_t>(value<0?value*32768:value*32767);
+  // SDL resets trigger centers when a gamepad is opened/remapped. Refresh
+  // those two axes; repeated stick/button setters can safely be suppressed.
+  if((i>=4||!(knownAxes&(1u<<i))||axis!=previousAxes[i])&&api.axis(joystick,i,axis)){
+   previousAxes[i]=axis;knownAxes|=1u<<i;
+  }
+ }for(int i=0;i<15;i++){
+  uint32_t bit=1u<<i;bool pressed=(physical.input.buttons&bit)!=0;
+  if((!(knownButtons&bit)||((physical.input.buttons^previousButtons)&bit))&&api.button(joystick,i,pressed)){
+   knownButtons|=bit;previousButtons=(previousButtons&~bit)|(physical.input.buttons&bit);
+  }
+ }}
  busy=false;
 }
 }
@@ -105,8 +119,8 @@ static void quest_SDL_PumpEvents(){feed();if(api.pump)api.pump();}
 static bool quest_SDL_PollEvent(void* event){feed();return api.poll&&api.poll(event);}
 static void quest_SDL_UpdateJoysticks(){feed();if(api.update)api.update();}
 static uint32_t* quest_SDL_GetJoysticks(int* count){feed();return api.get?api.get(count):nullptr;}
-static void quest_SDL_Quit(){std::lock_guard<std::recursive_mutex> guard(mutex);load(RTLD_NEXT);bool previous=busy;busy=true;if(api.quit)api.quit();id=0;joystick=nullptr;busy=previous;}
-static void quest_SDL_QuitSubSystem(uint32_t flags){std::lock_guard<std::recursive_mutex> guard(mutex);load(RTLD_NEXT);bool previous=busy;busy=true;if(api.quitSubsystem)api.quitSubsystem(flags);if(api.wasInit&&!api.wasInit(0x200)){id=0;joystick=nullptr;}busy=previous;}
+static void quest_SDL_Quit(){std::lock_guard<std::recursive_mutex> guard(mutex);load(RTLD_NEXT);bool previous=busy;busy=true;if(api.quit)api.quit();id=0;joystick=nullptr;resetInputs();busy=previous;}
+static void quest_SDL_QuitSubSystem(uint32_t flags){std::lock_guard<std::recursive_mutex> guard(mutex);load(RTLD_NEXT);bool previous=busy;busy=true;if(api.quitSubsystem)api.quitSubsystem(flags);if(api.wasInit&&!api.wasInit(0x200)){id=0;joystick=nullptr;resetInputs();}busy=previous;}
 void* dlsym(void* lib,const char* name){auto fn=lookup();if(!fn)return nullptr;void* value=fn(lib,name);if(!value||strncmp(name,"SDL_",4))return value;
  void* entry=fn(lib,"SDL_GetJoysticks");Dl_info sdk{},actual{};
  if(!entry||!dladdr(entry,&sdk)||!dladdr(value,&actual)||sdk.dli_fbase!=actual.dli_fbase)return value;

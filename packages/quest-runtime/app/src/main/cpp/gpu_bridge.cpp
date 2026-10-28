@@ -1,4 +1,5 @@
 #include "gpu_bridge.h"
+#include "presentation_shader.h"
 #include <GLES2/gl2ext.h>
 #include <android/log.h>
 #include <sys/socket.h>
@@ -28,9 +29,26 @@ void GpuBridge::initialize(EGLDisplay d,const std::string& directory,uint32_t wi
   hello.buffers[i]={desc.width,desc.height,desc.stride,desc.format,static_cast<uint64_t>(stat.st_size)};
   EGLint attr[]={EGL_IMAGE_PRESERVED_KHR,EGL_TRUE,EGL_NONE};images[i]=createImage(display,EGL_NO_CONTEXT,EGL_NATIVE_BUFFER_ANDROID,getClient(buffers[i]),attr);if(images[i]==EGL_NO_IMAGE_KHR)throw std::runtime_error("AHardwareBuffer EGL image");glGenTextures(1,&textures[i]);glBindTexture(GL_TEXTURE_2D,textures[i]);targetImage(GL_TEXTURE_2D,images[i]);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);LOG("DMA-BUF %d: %ux%u stride=%u size=%llu",i,desc.width,desc.height,desc.stride,(unsigned long long)stat.st_size);
  }
- const char* vertex="#version 300 es\nprecision highp float;out vec2 uv;uniform int eye;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);uv=vec2((p.x+float(eye))*0.5,1.0-p.y);gl_Position=vec4(p*2.0-1.0,0.0,1.0);}";
- const char* fragment="#version 300 es\nprecision highp float;in vec2 uv;uniform sampler2D frame;uniform int format;uniform bool preserveAlpha;out vec4 color;void main(){color=texture(frame,uv);if(format==44||format==50)color.rgb=color.bgr;if(format==43||format==50){vec3 low=color.rgb/12.92;vec3 high=pow((color.rgb+0.055)/1.055,vec3(2.4));color.rgb=mix(low,high,step(vec3(0.04045),color.rgb));}if(!preserveAlpha)color.a=1.0;}";
- GLuint vs=shader(GL_VERTEX_SHADER,vertex),fs=shader(GL_FRAGMENT_SHADER,fragment);program=glCreateProgram();glAttachShader(program,vs);glAttachShader(program,fs);glLinkProgram(program);glDeleteShader(vs);glDeleteShader(fs);GLint linked;glGetProgramiv(program,GL_LINK_STATUS,&linked);if(!linked)throw std::runtime_error("GPU bridge program");eyeUniform=glGetUniformLocation(program,"eye");formatUniform=glGetUniformLocation(program,"format");alphaUniform=glGetUniformLocation(program,"preserveAlpha");glGenVertexArrays(1,&vao);
+ // An sRGB view aliases the same allocation; no image copy or extra pixel
+ // storage is needed. Unsupported drivers keep the proven shader conversion.
+ for(int i=0;i<QUEST_GPU_BUFFERS;i++){
+  EGLint attr[]={EGL_IMAGE_PRESERVED_KHR,EGL_TRUE,EGL_GL_COLORSPACE_KHR,EGL_GL_COLORSPACE_SRGB_KHR,EGL_NONE};
+  srgbImages[i]=createImage(display,EGL_NO_CONTEXT,EGL_NATIVE_BUFFER_ANDROID,getClient(buffers[i]),attr);
+  if(srgbImages[i]==EGL_NO_IMAGE_KHR){eglGetError();continue;}
+  glGenTextures(1,&srgbTextures[i]);glBindTexture(GL_TEXTURE_2D,srgbTextures[i]);
+  targetImage(GL_TEXTURE_2D,srgbImages[i]);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+  if(glGetError()!=GL_NO_ERROR){
+   glDeleteTextures(1,&srgbTextures[i]);srgbTextures[i]=0;
+   auto destroyImage=reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(eglGetProcAddress("eglDestroyImageKHR"));
+   if(destroyImage)destroyImage(display,srgbImages[i]);srgbImages[i]=EGL_NO_IMAGE_KHR;
+  }
+ }
+ LOG("Hardware sRGB presentation views: %d/%d",int(srgbTextures[0]!=0)+int(srgbTextures[1]!=0)+int(srgbTextures[2]!=0),QUEST_GPU_BUFFERS);
+ const char* vertex=quest::presentationVertex;
+ const char* fragment=quest::presentationFragment;
+ GLuint vs=shader(GL_VERTEX_SHADER,vertex),fs=shader(GL_FRAGMENT_SHADER,fragment);program=glCreateProgram();glAttachShader(program,vs);glAttachShader(program,fs);glLinkProgram(program);glDeleteShader(vs);glDeleteShader(fs);GLint linked;glGetProgramiv(program,GL_LINK_STATUS,&linked);if(!linked)throw std::runtime_error("GPU bridge program");eyeUniform=glGetUniformLocation(program,"eye");formatUniform=glGetUniformLocation(program,"format");alphaUniform=glGetUniformLocation(program,"preserveAlpha");decodeUniform=glGetUniformLocation(program,"decode");glGenVertexArrays(1,&vao);
  server=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_NONBLOCK|SOCK_CLOEXEC,0);sockaddr_un address{};address.sun_family=AF_UNIX;if(path.size()>=sizeof(address.sun_path))throw std::runtime_error("GPU socket path");strcpy(address.sun_path,path.c_str());unlink(path.c_str());if(server<0||bind(server,reinterpret_cast<sockaddr*>(&address),sizeof(address))||listen(server,1))throw std::runtime_error("GPU bridge socket");LOG("Android GPU bridge ready");
  // CPU-only receiver: the imported textures themselves are the presentation
  // sources. Linux keeps each slot leased until the last completed stereo read.
@@ -45,7 +63,7 @@ void GpuBridge::receiveFrames(){
   int socket;unsigned releaseMask;
   {std::lock_guard<std::mutex> guard(historyLock);socket=client;releaseMask=leases.releaseMask()|leases.acceptedMask();}
   pollfd events[2]={{socket>=0?socket:server,short(POLLIN|(socket>=0&&releaseMask?POLLOUT:0)),0},{wakeFd,POLLIN,0}};
-  int result=::poll(events,2,20);if(result<0&&errno==EINTR)continue;if(result<0)break;
+  int result=::poll(events,2,-1);if(result<0&&errno==EINTR)continue;if(result<0)break;
   if(events[1].revents&POLLIN){uint64_t value;while(read(wakeFd,&value,sizeof(value))>0){}}
   if(stopping.load())break;
   if(socket<0){
@@ -121,7 +139,11 @@ void GpuBridge::draw(int eye,bool preserveAlpha){if(!hasFrame)return;
    capture(framePose);captureRequested=false;glBindFramebuffer(GL_READ_FRAMEBUFFER,previous);
   }
  }
- glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glUseProgram(program);glUniform1i(eyeUniform,eye);glUniform1i(formatUniform,frameFormat);glUniform1i(alphaUniform,preserveAlpha);glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,history);glBindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);
+ bool encoded=frameFormat==43||frameFormat==50;
+ GLuint source=encoded?srgbTextures[framePose.slot]:0;
+ bool hardware=source!=0;
+ if(!source)source=history;
+ glDisable(GL_DEPTH_TEST);glDisable(GL_BLEND);glUseProgram(program);glUniform1i(decodeUniform,encoded&&!hardware);glUniform1i(eyeUniform,eye);glUniform1i(formatUniform,frameFormat);glUniform1i(alphaUniform,preserveAlpha);glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,source);glBindVertexArray(vao);glDrawArrays(GL_TRIANGLES,0,3);
  // Pair the Linux capture with the actual right-eye image after conversion,
  // before OpenXR accepts it. Only an explicit one-shot request reads pixels.
  if(eye!=1||!pairedCapture)return;
@@ -139,12 +161,16 @@ void GpuBridge::draw(int eye,bool preserveAlpha){if(!hasFrame)return;
 // keeps the same held texture and pose for repeated OpenXR submissions.
 void GpuBridge::finish(){current=-1;}
 void GpuBridge::shutdown(){
- stopping.store(true);if(copyThread.joinable())copyThread.join();
+ stopping.store(true);
+ // The receiver sleeps until an image, release or shutdown is available.
+ // Wake it explicitly rather than polling an idle connection fifty times/s.
+ if(wakeFd>=0){uint64_t value=1;ssize_t sent=write(wakeFd,&value,sizeof(value));(void)sent;}
+ if(copyThread.joinable())copyThread.join();
  if(server>=0){close(server);server=-1;}if(!path.empty())unlink(path.c_str());
  if(wakeFd>=0){close(wakeFd);wakeFd=-1;}
  if(copyFramebuffer)glDeleteFramebuffers(1,&copyFramebuffer);
  auto destroyImage=reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(eglGetProcAddress("eglDestroyImageKHR"));
- for(int i=0;i<QUEST_GPU_BUFFERS;i++){if(images[i]&&destroyImage)destroyImage(display,images[i]);if(dmaFds[i]>=0)close(dmaFds[i]);if(buffers[i])AHardwareBuffer_release(buffers[i]);}
- glDeleteTextures(QUEST_GPU_BUFFERS,textures);
+ for(int i=0;i<QUEST_GPU_BUFFERS;i++){if(srgbImages[i]&&destroyImage)destroyImage(display,srgbImages[i]);if(images[i]&&destroyImage)destroyImage(display,images[i]);if(dmaFds[i]>=0)close(dmaFds[i]);if(buffers[i])AHardwareBuffer_release(buffers[i]);}
+ glDeleteTextures(QUEST_GPU_BUFFERS,srgbTextures);glDeleteTextures(QUEST_GPU_BUFFERS,textures);
  if(program)glDeleteProgram(program);if(vao)glDeleteVertexArrays(1,&vao);
 }

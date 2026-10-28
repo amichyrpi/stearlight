@@ -3,6 +3,7 @@
 #include "quest_bridge.h"
 #include "quest_motion.h"
 #include "controller_pose.h"
+#include "headset_profile.h"
 #include "controller_input.h"
 #include "gamepad_state.h"
 #include "hand_skeleton.h"
@@ -23,6 +24,7 @@
 #include <time.h>
 
 namespace {
+quest::Headset headset=quest::Headset::Quest2;std::string hmdSerial;
 QuestTracking state{};const QuestTracking* shared=nullptr;
 const QuestMotion* sharedMotion=nullptr;
 void openMotion(){
@@ -60,7 +62,7 @@ public:
  vr::EVRInitError Activate(uint32_t id)override{
   haveProximity=haveEyes=false;lastRate=0;lastIpd=-1;lastBattery={};lastBatteryPercent=-2;
   havePlaySpace=false;
-  base(id,"STEARLIGHT-QUEST2-HMD","Oculus Quest2");auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,"stearlight-quest/quest2");p->SetInt32Property(properties,vr::Prop_HmdTrackingStyle_Int32,vr::HmdTrackingStyle_InsideOutCameras);p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);frame();return vr::VRInitError_None;
+  base(id,hmdSerial.c_str(),quest::headsetName(headset));auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,(std::string("stearlight-quest/")+quest::headsetId(headset)).c_str());p->SetInt32Property(properties,vr::Prop_HmdTrackingStyle_Int32,vr::HmdTrackingStyle_InsideOutCameras);p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);frame();return vr::VRInitError_None;
  }
  void* GetComponent(const char* version)override{return version&&!strcmp(version,vr::IVRDisplayComponent_Version)?static_cast<vr::IVRDisplayComponent*>(this):nullptr;}
  void GetWindowBounds(int32_t* x,int32_t* y,uint32_t* w,uint32_t* h)override{*x=*y=0;*w=state.width*2;*h=state.height;}
@@ -114,17 +116,18 @@ public:
  }
 };
 class Controller final:public Device {
- int hand;std::array<vr::VRInputComponentHandle_t,7> clicks{};vr::VRInputComponentHandle_t trigger=0,squeeze=0,x=0,y=0,touch=0,haptic=0;
+ int hand;std::string identifier;bool plusMode=false;std::array<vr::VRInputComponentHandle_t,7> clicks{};vr::VRInputComponentHandle_t trigger=0,squeeze=0,x=0,y=0,touch=0,haptic=0;
  vr::VRInputComponentHandle_t skeleton=0;bool skeletonReported=false;
  bool haveInputs=false,gripped=false,handMode=false;vr::VRInputComponentHandle_t gripClick=0,bumper=0,menu=0;bool previousMenu=false;std::array<bool,8> previousClicks{};std::array<float,4> previousScalars{};
 public:
  explicit Controller(int value):hand(value){}
- const char* serial(){return hand?"STEARLIGHT-QUEST2-RIGHT":"STEARLIGHT-QUEST2-LEFT";}
+ const char* serial(){identifier=quest::headsetSerial(headset,hand?"RIGHT":"LEFT");return identifier.c_str();}
  bool acceptsHaptic(const vr::VREvent_HapticVibration_t& event)const{return haptic&&event.componentHandle==haptic&&event.containerHandle==properties;}
  vr::EVRInitError Activate(uint32_t id)override{
   haveInputs=false;gripped=false;previousMenu=false;handMode=false;
   skeleton=0;skeletonReported=false;
-  base(id,serial(),hand?"Oculus Quest2 (Right Controller)":"Oculus Quest2 (Left Controller)");auto* p=vr::VRProperties();p->SetStringProperty(properties,vr::Prop_RenderModelName_String,hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"frame_controller");p->SetStringProperty(properties,vr::Prop_InputProfilePath_String,"{frame_controller}/input/frame_controller_profile.json");p->SetStringProperty(properties,vr::Prop_ControllerType_String,"frame_controller");p->SetInt32Property(properties,vr::Prop_ControllerRoleHint_Int32,hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);p->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,false);
+  plusMode=quest::touchPlus(headset);
+  base(id,serial(),plusMode?(hand?"Meta Quest Touch Plus (Right Controller)":"Meta Quest Touch Plus (Left Controller)"):(hand?"Oculus Quest2 (Right Controller)":"Oculus Quest2 (Left Controller)"));auto* p=vr::VRProperties();p->SetStringProperty(properties,vr::Prop_RenderModelName_String,quest::controllerModel(plusMode,hand));p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"frame_controller");p->SetStringProperty(properties,vr::Prop_InputProfilePath_String,"{frame_controller}/input/frame_controller_profile.json");p->SetStringProperty(properties,vr::Prop_ControllerType_String,"frame_controller");p->SetInt32Property(properties,vr::Prop_ControllerRoleHint_Int32,hand?vr::TrackedControllerRole_RightHand:vr::TrackedControllerRole_LeftHand);p->SetBoolProperty(properties,vr::Prop_DeviceProvidesBatteryStatus_Bool,false);
   // SteamVR 2.18's Frame profile gates its gamepad mode on property 2117.
   // This property is present in Valve's runtime, ahead of our public SDK.
   p->SetBoolProperty(properties,static_cast<vr::ETrackedDeviceProperty>(2117),true);
@@ -138,8 +141,10 @@ public:
  void frame()override{
   if(index==vr::k_unTrackedDeviceIndexInvalid)return;
   bool nextHand=state.grip[hand].flags?(state.grip[hand].flags&QUEST_POSE_HAND)!=0:handMode;
-  if(nextHand!=handMode){
-   vr::VRProperties()->SetStringProperty(properties,vr::Prop_RenderModelName_String,nextHand?"{stearlight-quest}quest_hand_pointer":hand?"oculus_quest2_controller_right":"oculus_quest2_controller_left");
+  bool nextPlus=state.grip[hand].flags&&!nextHand?(state.grip[hand].flags&QUEST_POSE_TOUCH_PLUS)!=0:plusMode;
+  if(nextHand!=handMode||nextPlus!=plusMode){
+   plusMode=nextPlus;
+   vr::VRProperties()->SetStringProperty(properties,vr::Prop_RenderModelName_String,nextHand?"{stearlight-quest}quest_hand_pointer":quest::controllerModel(plusMode,hand));
    vr::VRProperties()->SetBoolProperty(properties,static_cast<vr::ETrackedDeviceProperty>(2117),!nextHand);
    handMode=nextHand;
   }
@@ -185,7 +190,7 @@ class Provider final:public vr::IServerTrackedDeviceProvider {
  bool havePublished=false;uint32_t publishedSequence=0;
  std::chrono::steady_clock::time_point measuredSince=std::chrono::steady_clock::now();
 public:
- vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;openHands();openMotion();if(!vr::VRServerDriverHost()->TrackedDeviceAdded("STEARLIGHT-QUEST2-HMD",vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
+ vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;openHands();openMotion();headset=quest::readHeadsetProfile();hmdSerial=quest::headsetSerial(headset,"HMD");if(!vr::VRServerDriverHost()->TrackedDeviceAdded(hmdSerial.c_str(),vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
  void Cleanup()override{head.Deactivate();left.Deactivate();right.Deactivate();if(gamepad){quest::publishGamepad(gamepad,QuestGamepadState{});munmap(gamepad,sizeof(*gamepad));gamepad=nullptr;}if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;if(sharedMotion)munmap(const_cast<QuestMotion*>(sharedMotion),sizeof(QuestMotion));sharedMotion=nullptr;if(sharedHands)munmap(const_cast<QuestHands*>(sharedHands),sizeof(QuestHands));sharedHands=nullptr;handState={};VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
  const char* const* GetInterfaceVersions()override{return vr::k_InterfaceVersions;}
  void RunFrame()override{

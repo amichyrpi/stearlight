@@ -47,6 +47,10 @@
 Stearlight is a Linux application for the Quest platform
 that brings the full Steam Frame OS to the Quest.
 
+One APK supports Quest 2, Quest 3 and Quest 3S. See the
+[Quest runtime notes](packages/quest-runtime/README.md) for
+compatibility details and diagnostic commands.
+
 It includes:
 
 - ARM64 SteamVR with FEX and Proton
@@ -111,6 +115,20 @@ published by CI.
 ## Contribution
 
 Before contributing to this project, please look at the [`Contribution guidelines`](CONTRIBUTING.md).
+
+## Contributors
+
+Thanks to everyone who helped make Stearlight OS possible!
+
+<a href="https://github.com/amichyrpi/stearlight/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=amichyrpi/stearlight" />
+</a>
+
+## Special Thanks
+
+Special thanks to everyone who helped bring Quest 3 support to Stearlight OS!
+
+- [matmon3](https://github.com/matmon3)
 
 ## License
 

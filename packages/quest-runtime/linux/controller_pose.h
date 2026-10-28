@@ -3,7 +3,7 @@
 #include <cmath>
 
 namespace quest {
-// Valve's oculus_quest2_controller_{left,right}.json openxr_grip component:
+// Valve's Quest 2 and Touch Plus models share this openxr_grip component:
 // origin (+/-0.007, -0.00182941, 0.1019482), rotate_xyz (20.6, 0, 0).
 // OpenXR locates this component, while OpenVR locates the model's origin.
 inline QuestPose controllerModelPose(const QuestPose& grip, int hand) {

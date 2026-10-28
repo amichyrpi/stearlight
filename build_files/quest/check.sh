@@ -35,6 +35,14 @@ fi
 python3 packages/quest-runtime/tests/steam-gamepad-launch.test.py
 python3 packages/quest-runtime/tests/sdl-gamepad.test.py
 python3 packages/quest-runtime/tests/sdl3-resolver.test.py
+delta_binary=$(mktemp)
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/sdl3-delta.test.cpp -ldl -o "$delta_binary"
+"$delta_binary"
+rm -f -- "$delta_binary"
+delta_binary=$(mktemp)
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/sdl2-delta.test.cpp -ldl -o "$delta_binary"
+"$delta_binary"
+rm -f -- "$delta_binary"
 python3 packages/quest-runtime/tests/video-queue.test.py
 python3 packages/quest-runtime/tests/video-codec.test.py
 python3 packages/quest-runtime/tests/streaming-input.test.py
@@ -49,6 +57,9 @@ test_binary=$(mktemp)
 trap 'rm -f -- "$test_binary"' EXIT
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp -isystem packages/openvr/headers packages/quest-runtime/tests/hand-skeleton.test.cpp -o "$test_binary"
 "$test_binary"
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/device-profile.test.cpp -o "$test_binary"
+"$test_binary"
+
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/display-pulse.test.cpp -o "$test_binary"
 "$test_binary"
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -pthread packages/quest-runtime/tests/gpu-frames.test.cpp -o "$test_binary"
@@ -59,6 +70,8 @@ g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/c
 "$test_binary"
 g++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/linux/sdl3-gamepad.cpp
 cc -std=c11 -Wall -Wextra -Werror packages/quest-runtime/tests/syscall-fast-path.test.c -o "$test_binary"
+"$test_binary"
+cc -O2 -std=c11 -Wall -Wextra -Werror -pthread packages/quest-runtime/tests/robust-wait.test.c -o "$test_binary"
 "$test_binary"
 cc -O2 -std=c11 -Wall -Wextra -Werror packages/quest-runtime/tests/capture-matrix.test.c -o "$test_binary"
 "$test_binary"
