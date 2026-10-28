@@ -2,6 +2,26 @@
 set -eu
 
 runtime=${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}
+# Empty/hidden panels must clear all three packed UV pixels. Clearing o+1
+# three times leaves the old validity marker and bounds in the painted atlas.
+# Run this repair even when the panel binding adapter is already installed.
+painter=$runtime/resources/webinterface/dashboard/chunk~336cd93ad.js
+broken='for(let e=0;e<3;e++)this.setPixel(o+1,0,0,0,0)'
+fixed='for(let e=0;e<3;e++)this.setPixel(o+e,0,0,0,0)'
+if [ -f "$painter" ] && grep -qF "$broken" "$painter";then
+    if [ "$(grep -oF "$broken" "$painter" | wc -l)" -ne 1 ];then
+        echo 'Quest atlas cleanup adapter is ambiguous; leaving it unchanged.' >&2
+        exit 1
+    fi
+    temporary=$painter.quest-atlas-clear
+    trap 'rm -f "$temporary"' EXIT
+    LC_ALL=C sed 's/for(let e=0;e<3;e++)this\.setPixel(o+1,0,0,0,0)/for(let e=0;e<3;e++)this.setPixel(o+e,0,0,0,0)/' "$painter" > "$temporary"
+    grep -qF "$fixed" "$temporary"
+    chmod --reference="$painter" "$temporary"
+    mv "$temporary" "$painter"
+    trap - EXIT
+    echo STEARLIGHT_QUEST_ATLAS_CLEAR_READY
+fi
 panel=$runtime/resources/webinterface/dashboard/chunk~1a88854fa.js
 binding='const F=this.props.overlay_key,f=(0,h.w5)();'
 embedded='y.properties["embedded-uv-index"]=this.m_nEmbeddedIndex'

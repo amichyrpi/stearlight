@@ -73,5 +73,38 @@ assert.equal(other.key,"native-page");assert.equal(other["embedded-uv-index"],3)
                 self.assertEqual(panel.read_text(), source)
                 self.assertFalse(Path(str(panel) + '.quest-controls').exists())
 
+    def test_hidden_panel_clears_all_uv_pixels_even_with_existing_binding_patch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            panel = root / 'resources/webinterface/dashboard/chunk~1a88854fa.js'
+            panel.parent.mkdir(parents=True)
+            panel.write_text(self.source(True))
+            self.assertEqual(self.prepare(root).returncode, 0)
+            painter = panel.with_name('chunk~336cd93ad.js')
+            broken = 'function clear(){let o=4;for(let e=0;e<3;e++)this.setPixel(o+1,0,0,0,0)}'
+            painter.write_text(broken)
+            self.assertEqual(self.prepare(root).returncode, 0)
+            fixed = painter.read_text()
+            self.assertIn('this.setPixel(o+e,0,0,0,0)', fixed)
+            inode = painter.stat().st_ino
+            self.assertEqual(self.prepare(root).returncode, 0)
+            self.assertEqual(painter.stat().st_ino, inode)
+            if NODE:
+                # Reproduce the stale validity marker/bounds, then exercise the
+                # repaired function extracted from the actual adapter output.
+                code = '''const assert=require("assert");
+const run=fn=>{const pixels=Array(10).fill(254);
+fn.call({setPixel:(index,r,g,b,a)=>{pixels[index]=r|g|b|a}});
+return pixels;};
+const before=(''' + broken + ''');
+const stale=run(before);
+assert.equal(stale[4],254);assert.equal(stale[6],254);
+const after=(''' + fixed + ''');
+const clean=run(after);
+assert.deepEqual(clean.slice(4,7),[0,0,0]);
+assert.equal(clean[3],254);assert.equal(clean[7],254);
+'''
+                subprocess.run([NODE, '-e', code], check=True)
+
 if __name__ == '__main__':
     unittest.main()
