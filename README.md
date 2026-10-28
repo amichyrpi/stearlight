@@ -116,6 +116,20 @@ published by CI.
 
 Before contributing to this project, please look at the [`Contribution guidelines`](CONTRIBUTING.md).
 
+## Contributors
+
+Thanks to everyone who helped make Stearlight OS possible!
+
+<a href="https://github.com/amichyrpi/stearlight/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=amichyrpi/stearlight" />
+</a>
+
+## Special Thanks
+
+Special thanks to everyone who helped bring Quest 3 support to Stearlight OS!
+
+- [matmon3](https://github.com/matmon3)
+
 ## License
 
 Stearlight code is licensed under the **FSL-1.1-ALv2** license. Valve assets and intellectual property are owned by Valve themselves.
