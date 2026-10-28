@@ -1,7 +1,7 @@
-# Quest 2 runtime (experimental)
+# Quest runtime (experimental)
 
 This target bundles the ARM64 Stearlight rootfs and runs its Linux programs
-through PRoot. Turnip renders on the Quest's Adreno 650; shared DMA-BUF images
+through PRoot. Turnip detects the headset's Adreno GPU through KGSL; shared DMA-BUF images
 are submitted to the two OpenXR eye swapchains. Valve's runtime owns the UI.
 
 Hardware checks have verified native Linux GPU commands, separate stereo
@@ -10,11 +10,46 @@ between Linux processes. Steam's browser also initializes ANGLE with the real
 Turnip Vulkan renderer. SteamVR's separate OpenGL context uses the matching
 Mesa 26.1.6 Zink loader over Turnip. A GPU probe verifies opaque-fd image
 sharing by rendering in OpenGL and reading every pixel back through Vulkan.
-The eye buffers request the Quest 2's native 1832 x 1920 dimensions, clamped
-to the OpenXR runtime's limits. The Vulkan display modes and startup GPU
+The eye buffers request 1832 x 1920 per eye on Quest 2 and Quest 3S, and
+2064 x 2208 on Quest 3, clamped to the OpenXR runtime's limits. The Vulkan display modes and startup GPU
 probe use the actual OpenXR buffer size. The app requests 72 Hz when supported,
 and otherwise keeps the runtime's active refresh rate. Scene rendering still falls below 72 FPS
 under load; the display refresh rate is not the scene update rate.
+
+Quest 2 remains the primary, hardware-tested platform. The same ARM64 APK
+also declares experimental Quest 3 and Quest 3S support. Their Touch Plus
+bindings and Valve render models are selected separately from Quest 2's Touch
+controllers. Headset identity is published in `files/state/headset-profile`;
+the existing tracking wire layout is unchanged. Unknown headsets use OpenXR's
+recommended eye size rather than being identified as a Quest 2.
+
+CPU/GPU performance levels and refresh rates are negotiated through OpenXR,
+not fixed CPU cores or clocks. The generic ARM64 build and KGSL Turnip driver
+include A6xx and A7xx support. Color-passthrough capability is queried from
+OpenXR; the transparent camera style preserves color, while explicitly tinted
+Frame styles still apply their selected tint. No global Android process-limit
+or clock changes are required.
+
+Quest 3/3S startup, DMA-BUF sharing, controllers, passthrough, local games and
+streaming still require hardware testing. [Issue #13](https://github.com/amichyrpi/stearlight/issues/13)
+reports a Vulkan device-creation failure on Adreno 740. The KGSL allocation
+adapter retains the Quest 2 allocation path and tries GPUOBJ allocation only
+when the kernel rejects the legacy API. It rejects changed cache/access flags and
+does not retry real out-of-memory errors or invalid requests. This is a candidate fix, not a
+hardware-confirmed resolution of that issue.
+
+For a stuck startup, testers can collect diagnostics without root:
+
+```sh
+adb shell getprop ro.product.model
+adb shell run-as net.stearlight.quest cat files/state/headset-profile
+adb shell run-as net.stearlight.quest cat files/state/linux-status
+adb shell run-as net.stearlight.quest cat files/logs/linux.log > linux.log
+adb logcat -d -s StearlightXR StearlightGPU StearlightQuest > android.log
+```
+
+Report the APK commit, headset and Horizon OS version with these logs. Review
+logs before sharing them; they can contain account or network information.
 
 Noto fonts are bundled for broad script coverage, including CJK and emoji.
 Japanese and Korean choose the matching regional CJK faces. Fonts work
@@ -131,7 +166,7 @@ list required by the host's wireless HMD handshake.
 CPU-painted move and resize controls use Valve's explicit atlas bounds on Quest;
 embedded scanline coordinates otherwise display gray blocks or unrelated text.
 The adapter checks the matching UI code and preserves unknown runtime versions.
-The Quest 2 render models use Valve's `openxr_grip` component transform to
+The Quest 2 and Touch Plus render models use Valve's `openxr_grip` component transform to
 convert tracked grip poses to the model origin for both hands.
 The driver supplies floor and seated origins from OpenXR's STAGE space,
 including its reported play-area rectangle. SteamVR's recenter action can

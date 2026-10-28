@@ -1,4 +1,5 @@
 // BlueZ discovery, bonding and advertising backed by Android's actual radio.
+#include "headset_profile.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -234,7 +235,8 @@ static void properties(DBusMessageIter *parent, const char *interface, const cha
   DBusMessageIter array;
   dbus_message_iter_open_container(parent, DBUS_TYPE_ARRAY, "{sv}", &array);
   if (!strcmp(interface, "org.bluez.Adapter1")) {
-    stringProperty(&array, "Name", "Quest 2");
+    auto headset=quest::readHeadsetProfile();
+    stringProperty(&array, "Name", headset==quest::Headset::Quest2?"Quest 2":quest::headsetName(headset));
     stringProperty(&array, "Alias", "Steam Frame");
     booleanProperty(&array, "Powered", state("bluetooth_enabled"));
     booleanProperty(&array, "Discoverable", false);

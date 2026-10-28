@@ -49,6 +49,9 @@ test_binary=$(mktemp)
 trap 'rm -f -- "$test_binary"' EXIT
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp -isystem packages/openvr/headers packages/quest-runtime/tests/hand-skeleton.test.cpp -o "$test_binary"
 "$test_binary"
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/device-profile.test.cpp -o "$test_binary"
+"$test_binary"
+
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/display-pulse.test.cpp -o "$test_binary"
 "$test_binary"
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -pthread packages/quest-runtime/tests/gpu-frames.test.cpp -o "$test_binary"
