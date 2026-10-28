@@ -267,7 +267,16 @@ struct Runtime {
   if(velocity.velocityFlags&XR_SPACE_VELOCITY_ANGULAR_VALID_BIT){motionSample.flags|=QUEST_ANGULAR_VELOCITY_VALID;motionSample.angular[0]=velocity.angularVelocity.x;motionSample.angular[1]=velocity.angularVelocity.y;motionSample.angular[2]=velocity.angularVelocity.z;}
   location.next=nullptr;
   for(int i=0;i<2;i++){
-   XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,poseState.isActive?location.locationFlags:0);XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);sample.eyes[i]=pose(views[i].pose,viewState.viewStateFlags);sample.fov[i][0]=views[i].fov.angleLeft;sample.fov[i][1]=views[i].fov.angleRight;sample.fov[i][2]=views[i].fov.angleUp;sample.fov[i][3]=views[i].fov.angleDown;
+   XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));
+   if(poseState.isActive){
+    XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,location.locationFlags);
+    XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);
+   }else{
+    // Preserve the last pose but publish disconnection immediately. Inactive
+    // action spaces cannot supply a tracked pose; hand input is applied below.
+    sample.grip[i].flags=sample.aim[i].flags=0;
+   }
+   sample.eyes[i]=pose(views[i].pose,viewState.viewStateFlags);sample.fov[i][0]=views[i].fov.angleLeft;sample.fov[i][1]=views[i].fov.angleRight;sample.fov[i][2]=views[i].fov.angleUp;sample.fov[i][3]=views[i].fov.angleDown;
    // Query only bindings present on this hand. Keep zero inputs for sleeping
    // controllers, so wake/disconnect still publishes a complete new sample.
    sample.trigger[i]=sample.squeeze[i]=0;sample.buttons[i]=sample.touches[i]=0;
@@ -363,6 +372,7 @@ struct Runtime {
   auto eyeStart=std::chrono::steady_clock::now();
   // OpenXR reuses the most recently released image. Reproject repeated Linux
   // frames without redrawing seven million pixels at every headset tick.
+  if(state.shouldRender&&eyesDirty&&showHands)handRender.update(handTracking);
   if(state.shouldRender)for(int i=0;i<2;i++){
    Eye& eye=eyes[i];
    if(eyesDirty){

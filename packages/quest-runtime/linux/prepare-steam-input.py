@@ -19,6 +19,11 @@ BUILDS = (
     # Client 1792711043 retains the same verified SDL3 detection routine.
     ('a809e5dee7b5382a3c8e1c3122a7c3071cbd52aad369cfe9427586c237f0dc39',
      '17445fc82bc64ccdab2bfb5edf369942b4aeeba934710cad6e73a32df8c2914d', 0xd4df0),
+    # Updated Frame SDL3: the same guarded device-change-count call at
+    # 0xd4e24 and HID list refresh at 0xd4e50. A controller-rendering replay
+    # traced repeated Linux udev setup through this exact detection routine.
+    ('cc411c02ad76e07e1b230223c21d470ae597ad099a4d77a5128e2425a9b6343d',
+     '66259ccd13fb3501244aeacd7e80eefa466641583f6cb1d9487cf915a54b6204', 0xd4df0),
     # Debian ARM64 SDL 2.26.5, used by Wine's controller service. Verified
     # against build-id 9c22a11ac822b10572c713275311e288d856a346 and SDL source.
     ('72457d21f5a6874e98a89b537ea96a8f7204399a3938dc2a0e41f2a82ed44a59',

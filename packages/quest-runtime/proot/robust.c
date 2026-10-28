@@ -78,8 +78,11 @@ static int adapt(Tracee *t,Sysnum n) {
  if(n!=PR_futex)return 0;
  unsigned op=peek_reg(t,CURRENT,SYSARG_2),cmd=op&FUTEX_CMD_MASK;
  if(cmd!=FUTEX_WAIT&&cmd!=FUTEX_WAIT_BITSET)return 0;
- uint32_t word;
- if(read_data(t,&word,peek_reg(t,CURRENT,SYSARG_1),sizeof(word))<0)return 0;
+ /* FUTEX_WAIT can sleep only if the word equals its expected value. A
+  * mismatch is EAGAIN in the kernel, so looking up the expected owner is
+  * sufficient even if another thread changes the word before kernel entry.
+  * Avoid a cross-process memory read for every compositor/game wait. */
+ uint32_t word=(uint32_t)peek_reg(t,CURRENT,SYSARG_3);
  pid_t pid=word&FUTEX_TID_MASK;
  Tracee *owner=pid?get_tracee(t,pid,false):NULL;
  if(!owner||!owner->quest_robust_head||owner->terminated)return 0;

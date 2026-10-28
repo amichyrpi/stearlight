@@ -7,7 +7,7 @@
 // Mesh and joints come directly from OpenXR. No Linux process, camera image,
 // recorded pose stream, or downloaded hand asset is needed.
 class HandRender {
- struct Mesh {GLuint vao=0,vertices=0,indices=0;GLsizei count=0;std::vector<XrPosef> bind;};
+ struct Mesh {GLuint vao=0,vertices=0,indices=0;GLsizei count=0;std::vector<XrPosef> bind;std::array<quest::Matrix,XR_HAND_JOINT_COUNT_EXT> transforms;};
  Mesh meshes[2];GLuint program=0,depth=0;GLint vp=-1,bones=-1,tint=-1;int depthWidth=0,depthHeight=0;
  struct Vertex {XrVector3f position,normal;XrVector4sFB joints;XrVector4f weights;};
  static GLuint shader(GLenum kind,const char* source){
@@ -63,6 +63,14 @@ void main(){float light=0.45+0.55*abs(dot(normalize(n),normalize(vec3(0.3,0.8,0.
   vp=glGetUniformLocation(program,"viewProjection");bones=glGetUniformLocation(program,"bones[0]");tint=glGetUniformLocation(program,"tint");
   for(int i=0;i<2;i++)mesh(tracking,i);
  }
+ // Joint poses are shared by both eyes. Skin once for each new stereo frame.
+ void update(const HandTracking& tracking){
+  for(int i=0;i<2;i++){
+   const auto& h=tracking.hands[i];auto& m=meshes[i];
+   if(!h.visible||!m.count)continue;
+   for(size_t j=0;j<m.bind.size();j++)m.transforms[j]=quest::handSkinMatrix(h.joints[j].pose,m.bind[j],h.scale);
+  }
+ }
  void draw(const HandTracking& tracking,const XrView& view,int width,int height){
   if(!program)return;
   if(!depth)glGenRenderbuffers(1,&depth);
@@ -74,13 +82,15 @@ void main(){float light=0.45+0.55*abs(dot(normalize(n),normalize(vec3(0.3,0.8,0.
   auto matrix=quest::viewProjection(view);glUniformMatrix4fv(vp,1,GL_FALSE,matrix.data());
   for(int i=0;i<2;i++){
    const auto& h=tracking.hands[i];const auto& m=meshes[i];if(!h.visible||!m.count)continue;
-   std::array<quest::Matrix,XR_HAND_JOINT_COUNT_EXT> transforms;
-   for(size_t j=0;j<m.bind.size();j++)transforms[j]=quest::handSkinMatrix(h.joints[j].pose,m.bind[j],h.scale);
-   glUniformMatrix4fv(bones,transforms.size(),GL_FALSE,transforms[0].data());
+   glUniformMatrix4fv(bones,m.transforms.size(),GL_FALSE,m.transforms[0].data());
    bool pinch=h.aim.status&XR_HAND_TRACKING_AIM_INDEX_PINCHING_BIT_FB;
    glUniform3f(tint,pinch?.3f:.75f,pinch?.75f:.8f,pinch?1.f:.85f);
    glBindVertexArray(m.vao);glDrawElements(GL_TRIANGLES,m.count,GL_UNSIGNED_SHORT,nullptr);
   }glBindVertexArray(0);glUseProgram(0);glDisable(GL_DEPTH_TEST);
+  // This attachment is cleared before the next eye and never read elsewhere.
+  // Let tile-based GPUs discard it instead of storing it to system memory.
+  const GLenum transient=GL_DEPTH_ATTACHMENT;
+  glInvalidateFramebuffer(GL_FRAMEBUFFER,1,&transient);
  }
  void shutdown(){for(auto& m:meshes){if(m.vao)glDeleteVertexArrays(1,&m.vao);if(m.vertices)glDeleteBuffers(1,&m.vertices);if(m.indices)glDeleteBuffers(1,&m.indices);m={};}if(program)glDeleteProgram(program);if(depth)glDeleteRenderbuffers(1,&depth);program=depth=0;}
 };
