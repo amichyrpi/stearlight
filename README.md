@@ -47,9 +47,8 @@
 Stearlight is a Linux application for the Quest platform
 that brings the full Steam Frame OS to the Quest.
 
-Quest 2 is the primary tested headset. The same APK includes experimental
-Quest 3 and Quest 3S support; these devices still need community hardware
-testing. See the [Quest runtime notes](packages/quest-runtime/README.md) for
+One APK supports Quest 2, Quest 3 and Quest 3S. See the
+[Quest runtime notes](packages/quest-runtime/README.md) for
 compatibility details and diagnostic commands.
 
 It includes:

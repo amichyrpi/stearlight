@@ -81,8 +81,8 @@ class QuestBuildTest(unittest.TestCase):
         output = self.root / 'dist'
         package.package(self.apk(), sources, output, 'a' * 40)
         metadata = json.loads((output / 'BUILD.json').read_text())
-        self.assertEqual(metadata['primary_device'], 'Quest 2')
-        self.assertEqual(metadata['experimental_devices'], ['Quest 3', 'Quest 3S'])
+        self.assertEqual(metadata['target'], 'Quest platform ARM64')
+        self.assertEqual(metadata['supported_devices'], ['Quest 2', 'Quest 3', 'Quest 3S'])
         return output
 
     def test_complete_apk_and_corrupted_or_missing_runtime(self):

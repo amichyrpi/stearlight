@@ -265,6 +265,31 @@ if helper not in source:
                             '                       (unsigned long long) size, req.flags, errno, strerror(errno)')
 target.write_text(source)
 
+# Allocation alone is insufficient: denied legacy capability probes hide the
+# cached/coherent memory types required by SteamVR. Use the same strict fallback
+# for probes, retaining the kernel's actual flags and releasing every test BO.
+# Probe fallback identified by leplayitisplayiting-bot/stearlight3patch:
+# https://github.com/leplayitisplayiting-bot/stearlight3patch/commit/7117fc451c7b2e1174822306b340bb17a3aee5af
+source = target.read_text()
+before_probe = "   int ret = safe_ioctl(fd, IOCTL_KGSL_GPUMEM_ALLOC_ID, &req_alloc);"
+after_probe = "   int ret = quest_kgsl_allocate(fd, &req_alloc);"
+if after_probe not in source:
+    if source.count(before_probe) != 1:
+        raise SystemExit("Unsupported Mesa KGSL memory capability probe")
+    source = source.replace(before_probe, after_probe)
+    before_release = """   struct kgsl_gpumem_free_id req_free = { .id = req_alloc.id };
+
+   safe_ioctl(fd, IOCTL_KGSL_GPUMEM_FREE_ID, &req_free);"""
+    if source.count(before_release) != 1:
+        raise SystemExit("Unsupported Mesa KGSL memory probe release")
+    source = source.replace(before_release, "   quest_kgsl_free(fd, req_alloc.id);")
+    # Cache modes are encoded values: zero-valued write-combine must not accept
+    # a silently substituted write-back mode just because no bits were requested.
+    source = source.replace("   bool supported = (req_alloc.flags & flags) == flags;",
+                            "   bool supported = (req_alloc.flags & flags) == flags &&\n"
+                            "                    !((req_alloc.flags ^ flags) & KGSL_CACHEMODE_MASK);")
+    target.write_text(source)
+
 # Mesa a70d2af590db192f87b3af01f83a68b450edb4c3 (26.2): Adreno 630/650
 # can hang with D32S8, fragment discard and combined early/late depth tests.
 # Keep the upstream workaround while this payload uses Mesa 26.1.6.

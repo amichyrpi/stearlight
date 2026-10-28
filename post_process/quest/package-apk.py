@@ -120,7 +120,7 @@ def package(apk, sources, output, commit):
             shutil.copyfile(source, output / name)
     shutil.copyfile(REPO / 'packages/quest-runtime/README.md', output / 'README.md')
     shutil.copyfile(REPO / 'LICENSE.md', output / 'LICENSE.md')
-    metadata = {'commit': commit, 'target': 'Quest 2 / Quest 3 / Quest 3S ARM64', 'primary_device': 'Quest 2', 'experimental_devices': ['Quest 3', 'Quest 3S'], **runtime}
+    metadata = {'commit': commit, 'target': 'Quest platform ARM64', 'supported_devices': ['Quest 2', 'Quest 3', 'Quest 3S'], **runtime}
     (output / 'BUILD.json').write_text(json.dumps(metadata, indent=2) + '\n')
     apk_hash = sha(output / 'stearlight-quest.apk')
     (output / 'stearlight-quest.apk.sha256').write_text(apk_hash + '  stearlight-quest.apk\n')

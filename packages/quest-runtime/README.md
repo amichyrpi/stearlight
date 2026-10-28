@@ -1,4 +1,4 @@
-# Quest runtime (experimental)
+# Quest runtime
 
 This target bundles the ARM64 Stearlight rootfs and runs its Linux programs
 through PRoot. Turnip detects the headset's Adreno GPU through KGSL; shared DMA-BUF images
@@ -16,8 +16,7 @@ probe use the actual OpenXR buffer size. The app requests 72 Hz when supported,
 and otherwise keeps the runtime's active refresh rate. Scene rendering still falls below 72 FPS
 under load; the display refresh rate is not the scene update rate.
 
-Quest 2 remains the primary, hardware-tested platform. The same ARM64 APK
-also declares experimental Quest 3 and Quest 3S support. Their Touch Plus
+The same ARM64 APK supports Quest 2, Quest 3 and Quest 3S. Touch Plus
 bindings and Valve render models are selected separately from Quest 2's Touch
 controllers. Headset identity is published in `files/state/headset-profile`;
 the existing tracking wire layout is unchanged. Unknown headsets use OpenXR's
@@ -30,13 +29,14 @@ OpenXR; the transparent camera style preserves color, while explicitly tinted
 Frame styles still apply their selected tint. No global Android process-limit
 or clock changes are required.
 
-Quest 3/3S startup, DMA-BUF sharing, controllers, passthrough, local games and
-streaming still require hardware testing. [Issue #13](https://github.com/amichyrpi/stearlight/issues/13)
-reports a Vulkan device-creation failure on Adreno 740. The KGSL allocation
-adapter retains the Quest 2 allocation path and tries GPUOBJ allocation only
-when the kernel rejects the legacy API. It rejects changed cache/access flags and
-does not retry real out-of-memory errors or invalid requests. This is a candidate fix, not a
-hardware-confirmed resolution of that issue.
+The Quest 3S startup fix has been confirmed on hardware. The KGSL allocation
+adapter retains the legacy allocation path and tries GPUOBJ allocation only
+when the kernel rejects the legacy API. Memory-type capability probes use the
+same fallback; otherwise SteamVR can still reject the device's memory after
+allocation succeeds. This probe correction follows
+[stearlight3patch](https://github.com/leplayitisplayiting-bot/stearlight3patch/commit/7117fc451c7b2e1174822306b340bb17a3aee5af).
+It rejects changed cache/access flags and
+does not retry real out-of-memory errors or invalid requests.
 
 For a stuck startup, testers can collect diagnostics without root:
 

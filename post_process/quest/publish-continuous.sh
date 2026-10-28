@@ -24,7 +24,7 @@ else
 fi
 notes=$(mktemp)
 trap 'rm -f "$notes"' EXIT
-printf '%s\n' 'Standalone Stearlight OS APK for Quest 2 (primary), with experimental Quest 3 and Quest 3S support. Download stearlight-quest.apk and sideload it, then open Stearlight OS from the app library.' \
+printf '%s\n' 'Standalone Stearlight OS APK for the Quest platform, supporting Quest 2, Quest 3 and Quest 3S. Download stearlight-quest.apk and sideload it, then open Stearlight OS from the app library.' \
   '' 'Includes the Linux rootfs, SteamVR, KDE, GPU drivers and adapters. No PC launcher is required after installation.' \
   '' "[Build log](https://github.com/$GH_REPO/actions/runs/${GITHUB_RUN_ID:?}) | [Source](https://github.com/$GH_REPO/tree/$GITHUB_SHA)" > "$notes"
 if gh release view continuous >/dev/null 2>&1; then
