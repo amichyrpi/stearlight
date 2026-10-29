@@ -24,6 +24,10 @@ BUILDS = (
     # traced repeated Linux udev setup through this exact detection routine.
     ('cc411c02ad76e07e1b230223c21d470ae597ad099a4d77a5128e2425a9b6343d',
      '66259ccd13fb3501244aeacd7e80eefa466641583f6cb1d9487cf915a54b6204', 0xd4df0),
+    # October 29 beta: detection, device-change count and HID list refresh
+    # bodies are byte-identical to the verified build immediately above.
+    ('79ada316e51ac004ba2c4edce00f0151409a301ceafcd169cc27437dc9d92c43',
+     '78a24c2a109bced7c2a979ccd7c99e7f8f373133e076fe4b3c13e51705265298', 0xd4df0),
     # Debian ARM64 SDL 2.26.5, used by Wine's controller service. Verified
     # against build-id 9c22a11ac822b10572c713275311e288d856a346 and SDL source.
     ('72457d21f5a6874e98a89b537ea96a8f7204399a3938dc2a0e41f2a82ed44a59',

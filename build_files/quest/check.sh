@@ -60,6 +60,12 @@ g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/c
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/device-profile.test.cpp -o "$test_binary"
 "$test_binary"
 
+g++ -O2 -std=c++17 -Wall -Wextra -Werror packages/quest-runtime/tests/eye-projection.test.cpp -o "$test_binary"
+"$test_binary"
+
+g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/controller-pose.test.cpp -o "$test_binary"
+"$test_binary"
+
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/display-pulse.test.cpp -o "$test_binary"
 "$test_binary"
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -pthread packages/quest-runtime/tests/gpu-frames.test.cpp -o "$test_binary"
