@@ -36,6 +36,7 @@ void fake_vkGetDeviceQueue(VkDevice,unsigned,unsigned,VkQueue* queue){*queue=1;}
 VkResult fake_vkQueueSubmit(VkQueue queue,unsigned,const VkSubmitInfo*,VkFence){assert(queue==1);return VK_SUCCESS;}
 #define D(name) fake_##name
 bool roomViewMode=false,roomViewReady=false;
+struct RenderViewStub{void expected(const QuestGpuPresent&){}void acquired(VkSemaphore){}}renderedViews;
 struct Swapchain{
  bool offscreen=false;int socket=-1;uint64_t presented=0;unsigned next=0,queueFamily=0;
  std::mutex lock;std::condition_variable presentedCondition;
@@ -43,6 +44,7 @@ struct Swapchain{
  bool released[QUEST_GPU_BUFFERS]{};uint64_t acquireCommands[QUEST_GPU_BUFFERS]{};
  std::chrono::steady_clock::time_point acquired[QUEST_GPU_BUFFERS]{};
  void sampleInputPose(unsigned){}
+ QuestGpuPresent inputPoses[QUEST_GPU_BUFFERS]{};
 ''' + events + r'''
 };
 template<class T>T* object(VkSwapchainKHR handle){return reinterpret_cast<T*>(handle);}
