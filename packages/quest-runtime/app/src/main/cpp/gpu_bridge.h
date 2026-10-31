@@ -4,7 +4,8 @@ enum { QUEST_GPU_MAGIC=0x53475131,QUEST_GPU_VERSION=4,QUEST_GPU_BUFFERS=3 };
 constexpr uint32_t QUEST_GPU_ACCEPTED_MAGIC=0x53475132;
 struct QuestGpuBuffer { uint32_t width,height,stride,format;uint64_t allocation_size; };
 struct QuestGpuHello { uint32_t magic,version,count,available_mask;struct QuestGpuBuffer buffers[QUEST_GPU_BUFFERS]; };
-// Input views sampled when Linux acquires this image, before rendering starts.
+// Frame's submitted eye cameras when available; acquisition-time views are
+// retained as the fallback for render paths without Frame geometry constants.
 struct QuestGpuView { float position[3],orientation[4],fov[4]; };
 struct QuestGpuPresent {
  uint32_t magic,slot;uint64_t frame_id;uint32_t vk_format,pose_sequence;

@@ -129,6 +129,7 @@ Thanks to everyone who helped make Stearlight OS possible!
 Special thanks to everyone who helped bring Quest 3 support to Stearlight OS!
 
 - [matmon3](https://github.com/matmon3)
+- [jiink](https://github.com/jiink)
 
 ## License
 

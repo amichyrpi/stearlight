@@ -66,6 +66,11 @@ g++ -O2 -std=c++17 -Wall -Wextra -Werror packages/quest-runtime/tests/eye-projec
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/controller-pose.test.cpp -o "$test_binary"
 "$test_binary"
 
+for test in render-view render-view-tracker; do
+    g++ -O2 -std=c++17 -pthread -Wall -Wextra -Werror -Wno-missing-field-initializers -Ipackages/quest-runtime/app/src/main/cpp "packages/quest-runtime/tests/$test.test.cpp" -o "$test_binary"
+    "$test_binary"
+done
+
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/display-pulse.test.cpp -o "$test_binary"
 "$test_binary"
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -pthread packages/quest-runtime/tests/gpu-frames.test.cpp -o "$test_binary"

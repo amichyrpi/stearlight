@@ -225,12 +225,13 @@ public:
     if(!questReadHands(sharedHands,handState))handState={};
     uint64_t ns=std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
     if(handState.predicted_monotonic_ns>ns+100000000||ns>handState.predicted_monotonic_ns+250000000)handState={};
-    // Android owns presentation. Forward each observed OpenXR display tick
-    // so Frame's renderer does not wait for an unavailable Linux display IRQ.
-    if(state.session_visible&&state.predicted_monotonic_ns&&state.refresh_hz>0)
-     vr::VRServerDriverHost()->VsyncEvent(0);
     head.frame();left.frame();right.frame();
     if(gamepad)quest::publishGamepad(gamepad,quest::gamepadState(state,leftGamepad,rightGamepad,std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count()));
+    // Publish poses before waking the compositor. Waking it first races its
+    // render-pose lookup against this sample and intermittently renders the
+    // preceding head pose while Android already has the new OpenXR sample.
+    if(state.session_visible&&state.predicted_monotonic_ns&&state.refresh_hz>0)
+     vr::VRServerDriverHost()->VsyncEvent(0);
     publishedSequence=state.sequence;havePublished=true;
    }
   }
