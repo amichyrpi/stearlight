@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.request
 import zipfile
 
@@ -35,15 +36,36 @@ def run(*args):
         raise subprocess.CalledProcessError(result.returncode, command)
 
 
-def fetch(spec, downloads):
-    target = downloads / (spec["sha256"][:16] + "-" + spec["url"].rsplit("/", 1)[1])
+def spec_urls(spec):
+    """A dependency lists one `url` or several mirrors in `urls`, tried in order."""
+    return list(spec["urls"]) if "urls" in spec else [spec["url"]]
+
+
+def fetch(spec, downloads, attempts=3, pause=5):
+    urls = spec_urls(spec)
+    target = downloads / (spec["sha256"][:16] + "-" + urls[0].rsplit("/", 1)[1])
     if not target.exists():
         temporary = target.with_suffix(target.suffix + ".partial")
-        with urllib.request.urlopen(spec["url"], timeout=90) as source, temporary.open("wb") as out:
-            shutil.copyfileobj(source, out)
-        with temporary.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != spec["sha256"]:
-                raise RuntimeError(f"Checksum mismatch: {spec['url']}")
+        failures = []
+        for url in urls:
+            for attempt in range(attempts):
+                try:
+                    with urllib.request.urlopen(url, timeout=30) as source, temporary.open("wb") as out:
+                        shutil.copyfileobj(source, out)
+                except OSError as error:  # timeouts and URLError are OSError
+                    failures.append(f"{url}: {error}")
+                    if attempt + 1 < attempts:
+                        time.sleep(pause * (attempt + 1))
+                    continue
+                with temporary.open("rb") as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != spec["sha256"]:
+                        raise RuntimeError(f"Checksum mismatch: {url}")
+                break
+            else:
+                continue
+            break
+        else:
+            raise RuntimeError("Every download source failed:\n" + "\n".join(failures))
         temporary.replace(target)
     with target.open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != spec["sha256"]:

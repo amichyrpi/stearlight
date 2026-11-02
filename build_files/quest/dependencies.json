@@ -13,7 +13,10 @@
       "sha256": "a574cabbf572ed5534fd73550f054dc2546d095c36b73e7a30a59721cfea2194"
     },
     "sdl-headers": {
-      "url": "https://www.libsdl.org/release/SDL2-2.0.14.tar.gz",
+      "urls": [
+        "https://distfiles.macports.org/libsdl2/SDL2-2.0.14.tar.gz",
+        "https://www.libsdl.org/release/SDL2-2.0.14.tar.gz"
+      ],
       "sha256": "d8215b571a581be1332d2106f8036fcb03d12a70bae01e20f424976d275432bc"
     }
   },
@@ -247,8 +250,8 @@
       "sha256": "65e6bedb3545497060cb2faa5e36c64f7984f7c9e2b77804fb0c5ddac9bd1be2"
     },
     "nano": {
-      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/nano-9.2-r0.apk",
-      "sha256": "8d2a6b84af47d93638466245829561b3500ed7a98864a193c560eb8f159aa4cf"
+      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/nano-9.3-r0.apk",
+      "sha256": "ea171eb82a50c25e2096059c757ed74b7957871a500a030eb56f50ca85d86a28"
     }
   },
   "renpy": {
