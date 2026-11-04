@@ -1,4 +1,6 @@
 import importlib.util
+from contextlib import redirect_stdout
+import io
 import json
 import hashlib
 import os
@@ -143,21 +145,55 @@ class OSUpdateTest(unittest.TestCase):
             self.assertEqual(update.main(['--supports-duplicate-detection']), 0)
 
     def test_check_during_download_preserves_progress_and_uses_cached_candidate(self):
+        for channel in ('stable', 'beta'):
+            with self.subTest(channel=channel), tempfile.TemporaryDirectory() as folder:
+                cache = Path(folder)
+                choice = cache / 'channel'
+                choice.write_text(channel)
+                item = self.image()  # Valve metadata may omit image.branch.
+                progress = '{"title":"Downloading SteamOS update","fraction":0.5}'
+                (cache / 'progress.json').write_text(progress)
+
+                def check_while_staging(staged_item, staged_channel):
+                    self.assertEqual((staged_item, staged_channel), (item, channel))
+                    self.assertEqual(json.loads((cache / 'available.json').read_text()),
+                                     {'channel': channel, 'candidate': item})
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        self.assertEqual(update.main(['check']), 0)
+                    self.assertEqual(output.getvalue().strip(), item['image']['buildid'])
+                    self.assertEqual((cache / 'progress.json').read_text(), progress)
+                    (cache / 'installed.json').write_text(json.dumps(item['image']))
+                    self.assertEqual(update.main(['check']), 7)
+                    (cache / 'pending.json').write_text(json.dumps(item['image']))
+                    self.assertEqual(update.main(['check']), 8)
+                    self.assertEqual((cache / 'progress.json').read_text(), progress)
+
+                with patch.object(update, 'CACHE', cache), patch.object(update, 'Path', return_value=choice), \
+                        patch.object(update, 'candidate', return_value=item) as candidate, \
+                        patch.object(update, 'reclaim_previous'), patch.object(update, 'stage', side_effect=check_while_staging):
+                    self.assertEqual(update.main([]), 0)
+                candidate.assert_called_once_with(channel)
+
+    def test_check_during_download_fetches_for_different_or_missing_cached_channel(self):
         with tempfile.TemporaryDirectory() as folder:
             cache = Path(folder)
-            item = self.image()
-            item['image']['branch'] = 'stable'
-            (cache / 'available.json').write_text(json.dumps(item))
-            progress = '{"title":"Downloading SteamOS update","fraction":0.5}'
-            (cache / 'progress.json').write_text(progress)
-            with (cache / 'lock').open('a') as lock, patch.object(update, 'CACHE', cache), \
-                    patch.object(update, 'candidate', side_effect=AssertionError('must not download')):
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.assertEqual(update.main(['check']), 0)
-                self.assertEqual((cache / 'progress.json').read_text(), progress)
-                (cache / 'pending.json').write_text(json.dumps(item['image']))
-                self.assertEqual(update.main(['check']), 8)
-                self.assertEqual((cache / 'progress.json').read_text(), progress)
+            choice = cache / 'channel'
+            choice.write_text('beta')
+            old = self.image('20260922.1')
+            old['image']['branch'] = 'beta'
+            new = self.image()
+            for cached in ({'channel': 'stable', 'candidate': old}, old):
+                with self.subTest(cached=cached), (cache / 'lock').open('a') as lock, \
+                        patch.object(update, 'CACHE', cache), patch.object(update, 'Path', return_value=choice), \
+                        patch.object(update, 'candidate', return_value=new) as candidate:
+                    (cache / 'available.json').write_text(json.dumps(cached))
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        self.assertEqual(update.main(['check']), 0)
+                    self.assertEqual(output.getvalue().strip(), new['image']['buildid'])
+                    candidate.assert_called_once_with('beta')
 
     def test_duplicate_install_waits_for_current_install_and_reuses_staged_result(self):
         with tempfile.TemporaryDirectory() as folder:

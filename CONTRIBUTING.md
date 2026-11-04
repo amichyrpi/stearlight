@@ -35,11 +35,12 @@ Not all games are supported. Some work out of the box, some have additional fixe
 (the ones on [the list](/STANDALONE_COMPATIBILITY.md)), but others are not supported and
 need additional fixes.
 
-If your game crashes the app when it starts, doesn't want to download, or doesn't run,
-it's because it needs additional fixes.
+If your game crashes the app when it starts, doesn't download, or doesn't run,
+check whether it is marked unsupported on [the list](/STANDALONE_COMPATIBILITY.md).
+If it is not marked unsupported, file an issue with the information requested above.
 
 > [!WARNING]
-> **Do not file an issue for unsupported games.** Instead, file a PR with your game marked as unsupported in [the list](/STANDALONE_COMPATIBILITY.md).
+> **Do not file an issue for unsupported games.** Instead, file a PR adding or updating the entry in [games.json](/games.json) with `status` set to `unsupported`, then run `python3 generate_compatibility.py` to refresh the list.
 
 ### First Boot Login
 

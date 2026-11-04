@@ -344,9 +344,8 @@ def main(arguments):
                 if (CACHE / 'pending.json').exists():
                     return 8
                 available = CACHE / 'available.json'
-                item = json.loads(available.read_text()) if available.exists() else None
-                if not item or item['image'].get('branch') != channel:
-                    item = candidate(channel)
+                cached = json.loads(available.read_text()) if available.exists() else {}
+                item = cached['candidate'] if cached.get('channel') == channel else candidate(channel)
                 installed = CACHE / 'installed.json'
                 if installed.exists() and json.loads(installed.read_text())['buildid'] == item['image']['buildid']:
                     return 7
@@ -361,7 +360,7 @@ def main(arguments):
         installed = CACHE / 'installed.json'
         if installed.exists() and json.loads(installed.read_text())['buildid'] == item['image']['buildid']:
             return 7
-        atomic_json(CACHE / 'available.json', item)
+        atomic_json(CACHE / 'available.json', {'channel': channel, 'candidate': item})
         if 'check' in arguments:
             print(item['image']['buildid'])
         else:
