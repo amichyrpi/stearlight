@@ -48,6 +48,9 @@ class SteamChannelTest(unittest.TestCase):
                     "test", folder, str(args_script), precache], text=True)
             self.assertEqual(arguments(), "[-deckard][-noshaders]")
             self.assertEqual(arguments("1"), "[-deckard]")
+            for feed in ('publicbeta', 'steamdeck_stable'):
+                for suffix in ('installed', 'manifest'):
+                    (root / f'package/steam_client_{feed}_linuxarm64.{suffix}').write_text('committed package\n')
             (root / "package/stearlight-channel").write_text("beta\n")
             self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][publicbeta]")
             injected = subprocess.check_output(["bash", "-c",
@@ -67,6 +70,31 @@ class SteamChannelTest(unittest.TestCase):
             self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][steamdeck_stable][-forcesteamupdate][-forcepackagedownload]")
             self.assertFalse(pending.exists())
             self.assertEqual(arguments(), "[-deckard][-noshaders][-clientbeta][steamdeck_stable]")
+
+    def test_clean_client_updates_before_login_and_retries_incomplete_install(self):
+        args_script = SCRIPT.parents[3] / "packages/quest-runtime/linux/steam-channel-args.sh"
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            package = root / 'package'
+            package.mkdir()
+            (package / 'stearlight-channel').write_text('beta\n')
+            def arguments():
+                return subprocess.check_output(['bash', '-c',
+                    'STEAMROOT=$1; STEAM_ARGS=(-deckard -noverifyfiles); . "$2"; printf "[%s]" "${STEAM_ARGS[@]}"',
+                    'test', folder, str(args_script)], text=True)
+            forced = '[-deckard][-noverifyfiles][-noshaders][-clientbeta][publicbeta][-forcesteamupdate][-forcepackagedownload]'
+            self.assertEqual(arguments(), forced)
+            self.assertEqual(arguments(), forced)  # Relaunch before download completed.
+            manifest = package / 'steam_client_publicbeta_linuxarm64.manifest'
+            installed = package / 'steam_client_publicbeta_linuxarm64.installed'
+            manifest.write_text('downloaded manifest\n')
+            self.assertEqual(arguments(), forced)  # Manifest alone is not an installation.
+            installed.touch()
+            self.assertEqual(arguments(), forced)
+            installed.write_text('committed files\n')
+            self.assertNotIn('forcesteamupdate', arguments())
+            manifest.unlink()
+            self.assertEqual(arguments(), forced)  # Missing metadata is repaired too.
 
 
 if __name__ == "__main__":

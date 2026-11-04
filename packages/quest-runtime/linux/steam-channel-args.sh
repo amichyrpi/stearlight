@@ -34,7 +34,17 @@ if [ -n "$feed" ];then
  printf '%s\n' "$feed" >"${STEAMROOT}/package/beta"
  STEAM_ARGS+=( -clientbeta "$feed" )
 fi
-if [ -f "${STEAMROOT}/package/stearlight-channel-update" ];then
+# The bundled recovery client has no committed public-feed packages. Without
+# this bootstrap Steam skips verification, presents the obsolete login UI and
+# can return to sign-in after accepting a QR/password token. Let Valve install
+# a complete, matching client before first sign-in. Keep retrying after an
+# interrupted download; the updater's committed metadata ends the bootstrap.
+bootstrap_client=0
+if [ -n "$feed" ] && { [ ! -s "${STEAMROOT}/package/steam_client_${feed}_linuxarm64.installed" ] ||
+                        [ ! -s "${STEAMROOT}/package/steam_client_${feed}_linuxarm64.manifest" ]; };then
+ bootstrap_client=1
+fi
+if [ "$bootstrap_client" = 1 ] || [ -f "${STEAMROOT}/package/stearlight-channel-update" ];then
  STEAM_ARGS+=( -forcesteamupdate -forcepackagedownload )
  rm -f "${STEAMROOT}/package/stearlight-channel-update"
 fi

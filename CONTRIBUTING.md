@@ -23,8 +23,8 @@ issue, along with your headset model (Quest 2, 3, or 3S).
 
 ### First Boot
 
-The first boot takes a while, and the second one takes even longer because of
-update unpacking.
+The first boot takes a while because it extracts the OS and updates Steam's
+bundled recovery client. Later launches reuse the completed installation.
 
 If you didn't approve all the prompts at the start of the app, it can cause issues.
 Make sure to approve all of them, and if your issue persists, file an issue.
@@ -43,15 +43,17 @@ it's because it needs additional fixes.
 
 ### First Boot Login
 
-The first boot login is broken in SteamOS itself and doesn't work with regular passwords
-or QR codes on the first boot without an update.
+Choose **More Options…** on Steam's sign-in panel for QR or account/password sign-in.
 
-Use the following instructions:
+Nearby-headset sign-in is also available:
 
 1. Open the Steam mobile app.
 2. Go to the **Steam Guard** tab.
 3. Click on the **gear icon** in the corner.
-4. Check if the picture matches the one on your headset.
-5. Press the **"Log in to Steam Frame"** button.
+4. Press the **"Log in to Steam Frame"** button.
+5. Select the nearby headset and approve only if its picture matches the one
+   shown in your headset.
 
-You should now be logged in.
+If sign-in still returns to the login screen, include `steamui_login.txt` and
+`bootstrap_log.txt` from `files/rootfs/opt/steam/logs` with your report, along with
+your headset model and sign-in method.
