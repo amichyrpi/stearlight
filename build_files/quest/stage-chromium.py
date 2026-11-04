@@ -2,26 +2,52 @@
 """Stage a checksum-pinned ARM64 Chromium without Flatpak or a system install."""
 import argparse
 import hashlib
+from http.client import IncompleteRead
 import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
+import urllib.error
 import urllib.request
+
+
+def fetch(source, downloads):
+    archive = downloads / (source['sha256'][:16] + '-' + source['url'].rsplit('/', 1)[1])
+    def verified(path):
+        with path.open('rb') as stream:
+            return hashlib.file_digest(stream, 'sha256').hexdigest() == source['sha256']
+    if archive.exists():
+        if verified(archive):
+            return archive
+        archive.unlink()
+    temporary = archive.with_name(archive.name + '.partial')
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(source['url'], timeout=90) as response, temporary.open('wb') as target:
+                shutil.copyfileobj(response, target)
+            if not verified(temporary):
+                raise ValueError('Chromium package checksum mismatch: ' + source['url'])
+            temporary.replace(archive)
+            return archive
+        except (urllib.error.URLError, TimeoutError, ConnectionError, IncompleteRead) as error:
+            if isinstance(error, urllib.error.HTTPError) and error.code not in (408, 429, 500, 502, 503, 504):
+                raise
+            if attempt == 4:
+                raise
+            print(f'Chromium download interrupted; retry {attempt + 1}/4: {error}', flush=True)
+            time.sleep(2 ** attempt)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def stage(frame, desktop, output, downloads):
     lock = json.loads((Path(__file__).parent / 'dependencies.json').read_text())['chromium']
     output.mkdir(parents=True, exist_ok=True)
     downloads.mkdir(parents=True, exist_ok=True)
-    for name, source in lock.items():
-        archive = downloads / (source['sha256'][:16] + '-' + source['url'].rsplit('/', 1)[1])
-        if not archive.exists():
-            with urllib.request.urlopen(source['url'], timeout=60) as response, archive.open('wb') as target:
-                shutil.copyfileobj(response, target)
-        with archive.open('rb') as stream:
-            if hashlib.file_digest(stream, 'sha256').hexdigest() != source['sha256']:
-                raise ValueError('Chromium package checksum mismatch: ' + name)
+    for source in lock.values():
+        archive = fetch(source, downloads)
         subprocess.run(['dpkg-deb', '-x', str(archive), str(output)], check=True)
     lib = output / 'usr/lib'
     libraries = {}
