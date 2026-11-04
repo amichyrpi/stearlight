@@ -47,5 +47,11 @@
     "artwork_url": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/4122860/8f691d5b98ceec7c22bc2c15fe926f93f41df5b4/library_capsule.jpg",
     "status": "playable",
     "notes": "Story, Quest controller input and music work with native ARM64 Ren'Py and Adreno GPU rendering. Menus and transitions remain slow."
+  },
+  {
+    "appid": 584400,
+    "name": "Sonic Mania",
+    "status": "unsupported",
+    "notes": "Installation gets stuck on the SteamOS loading screen and does not complete. May require additional FEX/Proton configuration. [Issue #30](https://github.com/amichyrpi/stearlight/issues/30)."
   }
 ]

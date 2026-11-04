@@ -28,6 +28,10 @@ BUILDS = (
     # bodies are byte-identical to the verified build immediately above.
     ('79ada316e51ac004ba2c4edce00f0151409a301ceafcd169cc27437dc9d92c43',
      '78a24c2a109bced7c2a979ccd7c99e7f8f373133e076fe4b3c13e51705265298', 0xd4df0),
+    # November 2 beta (1793740892): the same atomic guard, change-count
+    # comparison and HID-list refresh remain at 0xd4df0 through 0xd4e64.
+    ('5c48e33e17e53f5e0512f160b19adefc9e9d0177c213ddb258a97972a75258a2',
+     'a92cb0b7e58bf3b62929be3ee05482c2a6b252982882761c81b406b6690ac8af', 0xd4df0),
     # Debian ARM64 SDL 2.26.5, used by Wine's controller service. Verified
     # against build-id 9c22a11ac822b10572c713275311e288d856a346 and SDL source.
     ('72457d21f5a6874e98a89b537ea96a8f7204399a3938dc2a0e41f2a82ed44a59',

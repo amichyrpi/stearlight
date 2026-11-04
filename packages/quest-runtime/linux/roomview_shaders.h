@@ -8,12 +8,13 @@ namespace quest {
 // distort_geom_fresnel_ps.spv variant. Other PS_GEOM variants draw controllers,
 // lasers and panels, so an entry-point name alone cannot identify the stars.
 inline bool roomViewStarShader(const uint32_t* words, size_t count) {
- if(count!=1023||words[0]!=0x07230203)return false;
+ if((count!=1023&&count!=1301)||words[0]!=0x07230203)return false;
  uint64_t hash=14695981039346656037ull;
  for(size_t i=0;i<count;i++)for(unsigned byte=0;byte<4;byte++) {
   hash^=(words[i]>>(byte*8))&255;hash*=1099511628211ull;
  }
- return hash==0xfaf0df466b9c7a00ull;
+ return (count==1023&&hash==0xfaf0df466b9c7a00ull)||
+        (count==1301&&hash==0xc97ae2d908b40d5full); // SteamOS 0.5.7
 }
 inline bool roomViewStarDraw(uint32_t indices,uint32_t instances,uint32_t first,
                             int32_t offset,uint32_t firstInstance) {

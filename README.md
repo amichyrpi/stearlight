@@ -62,6 +62,11 @@ It includes:
 - Hand tracking
 - Controller support
 
+> [!IMPORTANT]
+> Please read the Contributing Guidelines before opening an issue or submitting a pull request.
+> Most common issues, including first boot problems, Steam login issues, missing permissions, and unsupported games, are already explained there.
+> Issues that do not follow these guidelines may be closed without further investigation.
+
 ## Known-issues
 
 All clear for once! I hope it stays like this.

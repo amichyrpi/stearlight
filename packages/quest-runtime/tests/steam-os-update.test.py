@@ -6,6 +6,7 @@ from pathlib import Path
 import struct
 import unittest
 import tempfile
+import fcntl
 from unittest.mock import patch, MagicMock
 
 source = Path(__file__).resolve().parents[1] / 'linux/steam-os-update.py'
@@ -140,6 +141,39 @@ class OSUpdateTest(unittest.TestCase):
     def test_native_duplicate_detection_does_not_start_download(self):
         with patch.object(update, 'fetch', side_effect=AssertionError('must not download')):
             self.assertEqual(update.main(['--supports-duplicate-detection']), 0)
+
+    def test_check_during_download_preserves_progress_and_uses_cached_candidate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder)
+            item = self.image()
+            item['image']['branch'] = 'stable'
+            (cache / 'available.json').write_text(json.dumps(item))
+            progress = '{"title":"Downloading SteamOS update","fraction":0.5}'
+            (cache / 'progress.json').write_text(progress)
+            with (cache / 'lock').open('a') as lock, patch.object(update, 'CACHE', cache), \
+                    patch.object(update, 'candidate', side_effect=AssertionError('must not download')):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.assertEqual(update.main(['check']), 0)
+                self.assertEqual((cache / 'progress.json').read_text(), progress)
+                (cache / 'pending.json').write_text(json.dumps(item['image']))
+                self.assertEqual(update.main(['check']), 8)
+                self.assertEqual((cache / 'progress.json').read_text(), progress)
+
+    def test_duplicate_install_waits_for_current_install_and_reuses_staged_result(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cache = Path(folder)
+            calls = []
+
+            def acquire(fd, flags):
+                calls.append(flags)
+                if flags & fcntl.LOCK_NB:
+                    raise BlockingIOError()
+                (cache / 'pending.json').write_text(json.dumps(self.image()['image']))
+
+            with patch.object(update, 'CACHE', cache), patch.object(update.fcntl, 'flock', side_effect=acquire), \
+                    patch.object(update, 'stage', side_effect=AssertionError('must not install twice')):
+                self.assertEqual(update.main([]), 0)
+            self.assertEqual(calls, [fcntl.LOCK_EX | fcntl.LOCK_NB, fcntl.LOCK_EX])
 
 
 if __name__ == '__main__':

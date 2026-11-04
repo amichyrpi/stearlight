@@ -28,8 +28,17 @@ embedded='y.properties["embedded-uv-index"]=this.m_nEmbeddedIndex'
 bound='const F=this.props.overlay_key,f=document.title==="systemui"?"system.systemui":(0,h.w5)();'
 legacy_explicit='y.properties["embedded-uv-index"]=document.title==="systemui"?void 0:this.m_nEmbeddedIndex'
 explicit='y.properties["embedded-uv-index"]=document.title==="systemui"&&this.props.overlay_key?void 0:this.m_nEmbeddedIndex'
-# Frame OS 0.4.5 keeps the same atlas contract with renamed minified locals.
-if [ -f "$panel" ] && grep -qF 'const f=this.props.overlay_key,F=(0,h.w5)();' "$panel";then
+# Frame releases keep the same atlas contract with renamed minified locals.
+if [ -f "$panel" ] && {
+    grep -qF 'const k=this.props.overlay_key,O=(0,m.w5)();' "$panel" ||
+    grep -qF 'const k=this.props.overlay_key,O=document.title==="systemui"?' "$panel"
+};then
+    binding='const k=this.props.overlay_key,O=(0,m.w5)();'
+    bound='const k=this.props.overlay_key,O=document.title==="systemui"?"system.systemui":(0,m.w5)();'
+    embedded='C.properties["embedded-uv-index"]=this.m_nEmbeddedIndex'
+    legacy_explicit='C.properties["embedded-uv-index"]=document.title==="systemui"?void 0:this.m_nEmbeddedIndex'
+    explicit='C.properties["embedded-uv-index"]=document.title==="systemui"&&this.props.overlay_key?void 0:this.m_nEmbeddedIndex'
+elif [ -f "$panel" ] && grep -qF 'const f=this.props.overlay_key,F=(0,h.w5)();' "$panel";then
     binding='const f=this.props.overlay_key,F=(0,h.w5)();'
     bound='const f=this.props.overlay_key,F=document.title==="systemui"?"system.systemui":(0,h.w5)();'
 elif [ -f "$panel" ] && grep -qF 'const f=this.props.overlay_key,F=document.title==="systemui"?' "$panel";then
@@ -54,10 +63,13 @@ fi
 temporary=$panel.quest-controls
 trap 'rm -f "$temporary"' EXIT
 LC_ALL=C sed \
+    -e 's/const k=this\.props\.overlay_key,O=(0,m\.w5)();/const k=this.props.overlay_key,O=document.title==="systemui"?"system.systemui":(0,m.w5)();/' \
     -e 's/const F=this\.props\.overlay_key,f=(0,h\.w5)();/const F=this.props.overlay_key,f=document.title==="systemui"?"system.systemui":(0,h.w5)();/' \
     -e 's/const f=this\.props\.overlay_key,F=(0,h\.w5)();/const f=this.props.overlay_key,F=document.title==="systemui"?"system.systemui":(0,h.w5)();/' \
     -e 's/y\.properties\["embedded-uv-index"\]=this\.m_nEmbeddedIndex/y.properties["embedded-uv-index"]=document.title==="systemui"\&\&this.props.overlay_key?void 0:this.m_nEmbeddedIndex/' \
     -e 's/y\.properties\["embedded-uv-index"\]=document\.title==="systemui"?void 0:this\.m_nEmbeddedIndex/y.properties["embedded-uv-index"]=document.title==="systemui"\&\&this.props.overlay_key?void 0:this.m_nEmbeddedIndex/' \
+    -e 's/C\.properties\["embedded-uv-index"\]=this\.m_nEmbeddedIndex/C.properties["embedded-uv-index"]=document.title==="systemui"\&\&this.props.overlay_key?void 0:this.m_nEmbeddedIndex/' \
+    -e 's/C\.properties\["embedded-uv-index"\]=document\.title==="systemui"?void 0:this\.m_nEmbeddedIndex/C.properties["embedded-uv-index"]=document.title==="systemui"\&\&this.props.overlay_key?void 0:this.m_nEmbeddedIndex/' \
     "$panel" > "$temporary"
 grep -qF "$bound" "$temporary"
 grep -qF "$explicit" "$temporary"
