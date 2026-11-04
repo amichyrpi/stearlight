@@ -11,6 +11,7 @@ for folder in ('build_files/quest', 'post_process/quest', 'packages/quest-runtim
 PY
 python3 tests/quest-build-test.py
 python3 packages/quest-runtime/tests/clean-build.test.py
+python3 packages/quest-runtime/tests/chromium-download.test.py
 python3 tests/recovery-test.py
 python3 packages/quest-runtime/tests/rootfs-archive.test.py
 python3 packages/quest-runtime/tests/clock-bridge.test.py

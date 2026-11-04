@@ -330,19 +330,37 @@ def main(arguments):
     if any(value not in ('check', '--beta', '-d', '--enable-duplicate-detection') for value in arguments):
         raise ValueError('Usage: steamos-update [check]')
     CACHE.mkdir(parents=True, exist_ok=True)
+    choice = Path('/opt/steam/package/stearlight-os-channel')
+    if not choice.exists():
+        choice = Path('/opt/steam/package/stearlight-channel')
+    channel = 'beta' if choice.exists() and choice.read_text().strip() == 'beta' else 'stable'
     with (CACHE / 'lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            if 'check' in arguments:
+                # Steam checks again while an installation is running. Report
+                # its candidate without failing or overwriting live progress.
+                if (CACHE / 'pending.json').exists():
+                    return 8
+                available = CACHE / 'available.json'
+                cached = json.loads(available.read_text()) if available.exists() else {}
+                item = cached['candidate'] if cached.get('channel') == channel else candidate(channel)
+                installed = CACHE / 'installed.json'
+                if installed.exists() and json.loads(installed.read_text())['buildid'] == item['image']['buildid']:
+                    return 7
+                print(item['image']['buildid'])
+                return 0
+            # Coalesce another install request with the running one. Once it
+            # finishes, the pending/installed checks below avoid a second copy.
+            fcntl.flock(lock, fcntl.LOCK_EX)
         if (CACHE / 'pending.json').exists():
             return 8 if 'check' in arguments else 0
-        choice = Path('/opt/steam/package/stearlight-os-channel')
-        if not choice.exists():
-            choice = Path('/opt/steam/package/stearlight-channel')
-        channel = 'beta' if choice.exists() and choice.read_text().strip() == 'beta' else 'stable'
         item = candidate(channel)
         installed = CACHE / 'installed.json'
         if installed.exists() and json.loads(installed.read_text())['buildid'] == item['image']['buildid']:
             return 7
-        atomic_json(CACHE / 'available.json', item)
+        atomic_json(CACHE / 'available.json', {'channel': channel, 'candidate': item})
         if 'check' in arguments:
             print(item['image']['buildid'])
         else:
@@ -355,7 +373,7 @@ if __name__ == '__main__':
     try:
         sys.exit(main(sys.argv[1:]))
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
-        if CACHE.is_dir():
+        if 'check' not in sys.argv[1:] and CACHE.is_dir():
             try:
                 progress('SteamOS update failed', str(error), error=True)
             except OSError:
