@@ -67,10 +67,11 @@ g++ -O2 -std=c++17 -Wall -Wextra -Werror packages/quest-runtime/tests/eye-projec
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/controller-pose.test.cpp -o "$test_binary"
 "$test_binary"
 
-for test in render-view render-view-tracker; do
+for test in render-view render-view-tracker konami multimodal; do
     g++ -O2 -std=c++17 -pthread -Wall -Wextra -Werror -Wno-missing-field-initializers -Ipackages/quest-runtime/app/src/main/cpp "packages/quest-runtime/tests/$test.test.cpp" -o "$test_binary"
     "$test_binary"
 done
+g++ -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp -isystem packages/openvr/headers -fsyntax-only packages/quest-runtime/linux/quest_driver.cpp
 
 g++ -O2 -std=c++17 -Wall -Wextra -Werror -Ipackages/quest-runtime/app/src/main/cpp packages/quest-runtime/tests/display-pulse.test.cpp -o "$test_binary"
 "$test_binary"
