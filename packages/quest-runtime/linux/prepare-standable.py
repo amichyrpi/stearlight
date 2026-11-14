@@ -16,6 +16,21 @@ def main():
         return
     if not (bridge / "driver_standable.so").is_file():
         return
+    # Frame presents the settings desktop window itself. Keep the original
+    # application's optional legacy dashboard tab from duplicating it.
+    preferences = game / "saves/settings.json"
+    marker = game / "saves/.quest-managed-window"
+    if preferences.is_file() and not marker.exists():
+        value = json.loads(preferences.read_text())
+        if value.get("Show in SteamVR Dashboard", False):
+            backup = preferences.with_name("settings.json.quest-original")
+            if not backup.exists():
+                shutil.copyfile(preferences, backup)
+            value["Show in SteamVR Dashboard"] = False
+            temporary = preferences.with_suffix(".json.next")
+            temporary.write_text(json.dumps(value, indent=2) + "\n")
+            temporary.replace(preferences)
+        marker.touch()
     native = game / "bin/linuxarm64"
     native.mkdir(parents=True, exist_ok=True)
     target = native / "driver_standable.so"

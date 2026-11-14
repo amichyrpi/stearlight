@@ -15,6 +15,11 @@ The OpenGL-sharing and browser network-service experiments were removed.
 The native close button sends the GUI its normal window-close request, then
 stops only its settings process if it remains alive. Hidden windows are not
 raised again automatically. The Wine server and tracker driver stay running.
+The presenter uses a dashboard-overlay key, so Frame sends its window-close
+event rather than Steam's game-quit dialog. Events are routed from OpenVR's
+combined system/overlay queue.
+The managed window uses the application's X11 icon. A one-time, backed-up
+preference change disables Standable's duplicate legacy dashboard tab.
 
 ## Automated Quest checks
 
@@ -83,6 +88,12 @@ existing launch path. A shared prefix must already exist before the host starts.
 The settings launch joins that prefix without a Python, Windows Steam, or
 subreaper waiter. Windows external-driver paths are translated to Wine paths
 without changing the native SteamVR registry.
+Registration uses Proton's actual `S:` Steam drive when present, matching the
+GUI's executable path. Steam config and the real Quest chaperone are exposed
+at the Windows config paths the driver reads. The existing Windows RPC host
+is named `vrserver.exe` for the GUI's process discovery and invokes Proton's
+`vrclient_init_registry` against the running Linux runtime. It does not invent
+VR-ready state or Vulkan extension lists and adds no resident launcher.
 
 For a diagnostic-only disabled-adapter check:
 

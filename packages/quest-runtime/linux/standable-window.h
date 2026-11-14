@@ -1,6 +1,7 @@
 #pragma once
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/Xatom.h>
 #include <openvr.h>
 #include <algorithm>
 #include <cstdio>
@@ -36,6 +37,29 @@ class StandableWindow {
     inline static XErrorHandler previous=nullptr;
     static int error(Display* d,XErrorEvent* e) {
         return d==owned?0:previous?previous(d,e):0;
+    }
+    void icon(vr::IVROverlay* api) {
+        Atom type=0;int format=0;unsigned long count=0,remaining=0;unsigned char* data=nullptr;
+        if(XGetWindowProperty(display,window,XInternAtom(display,"_NET_WM_ICON",False),
+                0,1024*1024,False,XA_CARDINAL,&type,&format,&count,&remaining,&data)!=Success)return;
+        if(data&&type==XA_CARDINAL&&format==32) {
+            auto* values=reinterpret_cast<unsigned long*>(data);
+            unsigned long best=0,offset=0;
+            for(unsigned long i=0;i+2<=count;) {
+                auto w=values[i],h=values[i+1];
+                if(!w||!h||w>4096||h>4096||w*h>count-i-2)break;
+                if(w<=512&&h<=512&&w*h>best){best=w*h;offset=i;}
+                i+=2+w*h;
+            }
+            if(best){
+                std::vector<unsigned char> rgba(best*4);
+                for(unsigned long i=0;i<best;++i){auto p=values[offset+2+i];
+                    rgba[i*4]=p>>16;rgba[i*4+1]=p>>8;rgba[i*4+2]=p;rgba[i*4+3]=p>>24;}
+                auto result=api->SetOverlayRaw(thumbnail,rgba.data(),values[offset],values[offset+1],4);
+                std::printf("QUEST_STANDABLE_ICON %s\n",api->GetOverlayErrorNameFromEnum(result));
+            }
+        }
+        if(data)XFree(data);
     }
     static void stopSettings() {
         // A Windows GUI can minimize to its tray instead of exiting on
@@ -144,7 +168,7 @@ public:
         if(a.map_state!=IsViewable){close();window=0;return;}
         auto* api=vr::VROverlay();
         if(overlay==vr::k_ulOverlayHandleInvalid) {
-            auto created=api->CreateDashboardOverlay("valve.steam.desktopgame.2370570","Standable",&overlay,&thumbnail);
+            auto created=api->CreateDashboardOverlay("stearlight.standable.settings","Standable",&overlay,&thumbnail);
             if(created!=vr::VROverlayError_None){if(created!=lastError)std::printf("QUEST_STANDABLE_WINDOW_CREATE %s\n",api->GetOverlayErrorNameFromEnum(created));lastError=created;return;}
             api->SetOverlayWidthInMeters(overlay,1.2f);
             api->SetOverlayInputMethod(overlay,vr::VROverlayInputMethod_Mouse);
@@ -154,6 +178,7 @@ public:
             api->SetOverlayFlag(overlay,vr::VROverlayFlags_EnableControlBarClose,true);
             api->SetOverlayFlag(overlay,vr::VROverlayFlags_EnableClickStabilization,true);
             api->SetOverlayFlag(overlay,vr::VROverlayFlags_IsPremultiplied,true);
+            icon(api);
             std::puts("QUEST_STANDABLE_WINDOW_CREATED");
         }
         vr::HmdVector2_t scale{{float(a.width),float(a.height)}};
@@ -179,7 +204,7 @@ public:
         auto result=api->SetOverlayTexture(overlay,&frame);
         if(result==vr::VROverlayError_None){
             submitted=pixels;submittedWidth=a.width;submittedHeight=a.height;
-            if(!shown){api->ShowDashboard("valve.steam.desktopgame.2370570");shown=true;std::puts("QUEST_STANDABLE_WINDOW_READY");}
+            if(!shown){api->ShowDashboard("stearlight.standable.settings");shown=true;std::puts("QUEST_STANDABLE_WINDOW_READY");}
         } else if(result!=lastError)std::printf("QUEST_STANDABLE_WINDOW_PIXELS %s\n",api->GetOverlayErrorNameFromEnum(result));
         lastError=result;
     }
