@@ -189,6 +189,80 @@ with open(sys.argv[2], "w") as log:
                 self.assertEqual([c.args[1] for c in duplicate.call_args_list], [1, 2])
             sys.modules.pop("quest_test_dependency", None)
 
+    def test_standable_windows_driver_registration_and_repeated_setup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            compat = Path(folder)
+            paths = compat / "pfx/drive_c/users/steamuser/AppData/Local/openvr/openvrpaths.vrpath"
+            paths.parent.mkdir(parents=True)
+            registry = compat / "pfx/system.reg"
+            registry.write_text("WINE REGISTRY Version 2\n")
+            original = {"runtime": [r"C:\vrclient"], "config": [r"\??\unix/steam/config"],
+                        "external_drivers": ["/opt/steam/Standable Full Body Estimation", r"Z:\existing"],
+                        "version": 1}
+            paths.write_text(json.dumps(original))
+            launcher.prepare_standable_prefix(compat)
+            updated = json.loads(paths.read_text())
+            self.assertEqual(updated["external_drivers"],
+                             [r"Z:\opt\steam\Standable Full Body Estimation", r"Z:\existing"])
+            for name in ("runtime", "config", "version"):
+                self.assertEqual(updated[name], original[name])
+            stamp = paths.stat().st_mtime_ns
+            launcher.prepare_standable_prefix(compat)
+            self.assertEqual(paths.stat().st_mtime_ns, stamp)
+
+    def test_standable_uses_protons_steam_drive_and_real_runtime_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            steam = root / "steam"
+            compat = steam / "steamapps/compatdata/2370570"
+            drives = compat / "pfx/dosdevices"
+            drives.mkdir(parents=True)
+            (drives / "s:").symlink_to(steam)
+            (compat / "pfx/system.reg").write_text("WINE REGISTRY Version 2\n")
+            settings = steam / "config/steamvr.vrsettings"
+            settings.parent.mkdir(parents=True)
+            settings.write_text('{"real":true}')
+            windows_settings = compat / "pfx/drive_c/Program Files (x86)/Steam/config/steamvr.vrsettings"
+            windows_settings.parent.mkdir(parents=True)
+            windows_settings.write_text('{"old":true}')
+            paths = compat / "pfx/drive_c/users/steamuser/AppData/Local/openvr/openvrpaths.vrpath"
+            paths.parent.mkdir(parents=True)
+            paths.write_text(json.dumps({"runtime": [r"C:\vrclient"], "external_drivers": [
+                str(steam / "steamapps/common/Standable Full Body Estimation"), "/opt/quest/driver"]}))
+            launcher.prepare_standable_prefix(compat)
+            value = json.loads(paths.read_text())
+            self.assertEqual(value["runtime"], [r"C:\vrclient"])
+            self.assertEqual(value["external_drivers"], [r"S:\steamapps\common\Standable Full Body Estimation", r"Z:\opt\quest\driver"])
+            self.assertTrue(windows_settings.samefile(settings))
+            self.assertEqual(windows_settings.with_name("steamvr.vrsettings.quest-original").read_text(), '{"old":true}')
+            launcher.prepare_standable_prefix(compat)
+            self.assertTrue(windows_settings.samefile(settings))
+
+    def test_standable_launchers_exec_without_resident_waiters(self):
+        class Executed(Exception):
+            pass
+        for direct in (False, True):
+            with self.subTest(driver_host=direct):
+                environment = {"SteamAppId": "2370570", "PULSE_SERVER": "unix:/pulse"}
+                target = "/game/driver host.exe" if direct else "/game/Standable.exe"
+                command = ["/runtime/wine", target] if direct else ["/runtime/wine", r"c:\windows\system32\steam.exe", target]
+                def proton(*args, **kwargs):
+                    launcher.subprocess.call(command, env=dict(os.environ))
+                with patch.dict(os.environ, clear=True), patch.object(sys, "argv", []), \
+                     patch.object(sys, "path", list(sys.path)), \
+                     patch.object(launcher.runpy, "run_path", side_effect=proton), \
+                     patch.object(launcher, "prepare_standable_prefix") as prepare, \
+                     patch.object(launcher.os, "execvpe", side_effect=Executed) as execute:
+                    with self.assertRaises(Executed):
+                        launcher.exec_proton(["/tool/proton", "runinprefix" if direct else "run", target],
+                                             environment, Path("/prefix"), direct=direct)
+                    self.assertEqual(execute.call_args.args,
+                                     ("/runtime/wine", ["/runtime/wine", target], environment))
+                    if direct:
+                        prepare.assert_not_called()
+                    else:
+                        prepare.assert_called_once_with(Path("/prefix"))
+
     def test_flat_panel_separates_wine_libraries_and_preserves_arguments(self):
         environment = {"PATH": "/usr/bin", "LD_PRELOAD": "/wine-only.so", "LD_LIBRARY_PATH": "/wine",
                        "MESA_VK_WSI_DEBUG": "sw", "PULSE_SERVER": "unix:/pulse", "SteamAppId": "2530470"}

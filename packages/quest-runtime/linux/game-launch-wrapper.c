@@ -22,14 +22,26 @@ int main(int argc, char **argv) {
     arguments[0] = argv[0];
     int count = 1;
     int options = 1;
+    int command_index = 0;
     for (int i = 1; i < argc; ++i) {
-        if (options && !strcmp(argv[i], "--")) options = 0;
+        if (options && !strcmp(argv[i], "--")) { options = 0; command_index = i + 1; }
         if (options && !strcmp(argv[i], "--oom-score-adjust") &&
             i + 1 < argc && !strcmp(argv[i + 1], "900")) {
             ++i;
             continue;
         }
         if (options && !strcmp(argv[i], "--oom-score-adjust=900")) continue;
+        // Standable shares a resident Wine server with its SteamVR add-on.
+        // Steam tracks the settings process directly; a subreaper waiting
+        // for that shared server would remain after closing the settings.
+        const char *name = strrchr(argv[i], '/');
+        name = name ? name + 1 : argv[i];
+        if (i == command_index && !strcmp(name, "reaper") && i + 4 < argc &&
+            !strcmp(argv[i + 1], "SteamLaunch") &&
+            !strcmp(argv[i + 2], "AppId=2370570") && !strcmp(argv[i + 3], "--")) {
+            i += 3;
+            continue;
+        }
         arguments[count++] = argv[i];
     }
     quest_request_loading_boost();

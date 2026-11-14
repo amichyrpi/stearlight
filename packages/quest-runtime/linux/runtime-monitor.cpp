@@ -12,9 +12,11 @@
 #include <map>
 #include <set>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <thread>
 #include "share-mirror.h"
 #include "performance-boost.h"
+#include "standable-window.h"
 extern "C" int quest_services_run();
 extern "C" void quest_services_stop();
 class QuestServices {
@@ -186,6 +188,9 @@ public:
 };
 
 int main(int argc, char** argv) {
+    // OpenVR and the settings presenter can access Xlib from worker threads.
+    // This must precede every display connection and service thread.
+    if (!XInitThreads()) return 1;
     std::signal(SIGTERM, stop);
     std::signal(SIGINT, stop);
     Session session(argc == 2 && !std::strcmp(argv[1], "--launch-session"));
@@ -223,6 +228,8 @@ int main(int argc, char** argv) {
     unlink(ready);
     unlink(bootstrapperReady);
     bool dashboardRequested = false, dashboardReady = false, steamRequested = false;
+    bool standableStartupChecked = false;
+    StandableWindow standableWindow;
     bool bootstrapperShown = false;
     bool failed = false, desktopShown = false, desktopWasActive = false, remoteMode = false;
     std::string previousCameraStyle;
@@ -232,7 +239,7 @@ int main(int argc, char** argv) {
         std::string desktopKind;std::getline(desktopRequest,desktopKind);
         if(desktopKind=="remote"){
             if(!remoteMode){
-                remoteMode=true;vr::VR_Shutdown();session.stopVR();
+                remoteMode=true;standableWindow.close();vr::VR_Shutdown();session.stopVR();
                 unlink(ready);unlink(bootstrapperReady);std::puts("QUEST_REMOTE_DESKTOP_VR_RELEASED");
             }
             audio.poll(true);
@@ -251,7 +258,10 @@ int main(int argc, char** argv) {
         bool desktopAudioReady=desktopKind.empty() || access("/run/stearlight/quest/local-vr-audio.paused",F_OK)==0;
         if (!session.poll(desktopAudioReady) || quest_watch_step() < 0) { failed = true; break; }
         vr::VREvent_t event;
-        while (system->PollNextEvent(&event, sizeof(event))) {
+        vr::VROverlayHandle_t eventOverlay=vr::k_ulOverlayHandleInvalid;
+        while (system->PollNextEventWithPoseAndOverlays(vr::TrackingUniverseStanding,
+                &event, sizeof(event), nullptr, &eventOverlay)) {
+            if(standableWindow.handleEvent(eventOverlay,event))continue;
             if (event.eventType == vr::VREvent_ProcessConnected) quest_request_loading_boost();
             if (event.eventType == vr::VREvent_CameraSettingsHaveChanged ||
                 event.eventType == vr::VREvent_OtherSectionSettingChanged) cameraPollAt = {};
@@ -380,12 +390,43 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // Frame starts Steam after vrserver. Its initial overlay autolaunch
+        // can time out before Steam accepts application requests. Retry once
+        // after dashboard readiness, preserving the native startup preference.
+        if (dashboardReady && !standableStartupChecked) {
+            standableStartupChecked = true;
+            constexpr auto key = "steam.overlay.2370570";
+            auto* apps = vr::VRApplications();
+            if (access("/opt/quest/standable/driver_standable.so", F_OK) == 0 && apps &&
+                apps->IsApplicationInstalled(key) && apps->GetApplicationAutoLaunch(key) &&
+                !apps->GetApplicationProcessId(key) && !apps->GetApplicationProcessId("steam.app.2370570")) {
+                // This runtime has no desktop URL opener. Use Steam's own
+                // command FIFO rather than starting another Steam updater.
+                // Holding a read endpoint also prevents a client-exit race
+                // from delivering SIGPIPE to the runtime monitor.
+                int pipe = open("/home/stearlight/.steam/steam.pipe", O_RDWR|O_NONBLOCK|O_CLOEXEC);
+                struct stat info{};
+                // Preserve Steam's overlay launch type. rungameid marks this
+                // utility as a VR game and changes Frame's dock context.
+                constexpr char request[] = "steam steam://launch/2370570/openvroverlay\n";
+                bool sent = pipe >= 0 && fstat(pipe, &info) == 0 && S_ISFIFO(info.st_mode) &&
+                    write(pipe, request, sizeof(request)-1) == sizeof(request)-1;
+                if (pipe >= 0) close(pipe);
+                std::printf("QUEST_STANDABLE_STARTUP_PIPE %s\n", sent ? "sent" : "unavailable");
+                std::fflush(stdout);
+            }
+        }
+        if(dashboardReady && access("/opt/quest/standable/driver_standable.so",F_OK)==0) {
+            standableWindow.poll();
+            std::fflush(stdout);
+        }
         // Readiness belongs to this VR session, not a browser page. Valve
         // recreates overlays during navigation and handles client errors in
         // its own dashboard. Re-requesting Home here interrupts navigation;
         // removing readiness would also replay Android's startup animation.
         usleep(200000);
     }
+    standableWindow.close();
     vr::VR_Shutdown();
     unlink(passthrough);
     unlink(bootstrapperReady);

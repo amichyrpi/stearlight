@@ -437,8 +437,19 @@ def main():
     shutil.copyfile(linux / "prepare-fex.py", quest / "prepare-fex.py")
     shutil.copyfile(linux / "fex-game-launcher.py", quest / "fex-game-launcher.py")
     shutil.copyfile(linux / "prepare-gamepad-ui.py", quest / "prepare-gamepad-ui.py")
-    for name in ("proton-game-launcher.py", "proton-runtime-entry.sh", "audio-namespace-launcher.sh"):
+    for name in ("proton-game-launcher.py", "proton-runtime-entry.sh", "audio-namespace-launcher.sh",
+                 "standable-host.py", "prepare-standable.py"):
         shutil.copyfile(linux / name, quest / name)
+    # Optional separately built bridge. Proprietary Standable assets remain
+    # installed by Steam; a private SDK dependency can be supplied explicitly.
+    if os.environ.get("STEARLIGHT_STANDABLE_BRIDGE"):
+        source = Path(os.environ["STEARLIGHT_STANDABLE_BRIDGE"])
+        destination = quest / "standable"
+        destination.mkdir(parents=True, exist_ok=True)
+        for name in ("driver_standable.so", "ignition_server.exe", "ignition_bridge.dll", "Ignition-LICENSE.txt"):
+            shutil.copyfile(source / name, destination / name)
+        if os.environ.get("STEARLIGHT_STANDABLE_STEAM_API64"):
+            shutil.copyfile(os.environ["STEARLIGHT_STANDABLE_STEAM_API64"], destination / "steam_api64.dll")
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
@@ -449,7 +460,7 @@ def main():
         f"-L{root / 'usr/lib/aarch64-linux-gnu'}",
         f"-Wl,-rpath-link,{root / 'usr/lib/aarch64-linux-gnu'}",
         f"-Wl,-rpath-link,{root / 'lib/aarch64-linux-gnu'}",
-        "-l:libdbus-1.so.3", "-Wl,--allow-shlib-undefined",
+        "-l:libdbus-1.so.3", "-l:libX11.so.6", "-Wl,--allow-shlib-undefined",
         "-Wl,-rpath,/opt/steamvr/bin/linuxarm64", "-o", quest / "runtime-monitor")
     (quest / "bluetooth-bridge").unlink(missing_ok=True)
     (driver / "driver.vrdrivermanifest").write_text(json.dumps(

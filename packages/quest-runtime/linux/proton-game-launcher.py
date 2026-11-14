@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -382,15 +383,78 @@ def launch_flat_panel(entry, arguments, environment, appid):
     os.execve(loader, command, env)
 
 
-def exec_proton(arguments, environment, compat):
+def prepare_standable_prefix(compat):
+    # Proton supplies the Windows client runtime but carries Linux external
+    # driver paths over verbatim. Standable's Windows GUI needs Wine paths
+    # when checking its registration; leave the native registry untouched.
+    paths = compat / "pfx/drive_c/users/steamuser/AppData/Local/openvr/openvrpaths.vrpath"
+    if paths.is_file():
+        value = json.loads(paths.read_text())
+        drivers = value.get("external_drivers", [])
+        steam_drive = compat / "pfx/dosdevices/s:"
+        steam_root = steam_drive.resolve() if steam_drive.is_symlink() else None
+        def windows_driver(path):
+            if not isinstance(path, str) or not path.startswith("/"):
+                return path
+            if steam_root is not None and Path(path).is_relative_to(steam_root):
+                return "S:\\" + str(Path(path).relative_to(steam_root)).replace("/", "\\")
+            return "Z:" + path.replace("/", "\\")
+        mapped = [windows_driver(path) for path in drivers]
+        if mapped != drivers:
+            value["external_drivers"] = mapped
+            temporary = paths.with_suffix(".quest-next")
+            temporary.write_text(json.dumps(value) + "\n")
+            temporary.replace(paths)
+        if steam_root is not None:
+            config = compat / "pfx/drive_c/Program Files (x86)/Steam/config"
+            for name, target in (("steamvr.vrsettings", steam_root / "config/steamvr.vrsettings"),
+                                 ("chaperone_info.vrchap", Path("/run/stearlight/quest/play-space.vrchap"))):
+                if name != "chaperone_info.vrchap" and not target.is_file():
+                    continue
+                config.mkdir(parents=True, exist_ok=True)
+                link = config / name
+                if link.is_symlink() and link.readlink() == target:
+                    continue
+                if link.exists() and not link.is_symlink():
+                    backup = link.with_name(link.name + ".quest-original")
+                    if not backup.exists():
+                        shutil.copyfile(link, backup)
+                temporary = link.with_name(link.name + ".quest-next")
+                temporary.unlink(missing_ok=True)
+                temporary.symlink_to(target)
+                temporary.replace(link)
+    registry = compat / "pfx/system.reg"
+    data = registry.read_text()
+    updated = data
+    for name in ("PlugPlay", "Eventlog", "winebus", "winehid", "wineusb", "winebth", "WinHttpAutoProxySvc"):
+        pattern = r'(\[System\\\\ControlSet001\\\\Services\\\\' + name + r'\][^\n]*\n)(.*?)(?=\n\[|\Z)'
+        updated = re.sub(pattern, lambda m: m[1] + re.sub(r'"Start"=dword:[0-9a-f]+', '"Start"=dword:00000004', m[2]), updated, flags=re.S | re.I)
+    if updated != data:
+        backup = registry.with_name(registry.name + ".quest-standable-original")
+        if not backup.exists():
+            backup.write_text(data)
+        temporary = registry.with_name(registry.name + ".quest-next")
+        temporary.write_text(updated)
+        temporary.replace(registry)
+
+
+def exec_proton(arguments, environment, compat, direct=False):
     # Steam's outer reaper and Gamescope already own the game's lifetime.
     # Keep Valve's prefix setup, then replace the redundant Python waiter.
     original = subprocess.call
     def call(command, *extra, **options):
-        if (isinstance(command, (list, tuple)) and len(command) > 2
+        if (isinstance(command, (list, tuple)) and len(command) > 1
                 and Path(command[0]).name == "wine"
-                and command[1].lower() == r"c:\windows\system32\steam.exe"):
-            prepare_flat_prefix(compat)
+                and (direct or (len(command) > 2 and command[1].lower() == r"c:\windows\system32\steam.exe"))):
+            if direct:
+                pass  # Driver host uses a prefix already initialized by Steam.
+            elif environment.get("SteamAppId") == "2370570":
+                prepare_standable_prefix(compat)
+                # Standable already connects to Steam through its normal API.
+                # Avoid a resident Windows steam.exe waiting on its GUI.
+                command = [command[0], *command[2:]]
+            else:
+                prepare_flat_prefix(compat)
             for key, fd in (("stdout", 1), ("stderr", 2)):
                 target = options.get(key)
                 if target is not None:
@@ -430,7 +494,10 @@ def main():
     if fd > 2:
         os.close(fd)
     files = prepare_platform(platforms[-1].parent)
-    env = launch_environment(files, os.environ)
+    source = dict(os.environ)
+    if appid == "2370570":
+        source["STEARLIGHT_STEAM_INPUT"] = "0"
+    env = launch_environment(files, source)
     # Outer Wilds remains unsupported; see docs/outer-wilds-investigation.md.
     flat_unity = {"2530470": "Garden of Witches_Data", "753640": "OuterWilds_Data"}
     if appid in flat_unity:
@@ -492,7 +559,16 @@ def main():
             args += ["-job-worker-count", "2"]
     # The official Proton Python script still owns Wine, Steam identity,
     # per-game prefixes, and game exit. No extra supervisor is kept alive.
-    if appid in flat_unity and Path(args[0]).name == "proton":
+    if appid == "2370570":
+        # The startup add-on already owns this prefix's Wine server. Joining
+        # it must not wait for that resident driver host to exit.
+        if len(args) > 1 and args[1] == "waitforexitandrun":
+            args[1] = "run"
+        # Capture complete XPutImage frames rather than reusing software
+        # MIT-SHM presentation buffers while the settings window repaints.
+        env["MESA_VK_WSI_DEBUG"] = "sw,noshm"
+        env["WINEDLLOVERRIDES"] = "winebus.sys=d;winehid.sys=d;wineusb.sys=d;winebth.sys=d;winemenubuilder.exe=d;tabtip.exe=d;" + env.get("WINEDLLOVERRIDES", "")
+    if appid in {*flat_unity, "2370570"} and Path(args[0]).name == "proton":
         exec_proton(args, env, Path(env["STEAM_COMPAT_DATA_PATH"]))
     elif Path(args[0]).name == "proton":
         os.execve("/usr/bin/python3", ["/usr/bin/python3", *args], env)

@@ -38,6 +38,12 @@ class GameLaunchWrapperTest(unittest.TestCase):
                 (['--oom-score-adjust', '0', '--', 'game'], ['--oom-score-adjust', '0', '--', 'game']),
                 (['--oom-score-adjust'], ['--oom-score-adjust']),
                 (['--', '--oom-score-adjust=900'], ['--', '--oom-score-adjust=900']),
+                (['--', '/steam/reaper', 'SteamLaunch', 'AppId=2370570', '--', '/runtime/entry', 'two words'],
+                 ['--', '/runtime/entry', 'two words']),
+                (['--', '/steam/reaper', 'SteamLaunch', 'AppId=123', '--', '/runtime/entry'],
+                 ['--', '/steam/reaper', 'SteamLaunch', 'AppId=123', '--', '/runtime/entry']),
+                (['--', '/game', '/steam/reaper', 'SteamLaunch', 'AppId=2370570', '--', '/file'],
+                 ['--', '/game', '/steam/reaper', 'SteamLaunch', 'AppId=2370570', '--', '/file']),
             ]
             for arguments, expected in cases:
                 with subprocess.Popen([str(wrapper), *arguments], stdout=subprocess.PIPE, text=True) as child:
