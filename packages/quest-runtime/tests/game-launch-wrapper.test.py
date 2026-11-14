@@ -72,6 +72,39 @@ class GameLaunchWrapperTest(unittest.TestCase):
                     self.assertEqual(wrapper.with_name(wrapper.name + '.quest-real').read_bytes(), binary)
                     self.assertEqual(wrapper.read_bytes(), (quest / 'game-launch-wrapper').read_bytes())
 
+    def test_game_releases_settings_but_preserves_tracker_host(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            source = folder / 'process.c'
+            source.write_text('#include <sys/prctl.h>\n#include <unistd.h>\n'
+                              'int main(int c,char**v){(void)c;prctl(PR_SET_NAME,v[1]);'
+                              'write(1,"ready\\n",6);for(;;)pause();}\n')
+            helper = folder / 'process'
+            subprocess.run(['cc', str(source), '-o', str(helper)], check=True)
+            wrapper = folder / 'steam-launch-wrapper'
+            shutil.copyfile(self.binary, wrapper)
+            wrapper.chmod(0o755)
+            real = wrapper.with_name(wrapper.name + '.quest-real')
+            real.write_text('#!/bin/sh\nexit 0\n')
+            real.chmod(0o755)
+            host = subprocess.Popen([str(helper), 'vrserver.exe'], stdout=subprocess.PIPE, text=True)
+            settings = subprocess.Popen([str(helper), 'Standable.exe'], stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(host.stdout.readline(), 'ready\n')
+                self.assertEqual(settings.stdout.readline(), 'ready\n')
+                for appid in ('2370570', '250820', '', 'not-an-app'):
+                    subprocess.run([str(wrapper)], env=dict(os.environ, SteamAppId=appid), check=True)
+                    self.assertIsNone(settings.poll())
+                subprocess.run([str(wrapper)], env=dict(os.environ, SteamAppId='504230'), check=True)
+                self.assertEqual(settings.wait(timeout=5), -15)
+                self.assertIsNone(host.poll())
+            finally:
+                for child in (settings, host):
+                    if child.poll() is None:
+                        child.terminate()
+                    child.wait(timeout=5)
+                    child.stdout.close()
+
     def test_incompatible_preloads_do_not_enter_adapter(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)

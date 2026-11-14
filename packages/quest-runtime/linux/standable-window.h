@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "standable-texture.h"
+#include "standable-settings.h"
 
 // Present the existing Windows settings window, without another compositor
 // or Xwayland process. SteamVR owns the overlay's positioning and controls.
@@ -23,6 +24,7 @@ class StandableWindow {
     Window window=0;
     vr::VROverlayHandle_t overlay=vr::k_ulOverlayHandleInvalid;
     vr::VROverlayHandle_t thumbnail=vr::k_ulOverlayHandleInvalid;
+    std::chrono::steady_clock::time_point nextDiscovery{};
     bool shown=false;
     bool closing=false;
     std::chrono::steady_clock::time_point closeAt{};
@@ -65,20 +67,7 @@ class StandableWindow {
         // A Windows GUI can minimize to its tray instead of exiting on
         // WM_DELETE_WINDOW. Close only the one owned settings process;
         // never signal its shared Wine server or the tracker driver host.
-        DIR* processes=opendir("/proc");if(!processes)return;
-        pid_t target=0;
-        while(auto* entry=readdir(processes)) {
-            if(entry->d_name[0]<'0'||entry->d_name[0]>'9')continue;
-            std::string path=std::string("/proc/")+entry->d_name;
-            struct stat info{};
-            if(stat(path.c_str(),&info)||info.st_uid!=getuid())continue;
-            std::ifstream comm(path+"/comm");std::string name;std::getline(comm,name);
-            if(name!="Standable.exe")continue;
-            if(target){target=0;break;} // Do not guess between multiple UIs.
-            target=std::strtol(entry->d_name,nullptr,10);
-        }
-        closedir(processes);
-        if(target)kill(target,SIGTERM);
+        quest_release_standable_settings();
     }
     Window find(Window parent,int depth) {
         if(depth>2)return 0;
@@ -151,7 +140,9 @@ public:
     void close() {
         if(overlay!=vr::k_ulOverlayHandleInvalid){vr::VROverlay()->DestroyOverlay(overlay);overlay=vr::k_ulOverlayHandleInvalid;}
         if(thumbnail!=vr::k_ulOverlayHandleInvalid){vr::VROverlay()->DestroyOverlay(thumbnail);thumbnail=vr::k_ulOverlayHandleInvalid;}
-        submitted.clear();submittedWidth=submittedHeight=0;
+        std::vector<unsigned char>().swap(pixels);
+        std::vector<unsigned char>().swap(submitted);
+        submittedWidth=submittedHeight=0;
         shown=false;
     }
     void poll() {
@@ -161,7 +152,12 @@ public:
         }
         if(!display){display=XOpenDisplay(":0");if(!display){if(!displayReported)std::puts("QUEST_STANDABLE_X11_UNAVAILABLE");displayReported=true;return;}owned=display;previous=XSetErrorHandler(error);}
         XWindowAttributes a{};
-        if(!window)window=find(DefaultRootWindow(display),0);
+        if(!window){
+            auto now=std::chrono::steady_clock::now();
+            if(now<nextDiscovery)return;
+            nextDiscovery=now+std::chrono::seconds(1);
+            window=find(DefaultRootWindow(display),0);
+        }
         if(!window)return;
         if(!XGetWindowAttributes(display,window,&a)){window=0;close();return;}
         if(a.width<1||a.height<1||a.width>4096||a.height>4096)return;
@@ -185,11 +181,20 @@ public:
         inputWidth=a.width;inputHeight=a.height;
         api->SetOverlayMouseScale(overlay,&scale);input(api,a.width,a.height);
         if(closing)return;
+        // Retain input/close handling, but never read pixels for a hidden tab.
+        if(shown&&!api->IsOverlayVisible(overlay))return;
         XImage* image=XGetImage(display,window,0,0,a.width,a.height,AllPlanes,ZPixmap);
         if(!image)return;
         pixels.resize(size_t(a.width)*a.height*4);
+        const bool packed=image->bits_per_pixel==32&&image->byte_order==LSBFirst&&
+            image->red_mask==0xff0000&&image->green_mask==0xff00&&image->blue_mask==0xff;
         for(int y=0;y<a.height;++y)for(int x=0;x<a.width;++x) {
-            unsigned long value=XGetPixel(image,x,y);auto i=(size_t(y)*a.width+x)*4;
+            // The normal Xvfb image is packed BGRA. Avoid an Xlib indirect
+            // function call for every pixel; retain its portable fallback.
+            unsigned long value;
+            if(packed){uint32_t pixel;std::memcpy(&pixel,image->data+y*image->bytes_per_line+x*4,4);value=pixel;}
+            else value=XGetPixel(image,x,y);
+            auto i=(size_t(y)*a.width+x)*4;
             pixels[i]=(value>>16)&255;pixels[i+1]=(value>>8)&255;pixels[i+2]=value&255;pixels[i+3]=255;
         }
         XDestroyImage(image);

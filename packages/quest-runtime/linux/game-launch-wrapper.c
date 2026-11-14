@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "performance-boost.h"
+#include "standable-settings.h"
 
 /* quest-game-launch-wrapper: retain Android's inherited process priority.
  * Build statically: Steam supplies mixed-architecture overlay preloads that
@@ -43,6 +44,21 @@ int main(int argc, char **argv) {
             continue;
         }
         arguments[count++] = argv[i];
+    }
+    /* Estimation belongs to the resident tracker host. Release the optional
+     * settings process before a different game adds its Wine/FEX children. */
+    const char *appid = getenv("SteamAppId");
+    if (appid && *appid && strspn(appid, "0123456789") == strlen(appid) &&
+        strtoull(appid, NULL, 10) > 0 && strcmp(appid, "2370570") && strcmp(appid, "250820"))
+    {
+        pid_t settings = quest_release_standable_settings();
+        /* Let Steam retire the settings app and Frame retire its overlay
+         * before the new game's compositor claims its window. No waiter
+         * remains resident after this bounded handover. */
+        if (settings) {
+            for (int i = 0; i < 30 && kill(settings, 0) == 0; ++i) usleep(50000);
+            usleep(250000);
+        }
     }
     quest_request_loading_boost();
     execv(path, arguments);

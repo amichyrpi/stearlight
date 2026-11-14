@@ -49,6 +49,12 @@
     "notes": "Story, Quest controller input and music work with native ARM64 Ren'Py and Adreno GPU rendering. Menus and transitions remain slow."
   },
   {
+    "appid": 2370570,
+    "name": "Standable Full Body Estimation",
+    "status": "supported",
+    "notes": "Supported locally. Tracker startup, settings, single dock icon and closing settings while trackers remain active confirmed on Quest 2. [Setup and limitations](docs/standable.md)."
+  },
+  {
     "appid": 584400,
     "name": "Sonic Mania",
     "status": "unsupported",

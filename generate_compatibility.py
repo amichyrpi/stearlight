@@ -14,6 +14,7 @@ SOURCE = HERE / 'games.json'
 OUTPUT = HERE / 'STANDALONE_COMPATIBILITY.md'
 STEAM_DOC_ICONS = 'https://cdn.steamstatic.com/steamcommunity/public/images/steamworks_docs/english/'
 BADGES = {
+    'supported': ('Supported', 'playable_50_1.png'),
     'verified': ('Verified', 'verified_50.png'),
     'playable': ('Playable', 'playable_50_1.png'),
     'unsupported': ('Unsupported', 'unsupported_50.png'),

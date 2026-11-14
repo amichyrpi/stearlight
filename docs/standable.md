@@ -1,6 +1,6 @@
 # Local Standable integration
 
-Work in progress. This runs the owned Windows Steam installation of
+Supported locally on Quest. This runs the owned Windows Steam installation of
 [Standable](https://store.steampowered.com/app/2370570/) locally through ARM64
 Proton and an ARM64 SteamVR adapter based on
 [Ignition](https://github.com/BnuuySolutions/Ignition). It does not require a
@@ -20,8 +20,32 @@ event rather than Steam's game-quit dialog. Events are routed from OpenVR's
 combined system/overlay queue.
 The managed window uses the application's X11 icon. A one-time, backed-up
 preference change disables Standable's duplicate legacy dashboard tab.
+Hidden settings tabs skip pixel readback and Vulkan uploads. Closing settings
+releases its CPU image buffers; window discovery backs off to once per second.
+Launching another Steam game closes only Standable's settings process to leave
+more process and memory headroom. The resident driver keeps estimating trackers;
+reopen Standable from Steam when settings are needed. No device process limit is
+changed, and games still need to fit the headset's available memory and processes.
+The Quest driver uses three RPC workers per endpoint instead of six, removing
+six threads and six 1 MiB receive buffers across the native and Windows sides.
+Nested callbacks retain multiple workers, frame requests are coalesced, and
+already-pending frames do not trigger redundant worker notifications. Tracker
+update cadence and pose data are unchanged.
+The private Standable prefix disables Wine's unused COM server
+and virtual hardware drivers. After checking that no kernel service is active,
+the existing driver host releases empty Wine device containers in that prefix.
+Other games retain their own Wine services and prefixes. Quest tracking still
+comes from native OpenVR, and Standable authentication still uses Steam.
 
 ## Automated Quest checks
+
+An unattended Celeste menu run kept the game, tracker host and audio process
+alive without Android phantom-process trims. This does not establish level-load
+reliability, calibrated full-body tracking or performance for other games.
+The final APK's first post-install startup exited during an Android low-memory
+event; a clean reopen loaded the interface and all eight trackers. The subsequent
+game-handover check was stopped with the headset near 50°C and draining on weak
+USB power. That handover and sustained gameplay still need a cooled-headset test.
 
 The Quest 2 prototype loads the unchanged Windows driver, passes bidirectional
 ARM64/x86-64 shared-memory tests (including ring wraparound and embedded zero
@@ -40,7 +64,7 @@ process limit and killed the Linux session. Removing the GUI's `steam.exe`
 waiter and the host's Proton Python waiter allowed the combined session to run
 for more than 90 seconds without another trim in the observed logs. This is
 an initial startup check, not a sustained gaming soak. The test headset now uses SteamVR’s native startup overlay setting
-(`steam.overlay.2370570`); its driver is listed under Manage Add-ons. Do not describe this as supported until calibration and load testing pass.
+(`steam.overlay.2370570`); its driver is listed under Manage Add-ons. Supported status covers the user-confirmed local integration; calibration quality and sustained concurrent gameplay remain to be measured.
 
 The bridge must hide its C++/OpenVR context symbols. Without isolation, loading
 it replaces another driver's OpenVR context, misattributes its logging and

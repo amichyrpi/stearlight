@@ -42,7 +42,7 @@ def main():
                PROTON_VR_RUNTIME=os.environ.get("PROTON_VR_RUNTIME", "/opt/steamvr"),
                PROTON_LOG="-fex", PROTON_LOG_DIR=str(args.logs), WINEDEBUG="err+all",
                STEARLIGHT_IGNITION_LOG="Z:" + str(args.logs / "driver-host.log").replace("/", "\\"))
-    env["WINEDLLOVERRIDES"] = ("wineusb.sys=d;winebth.sys=d;winemenubuilder.exe=d;tabtip.exe=d;"
+    env["WINEDLLOVERRIDES"] = ("mountmgr.sys=d;nsiproxy.sys=d;ndis.sys=d;winebus.sys=d;winehid.sys=d;wineusb.sys=d;winebth.sys=d;winemenubuilder.exe=d;tabtip.exe=d;"
                               + env.get("WINEDLLOVERRIDES", ""))
     # runinprefix shares the GUI's Wine server and named pipes; normal `run`
     # starts another Steam application wrapper and duplicates startup work.

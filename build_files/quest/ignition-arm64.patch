@@ -395,26 +395,6 @@ index fcf1db9..4033036 100644
 + }
 + self.pending_calls_.clear();
 +}
-diff --git a/projects/common/rpc_core.h b/projects/common/rpc_core.h
-index 640dbee..8d0fbd3 100644
---- a/projects/common/rpc_core.h
-+++ b/projects/common/rpc_core.h
-@@ -130,6 +130,7 @@ public:
-         return GetInstance()._CallMethodWithTimeout(objId, funcId, timeout, args...);
-     }
- 
-+    static void CancelPendingCalls();
-     static bool IsAlive() { return GetInstance()._IsAlive(); }
- 
-     static void CreateIPC() { GetInstance()._CreateIPC(); }
-@@ -189,6 +190,7 @@ private:
-     RpcValue InternalCall(RpcObjectId objId, RpcFunctionEnum funcId, const std::vector<RpcValue>& args, std::chrono::milliseconds timeout = std::chrono::seconds(60));
- 
-     std::string pipe_name_;
-+    bool calls_cancelled_ = false; // guarded by pending_calls_mutex_
-     bool is_server_ = false;
-     std::atomic<bool> running_ = false;
- 
 diff --git a/projects/common/time_sync.cpp b/projects/common/time_sync.cpp
 index 9ebb835..67de33e 100644
 --- a/projects/common/time_sync.cpp
@@ -1115,7 +1095,7 @@ index 1bae9a5..83a8d3c 100644
          data_ = MapViewOfFile(hMapFile_, FILE_MAP_ALL_ACCESS, 0, 0, size);
          if (data_ == NULL) {
 diff --git a/projects/ignition_server/CMakeLists.txt b/projects/ignition_server/CMakeLists.txt
-index 9279cff..3357c7f 100644
+index 9279cff..c80ae65 100644
 --- a/projects/ignition_server/CMakeLists.txt
 +++ b/projects/ignition_server/CMakeLists.txt
 @@ -1,6 +1,9 @@
@@ -1128,12 +1108,14 @@ index 9279cff..3357c7f 100644
  set(CMAKE_CXX_STANDARD 20)
  set(CMAKE_CXX_STANDARD_REQUIRED ON)
  
-@@ -33,4 +36,13 @@ target_link_libraries(ignition_server PRIVATE ignition_common ignition_bridge)
+@@ -32,5 +35,14 @@ target_compile_definitions(ignition_server PUBLIC -DNOMINMAX)
+ target_link_libraries(ignition_server PRIVATE ignition_common ignition_bridge)
  
  if (WIN32)
-     target_link_libraries(ignition_server PRIVATE ole32 shlwapi)
+-    target_link_libraries(ignition_server PRIVATE ole32 shlwapi)
 -endif()
 \ No newline at end of file
++    target_link_libraries(ignition_server PRIVATE ole32 shlwapi advapi32)
 +endif()
 +if(QUEST_IPC_PROBE_SOURCE)
 + add_executable(standable_ipc ${QUEST_IPC_PROBE_SOURCE})
@@ -1144,11 +1126,68 @@ index 9279cff..3357c7f 100644
 +  target_link_libraries(standable_ipc PRIVATE ignition_bridge_static)
 + endif()
 +endif()
+diff --git a/projects/common/rpc_core.h b/projects/common/rpc_core.h
+index 640dbee..aa980d9 100644
+--- a/projects/common/rpc_core.h
++++ b/projects/common/rpc_core.h
+@@ -133 +133,2 @@ public:
++    static void CancelPendingCalls();
+     static bool IsAlive() { return GetInstance()._IsAlive(); }
+@@ -191,2 +192,3 @@ private:
+     std::string pipe_name_;
++    bool calls_cancelled_ = false; // guarded by pending_calls_mutex_
+     bool is_server_ = false;
+@@ -211,3 +213,9 @@ private:
+     // --- Thread Pool for handling calls ---
++    // Keep nested driver callbacks serviced, without twelve polling workers
++    // and twelve 1 MiB receive buffers across the two Quest endpoints.
++#ifdef IGNITION_QUEST_FILE_BRIDGE
++    size_t num_threads_ = 3;
++#else
+     size_t num_threads_ = 6;
++#endif
+     std::vector<std::thread> worker_threads_;
+@@ -294,2 +302,2 @@ RpcValue RpcSystem::_CallMethodWithTimeout(RpcObjectId objId, RpcFunctionEnum fu
+     return InternalCall(objId, funcId, {RpcValue(args)...}, timeout);
+-}
+\ No newline at end of file
++}
 diff --git a/projects/ignition_server/main.cpp b/projects/ignition_server/main.cpp
-index ee6c9ca..1775997 100644
+index ee6c9ca..8deb363 100644
 --- a/projects/ignition_server/main.cpp
 +++ b/projects/ignition_server/main.cpp
-@@ -44,2 +44,8 @@ void RegisterRPCClasses() {
+@@ -17,2 +17,3 @@
+ #include <windows.h>
++#include <tlhelp32.h>
+ #else
+@@ -27 +28,26 @@ RpcServerTrackedDeviceProvider* g_pRpcProvider = nullptr;
++#if defined(_WIN32) && defined(IGNITION_QUEST_FILE_BRIDGE)
++static void ReleaseIdleDeviceHosts() {
++    // This private prefix uses native OpenVR input. Disabled kernel services
++    // can leave Wine's device containers alive with no service to host.
++    SC_HANDLE manager=OpenSCManagerA(nullptr,nullptr,SC_MANAGER_ENUMERATE_SERVICE);
++    if(!manager)return;
++    BYTE buffer[65536];DWORD needed=0,count=0,resume=0;
++    BOOL empty=EnumServicesStatusExA(manager,SC_ENUM_PROCESS_INFO,SERVICE_DRIVER,
++        SERVICE_ACTIVE,buffer,sizeof(buffer),&needed,&count,&resume,nullptr)&&count==0;
++    CloseServiceHandle(manager);
++    if(!empty)return;
++    HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0);
++    if(snapshot==INVALID_HANDLE_VALUE)return;
++    PROCESSENTRY32W entry{};entry.dwSize=sizeof(entry);unsigned released=0;
++    if(Process32FirstW(snapshot,&entry))do {
++        // Wine's process list is scoped to this prefix, not other games.
++        if(_wcsicmp(entry.szExeFile,L"winedevice.exe"))continue;
++        HANDLE process=OpenProcess(PROCESS_TERMINATE,FALSE,entry.th32ProcessID);
++        if(process){if(TerminateProcess(process,0))++released;CloseHandle(process);}
++    }while(Process32NextW(snapshot,&entry));
++    CloseHandle(snapshot);
++    std::cout<<"Quest idle device hosts released: "<<released<<std::endl;
++}
++#endif
++
+ void RegisterRPCClasses() {
+@@ -44,2 +70,8 @@ void RegisterRPCClasses() {
  int main(int argc, char *argv[]) {
 +#ifdef IGNITION_QUEST_FILE_BRIDGE
 +    if(const char *path=getenv("STEARLIGHT_IGNITION_LOG")) {
@@ -1157,7 +1196,7 @@ index ee6c9ca..1775997 100644
 +    }
 +#endif
      std::cout << "Ignition server starting..." << std::endl;
-@@ -64,2 +70,16 @@ int main(int argc, char *argv[]) {
+@@ -64,2 +96,17 @@ int main(int argc, char *argv[]) {
      }
 +#ifdef IGNITION_QUEST_FILE_BRIDGE
 +    // The normal Proton steam.exe wrapper initializes VR metadata. Quest
@@ -1172,15 +1211,16 @@ index ee6c9ca..1775997 100644
 +    } else {
 +        std::cout << "Proton VR initialization requested." << std::endl;
 +    }
++    ReleaseIdleDeviceHosts();
 +#endif
  #endif
-@@ -177,2 +197,5 @@ int main(int argc, char *argv[]) {
+@@ -177,2 +224,5 @@ int main(int argc, char *argv[]) {
  #ifdef _WIN32
 +#ifdef IGNITION_QUEST_FILE_BRIDGE
 +    if (proton_client) FreeLibrary(proton_client);
 +#endif
      CoUninitialize();
-@@ -190,2 +213,2 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
+@@ -190,2 +240,2 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
  }
 -#endif
 \ No newline at end of file

@@ -94,8 +94,9 @@ public:
             }
         }
         if(active) {
-            {std::lock_guard lock(mutex);pending=true;}
-            changed.notify_one();
+            bool wake=false;
+            {std::lock_guard lock(mutex);if(!pending){pending=true;wake=true;}}
+            if(wake)changed.notify_one();
         }
     }
     bool ShouldBlockStandbyMode() override {return false;}

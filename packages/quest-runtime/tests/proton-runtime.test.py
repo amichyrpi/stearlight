@@ -238,6 +238,26 @@ with open(sys.argv[2], "w") as log:
             launcher.prepare_standable_prefix(compat)
             self.assertTrue(windows_settings.samefile(settings))
 
+    def test_standable_service_reduction_preserves_networking_and_backup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            compat = Path(folder)
+            registry = compat / "pfx/system.reg"
+            registry.parent.mkdir()
+            original = "WINE REGISTRY Version 2\n\n" + "\n".join(
+                '[System\\\\ControlSet001\\\\Services\\\\' + name + '] 0\n"Start"=dword:00000002\n'
+                for name in ("MountMgr", "RpcSs", "NDIS", "nsiproxy", "Dnscache"))
+            registry.write_text(original)
+            launcher.prepare_standable_prefix(compat)
+            updated = registry.read_text()
+            for name in ("MountMgr", "RpcSs", "NDIS", "nsiproxy"):
+                self.assertIn(name + '] 0\n"Start"=dword:00000004', updated)
+            self.assertIn('Dnscache] 0\n"Start"=dword:00000002', updated)
+            backup = registry.with_name("system.reg.quest-standable-original")
+            self.assertEqual(backup.read_text(), original)
+            launcher.prepare_standable_prefix(compat)
+            self.assertEqual(registry.read_text(), updated)
+            self.assertEqual(backup.read_text(), original)
+
     def test_standable_launchers_exec_without_resident_waiters(self):
         class Executed(Exception):
             pass

@@ -426,7 +426,7 @@ def prepare_standable_prefix(compat):
     registry = compat / "pfx/system.reg"
     data = registry.read_text()
     updated = data
-    for name in ("PlugPlay", "Eventlog", "winebus", "winehid", "wineusb", "winebth", "WinHttpAutoProxySvc"):
+    for name in ("PlugPlay", "Eventlog", "winebus", "winehid", "wineusb", "winebth", "WinHttpAutoProxySvc", "MountMgr", "RpcSs", "NDIS", "nsiproxy"):
         pattern = r'(\[System\\\\ControlSet001\\\\Services\\\\' + name + r'\][^\n]*\n)(.*?)(?=\n\[|\Z)'
         updated = re.sub(pattern, lambda m: m[1] + re.sub(r'"Start"=dword:[0-9a-f]+', '"Start"=dword:00000004', m[2]), updated, flags=re.S | re.I)
     if updated != data:
@@ -567,7 +567,8 @@ def main():
         # Capture complete XPutImage frames rather than reusing software
         # MIT-SHM presentation buffers while the settings window repaints.
         env["MESA_VK_WSI_DEBUG"] = "sw,noshm"
-        env["WINEDLLOVERRIDES"] = "winebus.sys=d;winehid.sys=d;wineusb.sys=d;winebth.sys=d;winemenubuilder.exe=d;tabtip.exe=d;" + env.get("WINEDLLOVERRIDES", "")
+        # Retain Wine's desktop window: the settings swapchain requires it.
+        env["WINEDLLOVERRIDES"] = "mountmgr.sys=d;nsiproxy.sys=d;ndis.sys=d;winebus.sys=d;winehid.sys=d;wineusb.sys=d;winebth.sys=d;winemenubuilder.exe=d;tabtip.exe=d;" + env.get("WINEDLLOVERRIDES", "")
     if appid in {*flat_unity, "2370570"} and Path(args[0]).name == "proton":
         exec_proton(args, env, Path(env["STEAM_COMPAT_DATA_PATH"]))
     elif Path(args[0]).name == "proton":
