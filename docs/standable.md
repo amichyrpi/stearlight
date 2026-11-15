@@ -1,6 +1,6 @@
 # Local Standable integration
 
-Supported locally on Quest. This runs the owned Windows Steam installation of
+Listed as Verified for local integration on Quest. This runs the owned Windows Steam installation of
 [Standable](https://store.steampowered.com/app/2370570/) locally through ARM64
 Proton and an ARM64 SteamVR adapter based on
 [Ignition](https://github.com/BnuuySolutions/Ignition). It does not require a
@@ -64,7 +64,7 @@ process limit and killed the Linux session. Removing the GUI's `steam.exe`
 waiter and the host's Proton Python waiter allowed the combined session to run
 for more than 90 seconds without another trim in the observed logs. This is
 an initial startup check, not a sustained gaming soak. The test headset now uses SteamVR’s native startup overlay setting
-(`steam.overlay.2370570`); its driver is listed under Manage Add-ons. Supported status covers the user-confirmed local integration; calibration quality and sustained concurrent gameplay remain to be measured.
+(`steam.overlay.2370570`); its driver is listed under Manage Add-ons. Verified status covers the user-confirmed local integration; calibration quality and sustained concurrent gameplay remain to be measured.
 
 The bridge must hide its C++/OpenVR context symbols. Without isolation, loading
 it replaces another driver's OpenVR context, misattributes its logging and
