@@ -30,7 +30,7 @@ def main():
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if applied.returncode:
         run("git", "-C", source, "apply", "--check", patch)
-        run("git", "-C", source, "apply", patch)
+        run("git", "-C", source, "apply", "--whitespace=nowarn", patch)
     build.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
     common = ["-DIGNITION_QUEST_FILE_BRIDGE=ON", "-DCMAKE_BUILD_TYPE=Release"]

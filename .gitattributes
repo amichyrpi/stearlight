@@ -2,3 +2,5 @@
 * text=auto eol=lf
 *.cmd text eol=crlf
 *.png binary
+# Patch payloads can contain CRLF source and significant context whitespace.
+*.patch -text -whitespace

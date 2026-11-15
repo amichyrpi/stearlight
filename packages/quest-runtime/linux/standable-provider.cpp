@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -13,6 +14,8 @@
 #include <unistd.h>
 
 void *QuestCreateRemoteProvider(const char *,int *);
+void QuestFlushTrackedPoses();
+void QuestSetFramePeriod(uint32_t);
 
 namespace {
 constexpr auto ready="/run/stearlight/quest/dashboard.ready";
@@ -33,7 +36,9 @@ class StandableProvider final:public vr::IServerTrackedDeviceProvider {
     std::condition_variable changed;
     bool stop=false,pending=false;
     std::atomic<bool> active{false};
+    std::atomic<uint32_t> framePeriod{8333333};
     std::chrono::steady_clock::time_point next{};
+    std::chrono::steady_clock::time_point nextFrame{};
 
     void run() {
         try {
@@ -45,6 +50,7 @@ class StandableProvider final:public vr::IServerTrackedDeviceProvider {
             if(provider->Init(context)!=vr::VRInitError_None){report("failed: driver initialization");return;}
             active=true;
             report("running: calibration and app authentication are managed by Standable");
+            std::chrono::steady_clock::time_point nextRefresh{};
             while(true) {
                 {
                     std::unique_lock lock(mutex);
@@ -52,7 +58,22 @@ class StandableProvider final:public vr::IServerTrackedDeviceProvider {
                     if(stop)break;
                     pending=false;
                 }
+                const auto now=std::chrono::steady_clock::now();
+                if(now>=nextRefresh) {
+                    vr::ETrackedPropertyError error=vr::TrackedProp_Success;
+                    auto *properties=vr::VRProperties();
+                    const auto hmd=properties->TrackedDeviceToPropertyContainer(vr::k_unTrackedDeviceIndex_Hmd);
+                    const float hz=properties->GetFloatProperty(hmd,
+                        vr::Prop_DisplayFrequency_Float,&error);
+                    if(error==vr::TrackedProp_Success&&std::isfinite(hz)&&hz>=30&&hz<=120) {
+                        const auto period=static_cast<uint32_t>(1000000000.0/hz+0.5);
+                        framePeriod.store(period,std::memory_order_relaxed);
+                        QuestSetFramePeriod(period);
+                    }
+                    nextRefresh=now+std::chrono::seconds(1);
+                }
                 provider->RunFrame();
+                QuestFlushTrackedPoses();
             }
         } catch(const std::exception &error) {
             std::fprintf(stderr,"Standable host stopped: %s\n",error.what());
@@ -94,6 +115,12 @@ public:
             }
         }
         if(active) {
+            // vrserver can call providers much faster than the display. The
+            // Windows driver's independent pose/estimation threads keep their
+            // own cadence; forwarding empty frame calls must not busy-poll Wine.
+            const auto now=std::chrono::steady_clock::now();
+            if(now<nextFrame)return;
+            nextFrame=now+std::chrono::nanoseconds(framePeriod.load(std::memory_order_relaxed));
             bool wake=false;
             {std::lock_guard lock(mutex);if(!pending){pending=true;wake=true;}}
             if(wake)changed.notify_one();

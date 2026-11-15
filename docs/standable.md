@@ -29,8 +29,21 @@ changed, and games still need to fit the headset's available memory and processe
 The Quest driver uses three RPC workers per endpoint instead of six, removing
 six threads and six 1 MiB receive buffers across the native and Windows sides.
 Nested callbacks retain multiple workers, frame requests are coalesced, and
-already-pending frames do not trigger redundant worker notifications. Tracker
-update cadence and pose data are unchanged.
+already-pending frames do not trigger redundant worker notifications.
+The current bridge carries tracker poses through a small, versioned shared-memory
+channel instead of a synchronous RPC for every tracker update. Atomic snapshots
+prevent partially written poses, newer poses replace pending older ones, and the
+native provider accounts for their age before submitting them to SteamVR. Clock
+calibration is read as one coherent snapshot while it is being refreshed.
+Source polling, pose publication and provider frame calls follow the HMD's actual
+display rate, up to 120 Hz, rather than running faster than the headset can show.
+This pacing applies to Standable; the headset's native head/controller tracking
+path is unchanged.
+Repeated successful, single-property writes and valid property-container lookups
+are cached for at most one second. Changed values, errors, erases and batches
+retain the normal RPC path. The write cache is bounded to 128 values of at most
+512 bytes each. These changes add no processes or worker threads and retain the
+three-worker endpoints needed for nested initialization callbacks.
 The private Standable prefix disables Wine's unused COM server
 and virtual hardware drivers. After checking that no kernel service is active,
 the existing driver host releases empty Wine device containers in that prefix.
@@ -39,10 +52,20 @@ comes from native OpenVR, and Standable authentication still uses Steam.
 
 ## Automated Quest checks
 
+The optimized Quest 2 test reports all eight trackers connected with valid poses
+and follows the display's 72 Hz rate. The user confirmed smoother Steam tab
+navigation and working trackers, with some remaining lag. Focused probes check
+ARM64/Windows pose layout, latest-pose replacement, property-cache invalidation
+and concurrent clock calibration. This does not establish zero overhead or
+calibrated full-body tracking quality in a game.
+After installing the full signed APK and reopening it from the Quest library,
+the user confirmed smoother Steam navigation, working Celeste picture/audio and
+controls, and active Standable tracking.
+
 An unattended Celeste menu run kept the game, tracker host and audio process
 alive without Android phantom-process trims. This does not establish level-load
 reliability, calibrated full-body tracking or performance for other games.
-The final APK's first post-install startup exited during an Android low-memory
+An earlier APK's first post-install startup exited during an Android low-memory
 event; a clean reopen loaded the interface and all eight trackers. The subsequent
 game-handover check was stopped with the headset near 50°C and draining on weak
 USB power. That handover and sustained gameplay still need a cooled-headset test.
@@ -73,7 +96,8 @@ those cross-driver errors.
 
 ## Rebuild the prototype
 
-Clone Ignition at `6af5d9ae36a5385161d7e0cc0d0b7b08b8bc6bcc`. The helper verifies
+Clone Ignition at `6af5d9ae36a5385161d7e0cc0d0b7b08b8bc6bcc`. Use a fresh checkout
+when upgrading an older adapter patch. The helper verifies
 the revision and applies `build_files/quest/ignition-arm64.patch`. Use separate
 Windows and Linux build directories. Dependencies are CMake, Git, Ninja and the
 AArch64 GCC cross compilers on Linux; Visual Studio 2022 C++ tools on Windows.

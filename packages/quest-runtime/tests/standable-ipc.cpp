@@ -1,5 +1,6 @@
 // Cross-architecture IPC check for the optional Ignition Quest adapter.
 #include <mapped_event_circular_buffer_c.h>
+#include <quest_pose_channel.h>
 #include <chrono>
 #include <thread>
 #include <cstdio>
@@ -15,7 +16,10 @@ int main(int argc,char **argv) {
     std::string outgoing=std::string(argv[2])+(server?"_a":"_b");
     std::string incoming=std::string(argv[2])+(server?"_b":"_a");
     CircularBuffer *out=nullptr,*in=nullptr;
+    QuestPoseChannel poses;
     if(server) {
+        if(!poses.Create(argv[2]))return 9;
+        poses.SetFramePeriod(13888889); // The native display selects 72 Hz.
         out=mapped_event_circular_buffer_create_shm(outgoing.c_str(),4096);
         in=mapped_event_circular_buffer_create_shm(incoming.c_str(),4096);
     } else {
@@ -26,6 +30,8 @@ int main(int argc,char **argv) {
             if(out&&in)break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         } while(std::chrono::steady_clock::now()<deadline);
+        if(!poses.Open(argv[2]))return 10;
+        if(poses.FramePeriod()!=13888889)return 15;
     }
     if(!out||!in){std::puts("FAIL: shared rings unavailable");return 4;}
     for(unsigned count=0;count<64;++count) {
@@ -39,10 +45,32 @@ int main(int argc,char **argv) {
         if(size!=sizeof(expected)||std::memcmp(actual,expected,size)) {
             std::printf("FAIL: message mismatch at %u\n",count);return 7;
         }
+        for(unsigned device=0;device<8;++device) {
+            if(server) {
+                vr::DriverPose_t pose{};uint64_t timestamp=0;
+                if(!poses.Read(device,pose,timestamp)||timestamp!=count+100||
+                   pose.vecPosition[0]!=static_cast<double>(count+device)||
+                   pose.vecVelocity[2]!=0.25||!pose.poseIsValid||!pose.deviceIsConnected)return 11;
+                if(poses.Read(device,pose,timestamp))return 12;
+            } else {
+                vr::DriverPose_t pose{};pose.vecPosition[0]=count+device;
+                pose.vecVelocity[2]=0.25;pose.poseIsValid=true;pose.deviceIsConnected=true;
+                if(device==0) {
+                    auto older=pose;older.vecPosition[0]=-1000;
+                    if(!poses.Publish(device,older,count+99))return 14;
+                }
+                if(!poses.Publish(device,pose,count+100))return 13;
+            }
+        }
         if(!server&&!mapped_event_circular_buffer_write(out,actual,size))return 8;
     }
+    char unused[300];size_t unused_size=sizeof(unused);
+    auto idle=std::chrono::steady_clock::now();
+    if(mapped_event_circular_buffer_wait_and_read(in,unused,&unused_size,100))return 17;
+    if(std::chrono::steady_clock::now()-idle<std::chrono::milliseconds(90))return 18;
     mapped_event_circular_buffer_destroy(out);
     mapped_event_circular_buffer_destroy(in);
-    std::puts("PASS: 64 cross-architecture messages, embedded zeros and ring wraparound");
+    poses.Close();
+    std::puts("PASS: 64 cross-architecture messages, embedded zeros, ring wraparound and eight-device pose channel");
     return 0;
 }
