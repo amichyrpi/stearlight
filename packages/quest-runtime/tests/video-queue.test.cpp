@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 int main(){
  constexpr unsigned width=128,height=128,bytes=width*height*3/2,offset=64;
@@ -36,6 +37,19 @@ int main(){
   assert(plane.data_offset==offset&&plane.bytesused==bytes);
   assert(mapped[index][offset]==40+timestamp&&mapped[index][offset+width*height]==128);
   for(unsigned i=0;i<offset;i++)assert(mapped[index][i]==0xa5&&mapped[index][offset+bytes+i]==0xa5);};
+ bool latest=getenv("QUEST_VIDEO_LATEST_CAPTURE")&&strcmp(getenv("QUEST_VIDEO_LATEST_CAPTURE"),"0");
+ if(latest){
+  packet(0,1);packet(1,2);packet(2,3);complete();complete();complete();
+  take(0,3,3);queueCapture(0);packet(0,4);complete();take(0,4,4);
+  for(int i=0;i<3;i++)queueCapture(i);
+  packet(0,5);packet(1,6);packet(2,7);complete();complete();complete();
+  packet(0,8);complete();take(1,8,8);
+  packet(0,9);complete();take(0,9,9);
+  packet(0,10);complete();take(2,10,10);
+  packet(0,11);complete(); // No writable buffer: keep consumer pixels intact.
+  assert(mapped[1][offset]==48&&mapped[0][offset]==49&&mapped[2][offset]==50);
+  queueCapture(0);packet(0,12);complete();take(0,12,12);
+ }else{
  packet(0,1);packet(1,2);packet(2,3);complete();complete();complete();
  take(0,1,1);queueCapture(0);packet(0,4);complete();
  // Buffer 0 now holds frame 4. It must not jump ahead of frames 2 and 3.
@@ -47,6 +61,7 @@ int main(){
  packet(0,8);complete();take(1,6,6);take(2,7,7);take(0,8,8);
  packet(0,9);complete(); // All captures belong to the consumer: discard 9.
  queueCapture(0);packet(0,10);complete();take(0,10,10);
+ }
  close(video);for(int i=0;i<3;i++){munmap(mapped[i],bytes+offset*2);close(fd[i]);}
  puts("Video queue: presentation order, bounded backlog, buffer ownership and pixel bounds passed");
 }

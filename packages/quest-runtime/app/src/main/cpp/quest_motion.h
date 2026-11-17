@@ -7,6 +7,7 @@
 // Optional companion to QuestTracking; keep the existing tracking ABI intact.
 // OpenXR and OpenVR both express these velocities in the stage/driver space.
 constexpr uint32_t QUEST_MOTION_MAGIC=0x53514d31, QUEST_MOTION_VERSION=1;
+constexpr unsigned QUEST_CONTROLLER_MOTION_COUNT=4; // left/right grip, left/right aim
 enum { QUEST_LINEAR_VELOCITY_VALID=1, QUEST_ANGULAR_VELOCITY_VALID=2 };
 struct QuestMotion {
  uint32_t magic,version,sequence,reserved;

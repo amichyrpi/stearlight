@@ -55,7 +55,7 @@ struct Runtime {
  XrActionSet actions=XR_NULL_HANDLE;XrAction gripAction=XR_NULL_HANDLE,aimAction=XR_NULL_HANDLE,triggerAction=XR_NULL_HANDLE,squeezeAction=XR_NULL_HANDLE,stickAction=XR_NULL_HANDLE;
  XrAction buttonActions[6]{};XrAction touchAction=XR_NULL_HANDLE,hapticAction=XR_NULL_HANDLE,selectAction=XR_NULL_HANDLE;
  XrPath hands[2]{};Eye eyes[2],statusEye;XrTime statusUpdated=0;bool running=false,visible=false,focused=false;
- QuestTracking* tracking=nullptr;QuestMotion* motion=nullptr;GLuint framebuffer=0;GpuBridge gpu;VideoBridge video;
+ QuestTracking* tracking=nullptr;QuestMotion* motion=nullptr;QuestMotion* controllerMotion=nullptr;GLuint framebuffer=0;GpuBridge gpu;VideoBridge video;
  XrView frameViews[2]={{XR_TYPE_VIEW},{XR_TYPE_VIEW}};bool haveFrameViews=false;
  bool eyesDirty=true,lastLoading=true,lastPassthrough=false;
  bool haveStage=false,playSpacePublished=false;
@@ -113,6 +113,15 @@ struct Runtime {
    }close(motionFd);
   }
   if(!motion)LOG("Headset velocity bridge unavailable");
+  int controllersFd=open((directory+"/controller-motion").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);
+  constexpr size_t controllerBytes=sizeof(QuestMotion)*QUEST_CONTROLLER_MOTION_COUNT;
+  if(controllersFd>=0){
+   if(!ftruncate(controllersFd,controllerBytes)){
+    void* mapping=mmap(nullptr,controllerBytes,PROT_READ|PROT_WRITE,MAP_SHARED,controllersFd,0);
+    if(mapping!=MAP_FAILED){controllerMotion=static_cast<QuestMotion*>(mapping);memset(controllerMotion,0,controllerBytes);for(unsigned i=0;i<QUEST_CONTROLLER_MOTION_COUNT;i++){controllerMotion[i].magic=QUEST_MOTION_MAGIC;controllerMotion[i].version=QUEST_MOTION_VERSION;}}
+   }close(controllersFd);
+  }
+  if(!controllerMotion)LOG("Controller velocity bridge unavailable");
   auto loader=function<PFN_xrInitializeLoaderKHR>(XR_NULL_HANDLE,"xrInitializeLoaderKHR");XrLoaderInitInfoAndroidKHR loaderInfo{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR};loaderInfo.applicationVM=app->activity->vm;loaderInfo.applicationContext=app->activity->clazz;XR(loader(reinterpret_cast<XrLoaderInitInfoBaseHeaderKHR*>(&loaderInfo)));
   uint32_t n=0;XR(xrEnumerateInstanceExtensionProperties(nullptr,0,&n,nullptr));std::vector<XrExtensionProperties> extensions(n,{XR_TYPE_EXTENSION_PROPERTIES});XR(xrEnumerateInstanceExtensionProperties(nullptr,n,&n,extensions.data()));
   std::vector<const char*> enabled={XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME};
@@ -296,12 +305,19 @@ struct Runtime {
   if(velocity.velocityFlags&XR_SPACE_VELOCITY_LINEAR_VALID_BIT){motionSample.flags|=QUEST_LINEAR_VELOCITY_VALID;motionSample.linear[0]=velocity.linearVelocity.x;motionSample.linear[1]=velocity.linearVelocity.y;motionSample.linear[2]=velocity.linearVelocity.z;}
   if(velocity.velocityFlags&XR_SPACE_VELOCITY_ANGULAR_VALID_BIT){motionSample.flags|=QUEST_ANGULAR_VELOCITY_VALID;motionSample.angular[0]=velocity.angularVelocity.x;motionSample.angular[1]=velocity.angularVelocity.y;motionSample.angular[2]=velocity.angularVelocity.z;}
   location.next=nullptr;
-  QuestPose controllers[2]{};bool modeChanged=false;
+  QuestPose controllers[2]{};QuestMotion controllerSamples[QUEST_CONTROLLER_MOTION_COUNT]{};bool modeChanged=false;
+  auto captureControllerVelocity=[&](unsigned index){
+   auto& sample=controllerSamples[index];sample.predicted_time_ns=motionSample.predicted_time_ns;
+   if(velocity.velocityFlags&XR_SPACE_VELOCITY_LINEAR_VALID_BIT){sample.flags|=QUEST_LINEAR_VELOCITY_VALID;sample.linear[0]=velocity.linearVelocity.x;sample.linear[1]=velocity.linearVelocity.y;sample.linear[2]=velocity.linearVelocity.z;}
+   if(velocity.velocityFlags&XR_SPACE_VELOCITY_ANGULAR_VALID_BIT){sample.flags|=QUEST_ANGULAR_VELOCITY_VALID;sample.angular[0]=velocity.angularVelocity.x;sample.angular[1]=velocity.angularVelocity.y;sample.angular[2]=velocity.angularVelocity.z;}
+  };
   for(int i=0;i<2;i++){
    XrActionStateGetInfo poseGet{XR_TYPE_ACTION_STATE_GET_INFO};poseGet.action=gripAction;poseGet.subactionPath=hands[i];XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};XR(xrGetActionStatePose(session,&poseGet,&poseState));
    if(poseState.isActive){
-    XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,location.locationFlags);
-    XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);
+    location.next=&velocity;velocity.velocityFlags=0;
+    XR(xrLocateSpace(grip[i],stage,state.predictedDisplayTime,&location));sample.grip[i]=pose(location.pose,location.locationFlags);captureControllerVelocity(i);
+    velocity.velocityFlags=0;
+    XR(xrLocateSpace(aim[i],stage,state.predictedDisplayTime,&location));sample.aim[i]=pose(location.pose,location.locationFlags);captureControllerVelocity(i+2);location.next=nullptr;
    }else{
     // Preserve the last pose but publish disconnection immediately. Inactive
     // action spaces cannot supply a tracked pose; hand input is applied below.
@@ -342,7 +358,9 @@ struct Runtime {
   }
   if(modeChanged)for(int i=0;i<2;i++){sample.buttons[i]=sample.touches[i]=0;sample.trigger[i]=sample.squeeze[i]=0;sample.thumbstick[i][0]=sample.thumbstick[i][1]=0;}
   multimodal.controllerCompatibility(device!=quest::Headset::Quest2||proControllers[0]||proControllers[1]);
-  multimodal.publish(sample,controllers);handTracking.publish(sample);questPublishMotion(motion,motionSample);questPublishTracking(tracking,sample);
+  multimodal.publish(sample,controllers);handTracking.publish(sample);questPublishMotion(motion,motionSample);
+  if(controllerMotion)for(unsigned i=0;i<QUEST_CONTROLLER_MOTION_COUNT;i++)questPublishMotion(controllerMotion+i,controllerSamples[i]);
+  questPublishTracking(tracking,sample);
   publishPlaySpace();
   // Passthrough is a compositor layer; camera pixels never enter Linux.
   if(!bootFinished)bootFinished=bootComplete();
@@ -445,6 +463,6 @@ struct Runtime {
   static uint32_t frames=0;if(++frames%1200==0){if(getRate)XR(getRate(session,&tracking->refresh_hz));LOG("Tracking frames %u, rate=%.0f focused=%d sync=%d HMD=(%.3f %.3f %.3f) hand flags=(%u %u)",frames,tracking->refresh_hz,focused,syncResult,tracking->headset.position[0],tracking->headset.position[1],tracking->headset.position[2],tracking->grip[0].flags,tracking->grip[1].flags);for(int i=0;i<2;i++){XrInteractionProfileState profile{XR_TYPE_INTERACTION_PROFILE_STATE};XR(xrGetCurrentInteractionProfile(session,hands[i],&profile));plusProfile[i]=touchPlusProfile!=XR_NULL_PATH&&profile.interactionProfile==touchPlusProfile;controllerProfile[i]=profile.interactionProfile==touchProfile||plusProfile[i]||(touchProProfile!=XR_NULL_PATH&&profile.interactionProfile==touchProProfile);if(controllerProfile[i])proControllers[i]=touchProProfile!=XR_NULL_PATH&&profile.interactionProfile==touchProProfile;else if(detachedExtension&&touchProProfile!=XR_NULL_PATH){XrInteractionProfileState detachedProfile{XR_TYPE_INTERACTION_PROFILE_STATE};if(XR_SUCCEEDED(xrGetCurrentInteractionProfile(session,controllerPaths[i+2],&detachedProfile))&&detachedProfile.interactionProfile==touchProProfile)proControllers[i]=true;}char name[XR_MAX_PATH_LENGTH]="none";uint32_t size;if(profile.interactionProfile)XR(xrPathToString(instance,profile.interactionProfile,sizeof(name),&size,name));LOG("Hand %d current profile %s",i,name);}}
  }
  void idle(){physicalGamepad.tick(false);gpu.poll();gpu.finish();}
- void shutdown(){multimodal.shutdown();physicalGamepad.shutdown();handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(motion)munmap(motion,sizeof(*motion));if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
+ void shutdown(){multimodal.shutdown();physicalGamepad.shutdown();handRender.shutdown();handTracking.shutdown();video.shutdown();camera.shutdown();gpu.shutdown();if(hapticSocket>=0){close(hapticSocket);unlink((directory+"/haptics.sock").c_str());}if(motion)munmap(motion,sizeof(*motion));if(controllerMotion)munmap(controllerMotion,sizeof(QuestMotion)*QUEST_CONTROLLER_MOTION_COUNT);if(tracking&&tracking!=MAP_FAILED)munmap(tracking,sizeof(*tracking));if(session)xrDestroySession(session);if(instance)xrDestroyInstance(instance);if(display!=EGL_NO_DISPLAY){eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT);if(surface!=EGL_NO_SURFACE)eglDestroySurface(display,surface);if(context!=EGL_NO_CONTEXT)eglDestroyContext(display,context);eglTerminate(display);}app->activity->vm->DetachCurrentThread();}
 };
 extern "C" void android_main(android_app* app){Runtime runtime;runtime.app=app;try{while(!app->destroyRequested&&(!app->window||app->activityState!=APP_CMD_RESUME)){int events;android_poll_source* source;if(ALooper_pollOnce(50,nullptr,&events,reinterpret_cast<void**>(&source))>=0&&source)source->process(app,source);}if(app->destroyRequested)return;LOG("Android VR activity resumed with a native window");runtime.initialize(app);while(!app->destroyRequested){int events;android_poll_source* source;while(ALooper_pollOnce(runtime.running?0:50,nullptr,&events,reinterpret_cast<void**>(&source))>=0){if(source)source->process(app,source);if(app->destroyRequested)break;}if(app->destroyRequested||!runtime.events())break;if(runtime.running)runtime.frame();else runtime.idle();}}catch(const std::exception& e){LOG("Native runtime stopped: %s",e.what());}runtime.shutdown();}

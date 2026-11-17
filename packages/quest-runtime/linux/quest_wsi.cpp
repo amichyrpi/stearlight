@@ -48,9 +48,9 @@ VkExtent2D displayExtent(){
  if(bytes!=sizeof(state)||state.magic!=QUEST_BRIDGE_MAGIC||state.version!=QUEST_BRIDGE_VERSION||!state.width||!state.height)return {3664,1920};
  return {state.width*2,state.height};
 }
-struct RoomShader {VkShaderModule alternate=VK_NULL_HANDLE;bool background=false,stars=false;};
-struct RoomPipeline {VkPipeline alternate=VK_NULL_HANDLE;bool background=false,stars=false;};
-struct RoomCommand {bool background=false,stars=false;};
+struct RoomShader {VkShaderModule alternate=VK_NULL_HANDLE;bool background=false,stars=false,streamed=false;};
+struct RoomPipeline {VkPipeline alternate=VK_NULL_HANDLE;bool background=false,stars=false,streamed=false;};
+struct RoomCommand {bool background=false,stars=false,streamed=false;};
 std::mutex roomLock;
 std::unordered_map<VkShaderModule,RoomShader> roomShaders;
 std::unordered_map<VkPipeline,RoomPipeline> roomPipelines;
@@ -461,6 +461,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice device,VkPipel
   for(auto& stage:stages)if(stage.stage==VK_SHADER_STAGE_FRAGMENT_BIT){
    auto found=roomShaders.find(stage.module);if(found==roomShaders.end())continue;
    pipeline.background=found->second.background;
+   pipeline.streamed=found->second.streamed;
    pipeline.stars=found->second.stars&&info[i].pDepthStencilState&&
     info[i].pDepthStencilState->depthTestEnable&&!info[i].pDepthStencilState->depthWriteEnable;
    if(found->second.alternate){stage.module=found->second.alternate;changed=true;}
@@ -497,7 +498,9 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateShaderModule(VkDevice device,const VkShad
  if(result==VK_SUCCESS&&!linear.empty())fprintf(stderr,"QUEST_PCVR_LINEAR_COLOR_READY\n");
  if(!isCompositor()||result!=VK_SUCCESS)return result;
  auto code=quest::roomViewShader(info->pCode,info->codeSize/4);RoomShader shader;
- shader.background=quest::roomViewBackgroundShader(info->pCode,info->codeSize/4);
+ shader.streamed=quest::pcvrSceneShader(info->pCode,info->codeSize/4);
+ shader.background=quest::roomViewBackgroundShader(info->pCode,info->codeSize/4)||shader.streamed;
+ if(shader.streamed)fprintf(stderr,"QUEST_ROOMVIEW_STREAM_SHADER_READY %zu words\n",info->codeSize/4);
  shader.stars=quest::roomViewStarShader(info->pCode,info->codeSize/4);
  if(!code.empty()){auto copy=*info;copy.pCode=code.data();copy.codeSize=code.size()*4;
   if(create(device,&copy,callbacks,&shader.alternate)!=VK_SUCCESS)shader.alternate=VK_NULL_HANDLE;
@@ -517,7 +520,7 @@ VKAPI_ATTR void VKAPI_CALL vkDestroyPipeline(VkDevice device,VkPipeline pipeline
 VKAPI_ATTR void VKAPI_CALL vkCmdBindPipeline(VkCommandBuffer command,VkPipelineBindPoint point,VkPipeline pipeline){
  if(isCompositor()&&point==VK_PIPELINE_BIND_POINT_GRAPHICS){renderedViews.bindPipeline(command,pipeline);std::lock_guard<std::mutex> guard(roomLock);auto found=roomPipelines.find(pipeline);
   roomBackgroundCommands[command]=found==roomPipelines.end()?RoomCommand{}:
-   RoomCommand{found->second.background,found->second.stars};
+   RoomCommand{found->second.background,found->second.stars,found->second.streamed};
   if(roomViewMode&&found!=roomPipelines.end()&&found->second.alternate)pipeline=found->second.alternate;
  }
  C(vkCmdBindPipeline)(command,point,pipeline);
@@ -540,7 +543,7 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass(VkCommandBuffer command,const Vk
  }
  C(vkCmdBeginRenderPass)(command,&copy,contents);
 }
-bool hideRoomBackground(VkCommandBuffer command,bool starDraw=false){if(!roomViewMode)return false;std::lock_guard<std::mutex> guard(roomLock);auto found=roomBackgroundCommands.find(command);return found!=roomBackgroundCommands.end()&&(found->second.background||(starDraw&&found->second.stars));}
+bool hideRoomBackground(VkCommandBuffer command,bool starDraw=false){if(!roomViewMode)return false;std::lock_guard<std::mutex> guard(roomLock);auto found=roomBackgroundCommands.find(command);if(found!=roomBackgroundCommands.end()&&found->second.streamed){static bool reported=false;if(!reported){reported=true;fputs("QUEST_ROOMVIEW_STREAM_SCENE_HIDDEN\n",stderr);}}return found!=roomBackgroundCommands.end()&&(found->second.background||(starDraw&&found->second.stars));}
 VKAPI_ATTR void VKAPI_CALL vkCmdDraw(VkCommandBuffer command,uint32_t vertices,uint32_t instances,uint32_t firstVertex,uint32_t firstInstance){if(isCompositor())renderedViews.draw(command);if(!hideRoomBackground(command))C(vkCmdDraw)(command,vertices,instances,firstVertex,firstInstance);}
 VKAPI_ATTR void VKAPI_CALL vkCmdDrawIndexed(VkCommandBuffer command,uint32_t indices,uint32_t instances,uint32_t firstIndex,int32_t offset,uint32_t firstInstance){if(isCompositor())renderedViews.draw(command);if(!hideRoomBackground(command,quest::roomViewStarDraw(indices,instances,firstIndex,offset,firstInstance)))C(vkCmdDrawIndexed)(command,indices,instances,firstIndex,offset,firstInstance);}
 VKAPI_ATTR void VKAPI_CALL vkFreeCommandBuffers(VkDevice device,VkCommandPool pool,uint32_t count,const VkCommandBuffer* commands){

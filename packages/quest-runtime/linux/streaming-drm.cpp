@@ -9,15 +9,17 @@
 #include <stdio.h>
 #include <map>
 #include <mutex>
+#include "streaming_memory.h"
 
 // Private libdrm implementation loaded only by the OpenVR streaming player.
 // There is no KMS display on Android. Expose a headless buffer allocator and
-// one virtual connector; OpenVR still owns presentation. Exported memfds use
-// Steam's existing CPU texture upload fallback, not EGL DMA-BUF import.
+// one virtual connector; OpenVR still owns presentation. Prefer real DMA-BUFs
+// for direct video import; ordinary memfds retain Steam's CPU upload fallback.
 namespace {
 std::mutex lock;
 std::map<uint32_t,int> buffers;
 uint32_t nextHandle=1;
+quest::StreamingMemory gpuMemory;
 uint32_t connectorId=1,encoderId=2,crtcId=3;
 char node[]="/dev/quest-video-memory";
 char* nodes[]={node,nullptr,nullptr};
@@ -82,11 +84,14 @@ int drmIoctl(int,unsigned long request,void* data){
   auto b=static_cast<drm_mode_create_dumb*>(data);
   if(!b->width||!b->height||b->width>4096||b->height>4096||!b->bpp||b->bpp>64){errno=EINVAL;return -1;}
   b->pitch=b->width*((b->bpp+7)/8);b->size=uint64_t(b->pitch)*b->height;
-  int fd=memfd_create("quest-video-buffer",MFD_CLOEXEC);
-  if(fd<0)return -1;
-  if(ftruncate(fd,b->size)){close(fd);return -1;}
+  const char* enabled=getenv("QUEST_VIDEO_DMABUF");
+  bool prefer=enabled?strcmp(enabled,"0")!=0:getenv("QUEST_VIDEO_STATEFUL")!=nullptr;
+  int fd=prefer?gpuMemory.allocate(b->size):-1;
+  bool direct=fd>=0;
+  if(!direct){fd=memfd_create("quest-video-buffer",MFD_CLOEXEC);if(fd<0)return -1;
+   if(ftruncate(fd,b->size)){close(fd);return -1;}}
   b->handle=nextHandle++;buffers[b->handle]=fd;
-  fprintf(stderr,"Quest video: allocated buffer %u size=%llu pitch=%u\n",b->handle,(unsigned long long)b->size,b->pitch);
+  fprintf(stderr,"Quest video: allocated %s buffer %u size=%llu pitch=%u\n",direct?"DMA-BUF":"shared-memory",b->handle,(unsigned long long)b->size,b->pitch);
   return 0;
  }
  case DRM_IOCTL_PRIME_HANDLE_TO_FD:{

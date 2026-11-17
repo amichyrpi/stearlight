@@ -18,7 +18,12 @@ class VideoQueueTest(unittest.TestCase):
             with self.subTest(shared_memory=shared):
                 self.exercise_transport(shared)
 
-    def exercise_transport(self, shared):
+    def test_vr_keeps_only_latest_completion_without_touching_consumer_buffers(self):
+        for shared in (False, True):
+            with self.subTest(shared_memory=shared):
+                self.exercise_transport(shared, latest=True)
+
+    def exercise_transport(self, shared, latest=False):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             library, executable = folder / 'video.so', folder / 'test'
@@ -90,12 +95,13 @@ class VideoQueueTest(unittest.TestCase):
             worker.start()
             environment = dict(os.environ, LD_PRELOAD=str(library), QUEST_VIDEO_SOCKET=path)
             environment.pop('QUEST_VIDEO_STATEFUL', None)
+            environment['QUEST_VIDEO_LATEST_CAPTURE'] = '1' if latest else '0'
             result = subprocess.run([str(executable)], env=environment, timeout=15, capture_output=True, text=True)
             worker.join(timeout=5)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertFalse(worker.is_alive())
             self.assertFalse(errors, errors)
-            self.assertEqual(sum(payload_bytes), 0 if shared else 10 * 128 * 128 * 3 // 2)
+            self.assertEqual(sum(payload_bytes), 0 if shared else (12 if latest else 10) * 128 * 128 * 3 // 2)
             print(result.stdout.strip())
 
 

@@ -123,7 +123,7 @@ def build_streaming_allocator(linux, quest, work):
         shutil.copyfile(Path("/usr/include") / name, headers / name)
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
         f"-I{headers}", "-I/usr/include/libdrm", linux / "streaming-drm.cpp",
-        "-pthread", "-o", quest / "libquest_streaming_drm.so")
+        "-pthread", "-ldl", "-o", quest / "libquest_streaming_drm.so")
 
 
 def build_mesa(root, work, downloads):

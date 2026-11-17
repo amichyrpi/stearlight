@@ -29,6 +29,12 @@ namespace {
 quest::Headset headset=quest::Headset::Quest2;std::string hmdSerial;
 QuestTracking state{};const QuestTracking* shared=nullptr;
 const QuestMotion* sharedMotion=nullptr;
+const QuestMotion* controllerMotion=nullptr;
+void openControllerMotion(){
+ int fd=open("/run/stearlight/quest/controller-motion",O_RDONLY|O_CLOEXEC);if(fd<0)return;
+ struct stat info{};constexpr size_t bytes=sizeof(QuestMotion)*QUEST_CONTROLLER_MOTION_COUNT;
+ if(!fstat(fd,&info)&&info.st_size==bytes){void* p=mmap(nullptr,bytes,PROT_READ,MAP_SHARED,fd,0);if(p!=MAP_FAILED)controllerMotion=static_cast<QuestMotion*>(p);}close(fd);
+}
 void openMotion(){
  int fd=open("/run/stearlight/quest/tracking-motion",O_RDONLY|O_CLOEXEC);if(fd<0)return;
  struct stat info{};if(!fstat(fd,&info)&&info.st_size==sizeof(QuestMotion)){
@@ -149,7 +155,12 @@ public:
   vr::VRDriverInput()->CreateBooleanComponent(properties,hand?"/input/menu/click":"/input/view/click",&menu);
   const char* paths[]={"/input/a/click","/input/b/click","/input/x/click","/input/y/click","/input/thumbstick/click","/input/system/click","/input/trigger/click"};for(int i=0;i<7;i++)vr::VRDriverInput()->CreateBooleanComponent(properties,paths[i],&clicks[i]);vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/grip/click",&gripClick);vr::VRDriverInput()->CreateBooleanComponent(properties,"/input/trigger/touch",&touch);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/trigger/value",&trigger,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/grip/value",&squeeze,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedOneSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/x",&x,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateScalarComponent(properties,"/input/thumbstick/y",&y,vr::VRScalarType_Absolute,vr::VRScalarUnits_NormalizedTwoSided);vr::VRDriverInput()->CreateHapticComponent(properties,"/output/haptic",&haptic);return vr::VRInitError_None;
  }
- vr::DriverPose_t GetPose()override{return trackedPose(quest::controllerModelPose(state.grip[hand],state.aim[hand],hand));}
+ vr::DriverPose_t GetPose()override{
+  auto model=quest::controllerModelPose(state.grip[hand],state.aim[hand],hand);auto p=trackedPose(model);
+  bool aim=quest::controllerUsesAim(state.grip[hand],state.aim[hand]);
+  auto* motion=controllerMotion?controllerMotion+hand+(aim?2:0):nullptr;
+  quest::controllerModelVelocity(motion,state.predicted_time_ns,aim?state.aim[hand]:state.grip[hand],model,state.session_visible,p.vecVelocity,p.vecAngularVelocity);return p;
+ }
  void frame()override{
   if(index==vr::k_unTrackedDeviceIndexInvalid)return;
   bool nextHand=state.grip[hand].flags?(state.grip[hand].flags&QUEST_POSE_HAND)!=0:handMode;
@@ -245,8 +256,8 @@ class Provider final:public vr::IServerTrackedDeviceProvider {
  bool havePublished=false;uint32_t publishedSequence=0;
  std::chrono::steady_clock::time_point measuredSince=std::chrono::steady_clock::now();
 public:
- vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;openHands();openMotion();headset=quest::readHeadsetProfile();hmdSerial=quest::headsetSerial(headset,"HMD");if(!vr::VRServerDriverHost()->TrackedDeviceAdded(hmdSerial.c_str(),vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
- void Cleanup()override{trackers.shutdown();head.Deactivate();left.Deactivate();right.Deactivate();if(gamepad){quest::publishGamepad(gamepad,QuestGamepadState{});munmap(gamepad,sizeof(*gamepad));gamepad=nullptr;}if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;if(sharedMotion)munmap(const_cast<QuestMotion*>(sharedMotion),sizeof(QuestMotion));sharedMotion=nullptr;if(sharedHands)munmap(const_cast<QuestHands*>(sharedHands),sizeof(QuestHands));sharedHands=nullptr;handState={};VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
+ vr::EVRInitError Init(vr::IVRDriverContext* context)override{VR_INIT_SERVER_DRIVER_CONTEXT(context);int fd=open("/run/stearlight/quest/tracking",O_RDONLY|O_CLOEXEC);if(fd<0)return vr::VRInitError_Driver_Failed;struct stat info{};if(fstat(fd,&info)||info.st_size!=sizeof(QuestTracking)){close(fd);return vr::VRInitError_Driver_Failed;}shared=static_cast<QuestTracking*>(mmap(nullptr,sizeof(QuestTracking),PROT_READ,MAP_SHARED,fd,0));close(fd);if(shared==MAP_FAILED){shared=nullptr;return vr::VRInitError_Driver_Failed;}if(!readTracking()||!state.width||!state.height)return vr::VRInitError_Driver_Failed;openHands();openMotion();openControllerMotion();headset=quest::readHeadsetProfile();hmdSerial=quest::headsetSerial(headset,"HMD");if(!vr::VRServerDriverHost()->TrackedDeviceAdded(hmdSerial.c_str(),vr::TrackedDeviceClass_HMD,&head)||!vr::VRServerDriverHost()->TrackedDeviceAdded(left.serial(),vr::TrackedDeviceClass_Controller,&left)||!vr::VRServerDriverHost()->TrackedDeviceAdded(right.serial(),vr::TrackedDeviceClass_Controller,&right))return vr::VRInitError_Driver_Failed;vr::VRDriverLog()->Log("stearlight-quest: real OpenXR headset/controllers registered");return vr::VRInitError_None;}
+ void Cleanup()override{trackers.shutdown();head.Deactivate();left.Deactivate();right.Deactivate();if(gamepad){quest::publishGamepad(gamepad,QuestGamepadState{});munmap(gamepad,sizeof(*gamepad));gamepad=nullptr;}if(hapticSocket>=0)close(hapticSocket);hapticSocket=-1;if(shared)munmap(const_cast<QuestTracking*>(shared),sizeof(QuestTracking));shared=nullptr;if(sharedMotion)munmap(const_cast<QuestMotion*>(sharedMotion),sizeof(QuestMotion));sharedMotion=nullptr;if(controllerMotion)munmap(const_cast<QuestMotion*>(controllerMotion),sizeof(QuestMotion)*QUEST_CONTROLLER_MOTION_COUNT);controllerMotion=nullptr;if(sharedHands)munmap(const_cast<QuestHands*>(sharedHands),sizeof(QuestHands));sharedHands=nullptr;handState={};VR_CLEANUP_SERVER_DRIVER_CONTEXT();}
  const char* const* GetInterfaceVersions()override{return vr::k_InterfaceVersions;}
  void RunFrame()override{
   ++measuredCalls;
