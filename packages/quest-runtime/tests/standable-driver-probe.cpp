@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #include <openvr_driver.h>
 
 class ProbeContext final:public vr::IVRDriverContext {
@@ -19,7 +20,12 @@ int main(int argc,char **argv) {
     std::setvbuf(stdout,nullptr,_IONBF,0);
     if(argc<2||argc>4){std::fprintf(stderr,"Expected DLL, optional result log and --discover-context\n");return 2;}
     std::puts("Loading Windows driver");
-    HMODULE module=LoadLibraryExA(argv[1],nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
+    DWORD capacity=GetFullPathNameA(argv[1],0,nullptr,nullptr);
+    if(!capacity){std::fprintf(stderr,"Driver path resolution failed: %lu\n",GetLastError());return 3;}
+    std::vector<char> path(capacity);
+    DWORD length=GetFullPathNameA(argv[1],capacity,path.data(),nullptr);
+    if(!length||length>=capacity){std::fprintf(stderr,"Could not resolve the full driver path\n");return 3;}
+    HMODULE module=LoadLibraryExA(path.data(),nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
     if(!module){std::printf("Driver load failed: Windows error %lu\n",GetLastError());return 3;}
     using Factory=void *(__cdecl *)(const char *,int *);
     auto factory=reinterpret_cast<Factory>(GetProcAddress(module,"HmdDriverFactory"));

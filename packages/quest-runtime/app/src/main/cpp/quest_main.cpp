@@ -169,7 +169,7 @@ struct Runtime {
   XrReferenceSpaceCreateInfo reference{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};reference.poseInReferenceSpace=identity();reference.referenceSpaceType=haveStage?XR_REFERENCE_SPACE_TYPE_STAGE:XR_REFERENCE_SPACE_TYPE_LOCAL;XR(xrCreateReferenceSpace(session,&reference,&stage));reference.referenceSpaceType=XR_REFERENCE_SPACE_TYPE_VIEW;XR(xrCreateReferenceSpace(session,&reference,&head));
   actionsSetup();
   handTracking.initialize(instance,system,session,handSupport,handMesh,directory);handRender.initialize(handTracking);
-  multimodal.initialize(instance,system,session,directory,simultaneousExtension,detachedExtension,handTracking.available());
+  multimodal.initialize(instance,system,session,directory,simultaneousExtension&&timeToMonotonic,detachedExtension,handTracking.available());
   multimodal.controllerCompatibility(device!=quest::Headset::Quest2);
   uint32_t viewsCount=0;XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,0,&viewsCount,nullptr));if(viewsCount!=2)throw std::runtime_error("Expected stereo view configuration");
   std::vector<XrViewConfigurationView> views(viewsCount,{XR_TYPE_VIEW_CONFIGURATION_VIEW});XR(xrEnumerateViewConfigurationViews(instance,system,XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO,viewsCount,&viewsCount,views.data()));

@@ -109,17 +109,22 @@ class StandableWindow {
         if(!width||!height)return false;
         int x=std::clamp(int(event.data.mouse.x),0,width-1);
         int y=std::clamp(height-1-int(event.data.mouse.y),0,height-1);
+        Window root=DefaultRootWindow(display),child;
+        int rootX=0,rootY=0;
+        if(!XTranslateCoordinates(display,window,root,x,y,&rootX,&rootY,&child))return false;
         XEvent out{};
         if(event.eventType==vr::VREvent_MouseMove) {
             out.xmotion.type=MotionNotify;out.xmotion.display=display;out.xmotion.window=window;
-            out.xmotion.root=DefaultRootWindow(display);out.xmotion.x=x;out.xmotion.y=y;
+            out.xmotion.root=root;out.xmotion.x=x;out.xmotion.y=y;
+            out.xmotion.x_root=rootX;out.xmotion.y_root=rootY;
             out.xmotion.same_screen=True;
             XSendEvent(display,window,True,PointerMotionMask,&out);
         } else {
             XSetInputFocus(display,window,RevertToParent,CurrentTime);
             out.xbutton.type=event.eventType==vr::VREvent_MouseButtonDown?ButtonPress:ButtonRelease;
-            out.xbutton.display=display;out.xbutton.window=window;out.xbutton.root=DefaultRootWindow(display);
+            out.xbutton.display=display;out.xbutton.window=window;out.xbutton.root=root;
             out.xbutton.x=x;out.xbutton.y=y;out.xbutton.same_screen=True;
+            out.xbutton.x_root=rootX;out.xbutton.y_root=rootY;
             out.xbutton.button=event.data.mouse.button==vr::VRMouseButton_Right?Button3:Button1;
             XSendEvent(display,window,True,out.type==ButtonPress?ButtonPressMask:ButtonReleaseMask,&out);
         }

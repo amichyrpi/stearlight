@@ -448,7 +448,7 @@ def exec_proton(arguments, environment, compat, direct=False):
                 and (direct or (len(command) > 2 and command[1].lower() == r"c:\windows\system32\steam.exe"))):
             if direct:
                 pass  # Driver host uses a prefix already initialized by Steam.
-            elif environment.get("SteamAppId") == "2370570":
+            elif environment.get("SteamAppId", environment.get("STEAM_COMPAT_APP_ID")) == "2370570":
                 prepare_standable_prefix(compat)
                 # Standable already connects to Steam through its normal API.
                 # Avoid a resident Windows steam.exe waiting on its GUI.

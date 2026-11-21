@@ -34,13 +34,14 @@ class StandableProvider final:public vr::IServerTrackedDeviceProvider {
     std::thread worker;
     std::mutex mutex;
     std::condition_variable changed;
-    bool stop=false,pending=false;
+    bool stop=false,pending=false,workerDone=false;
     std::atomic<bool> active{false};
     std::atomic<uint32_t> framePeriod{8333333};
     std::chrono::steady_clock::time_point next{};
     std::chrono::steady_clock::time_point nextFrame{};
 
     void run() {
+        vr::IServerTrackedDeviceProvider *initialized=nullptr;
         try {
             report("starting");
             int error=0;
@@ -48,6 +49,7 @@ class StandableProvider final:public vr::IServerTrackedDeviceProvider {
                 QuestCreateRemoteProvider(vr::IServerTrackedDeviceProvider_Version,&error));
             if(!provider){report("failed: Windows driver host unavailable");return;}
             if(provider->Init(context)!=vr::VRInitError_None){report("failed: driver initialization");return;}
+            initialized=provider;
             active=true;
             report("running: calibration and app authentication are managed by Standable");
             std::chrono::steady_clock::time_point nextRefresh{};
@@ -80,6 +82,13 @@ class StandableProvider final:public vr::IServerTrackedDeviceProvider {
             report("failed: driver communication");
         }
         active=false;
+        if(initialized) {
+            try {
+                initialized->Cleanup();
+            } catch(const std::exception &error) {
+                std::fprintf(stderr,"Standable cleanup RPC failed: %s\n",error.what());
+            }
+        }
     }
 public:
     vr::EVRInitError Init(vr::IVRDriverContext *value) override {
@@ -92,8 +101,13 @@ public:
             std::lock_guard lock(mutex);stop=true;
         }
         changed.notify_all();
-        RpcSystem::CancelPendingCalls();
-        if(worker.joinable())worker.join();
+        if(worker.joinable()) {
+            std::unique_lock lock(mutex);
+            const bool completed=changed.wait_for(lock,std::chrono::seconds(3),[this]{return workerDone;});
+            lock.unlock();
+            if(!completed)RpcSystem::CancelPendingCalls();
+            worker.join();
+        }
         RpcSystem::Shutdown();
         active=false;
         report("stopped");
@@ -108,7 +122,11 @@ public:
             // Wait for the dashboard before adding Wine processes.
             if(std::getenv("STEARLIGHT_STANDABLE_PASSIVE")||access(ready,F_OK))return;
             try {
-                worker=std::thread([this]{run();});
+                worker=std::thread([this]{
+                    run();
+                    {std::lock_guard lock(mutex);workerDone=true;}
+                    changed.notify_all();
+                });
             } catch(const std::exception &) {
                 report("failed: cannot start driver worker");
                 return;

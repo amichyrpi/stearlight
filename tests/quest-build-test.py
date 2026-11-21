@@ -10,12 +10,17 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
+from urllib.error import HTTPError
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('package_apk', ROOT / 'post_process/quest/package-apk.py')
 package = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package)
+payload_spec = importlib.util.spec_from_file_location('prepare_payload', ROOT / 'build_files/quest/prepare-payload.py')
+payload = importlib.util.module_from_spec(payload_spec)
+payload_spec.loader.exec_module(payload)
 
 
 class QuestBuildTest(unittest.TestCase):
@@ -23,6 +28,20 @@ class QuestBuildTest(unittest.TestCase):
         self.folder = tempfile.TemporaryDirectory()
         self.addCleanup(self.folder.cleanup)
         self.root = Path(self.folder.name)
+
+    def test_font_mirror_handles_403_and_checks_hash_before_caching(self):
+        contents = b'pinned font package'
+        record = {'url': 'https://archive.example/font.deb',
+                  'mirrors': ['https://snapshot.example/font.deb'],
+                  'sha256': hashlib.sha256(contents).hexdigest()}
+        denied = HTTPError(record['url'], 403, 'Forbidden', None, None)
+        with patch.object(payload.urllib.request, 'urlopen', side_effect=[denied, io.BytesIO(b'wrong')]):
+            with self.assertRaisesRegex(RuntimeError, 'Checksum mismatch'):
+                payload.fetch(record, self.root)
+        self.assertEqual(list(self.root.iterdir()), [])
+        with patch.object(payload.urllib.request, 'urlopen', side_effect=[denied, io.BytesIO(contents)]):
+            cached = payload.fetch(record, self.root)
+        self.assertEqual(cached.read_bytes(), contents)
 
     def apk(self, omit=None, corrupt=False):
         overlay = io.BytesIO()
