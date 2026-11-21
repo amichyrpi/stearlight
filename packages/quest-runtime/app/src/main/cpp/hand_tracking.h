@@ -49,7 +49,15 @@ public:
  void update(QuestTracking& sample,int hand,bool controller,XrSpace space,XrTime time,bool observe=false){
   auto& h=hands[hand];h.visible=false;
   if(controller&&!observe){input.reset(hand);return;}
-  if(!h.tracker)return;
+  if(!h.tracker){
+   input.reset(hand);
+   if(observe&&!controller){
+    sample.buttons[hand]=sample.touches[hand]=0;
+    sample.trigger[hand]=sample.squeeze[hand]=0;
+    sample.thumbstick[hand][0]=sample.thumbstick[hand][1]=0;
+   }
+   return;
+  }
   h.aim={XR_TYPE_HAND_TRACKING_AIM_STATE_FB};
   XrHandTrackingScaleFB scale{XR_TYPE_HAND_TRACKING_SCALE_FB};scale.overrideHandScale=XR_FALSE;scale.overrideValueInput=1;
   if(getMesh)h.aim.next=&scale;

@@ -165,10 +165,10 @@ index 0000000..db5cd0d
 +}
 diff --git a/projects/common/quest_property_cache.h b/projects/common/quest_property_cache.h
 new file mode 100644
-index 0000000..7a0629f
+index 0000000..8f98f0b
 --- /dev/null
 +++ b/projects/common/quest_property_cache.h
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,86 @@
 +#pragma once
 +#include <openvr_driver.h>
 +#include <array>
@@ -176,6 +176,7 @@ index 0000000..7a0629f
 +#include <cstring>
 +#include <map>
 +#include <mutex>
++#include <optional>
 +#include <utility>
 +#include <vector>
 +
@@ -197,8 +198,9 @@ index 0000000..7a0629f
 +    template<class Forward>
 +    vr::ETrackedPropertyError Write(vr::PropertyContainerHandle_t container,
 +            vr::PropertyWrite_t *batch, uint32_t count, Forward forward,
-+            Clock::time_point now = Clock::now()) {
++            std::optional<Clock::time_point> test_time = std::nullopt) {
 +        std::lock_guard lock(mutex);
++        const auto now = test_time ? *test_time : Clock::now();
 +        const bool eligible = container != vr::k_ulInvalidPropertyContainer &&
 +            count == 1 && batch && batch[0].writeType == vr::PropertyWrite_Set &&
 +            batch[0].unBufferSize > 0 && batch[0].unBufferSize <= 512 && batch[0].pvBuffer;
@@ -241,9 +243,10 @@ index 0000000..7a0629f
 +public:
 +    template<class Forward>
 +    vr::PropertyContainerHandle_t Get(vr::TrackedDeviceIndex_t device, Forward forward,
-+            Clock::time_point now = Clock::now()) {
++            std::optional<Clock::time_point> test_time = std::nullopt) {
 +        if (device >= values.size()) return forward();
 +        std::lock_guard lock(mutex);
++        const auto now = test_time ? *test_time : Clock::now();
 +        auto &value = values[device];
 +        if (value.handle == vr::k_ulInvalidPropertyContainer || now >= value.expires) {
 +            value.handle = forward();
@@ -655,7 +658,7 @@ index fcf1db9..21729be 100644
 + self.pending_calls_.clear();
 +}
 diff --git a/projects/common/rpc_driver_host.cpp b/projects/common/rpc_driver_host.cpp
-index 9476d38..d832bdf 100644
+index 9476d38..533a9e4 100644
 --- a/projects/common/rpc_driver_host.cpp
 +++ b/projects/common/rpc_driver_host.cpp
 @@ -1,6 +1,11 @@
@@ -680,10 +683,10 @@ index 9476d38..d832bdf 100644
 +void QuestFlushTrackedPoses() {
 +    auto *host = quest_host.load(std::memory_order_acquire);
 +    if (!host) return;
-+    const auto now = ignition_bridge_get_linux_ticks();
 +    for (unsigned device = 0; device < vr::k_unMaxTrackedDeviceCount; ++device) {
 +        vr::DriverPose_t pose{}; uint64_t timestamp = 0;
 +        if (!QuestPoses().Read(device, pose, timestamp)) continue;
++        const auto now = ignition_bridge_get_linux_ticks();
 +        // Account for time spent in the queue. Ignore uncalibrated startup QPC.
 +        if (timestamp <= now && now - timestamp < 1000000000ULL)
 +            pose.poseTimeOffset -= static_cast<double>(now - timestamp) * 1e-9;
@@ -729,7 +732,7 @@ index 9476d38..d832bdf 100644
          if (result.isByteArray()) {
              auto data = result.asByteArray();
 diff --git a/projects/common/rpc_interfaces.h b/projects/common/rpc_interfaces.h
-index bfeac07..8f80d2d 100644
+index bfeac07..04f6e4d 100644
 --- a/projects/common/rpc_interfaces.h
 +++ b/projects/common/rpc_interfaces.h
 @@ -1,4 +1,7 @@
@@ -740,7 +743,17 @@ index bfeac07..8f80d2d 100644
  
  #include "rpc_core.h"
  
-@@ -318,6 +321,10 @@ public:
+@@ -58,6 +61,9 @@ public:
+     void LeaveStandby() override;
+ private:
+     vr::IServerTrackedDeviceProvider* real_provider_ = nullptr; // Only valid on the server
++#ifdef IGNITION_QUEST_FILE_BRIDGE
++    std::atomic<bool> initialized_{false};
++#endif
+ 
+     // Client-side storage for interface versions
+     std::vector<std::string> client_versions_storage_;
+@@ -318,6 +324,10 @@ public:
  
  private:
      vr::IVRProperties* real_properties_ = nullptr;
@@ -792,7 +805,7 @@ index 90fbb03..42eb9a3 100644
      else {
          return real_properties_->TrackedDeviceToPropertyContainer(nDevice);
 diff --git a/projects/common/time_sync.cpp b/projects/common/time_sync.cpp
-index 9ebb835..9649942 100644
+index 9ebb835..7eef4da 100644
 --- a/projects/common/time_sync.cpp
 +++ b/projects/common/time_sync.cpp
 @@ -5,12 +5,14 @@
@@ -810,21 +823,26 @@ index 9ebb835..9649942 100644
  std::atomic<uint64_t> TimeSync::qpc_base_{0};
  std::atomic<uint64_t> TimeSync::linux_base_ns_{0};
  std::atomic<uint64_t> TimeSync::qpc_freq_{10000000ULL};
-@@ -38,7 +40,12 @@ void TimeSync::RecalibrateServer() {
+@@ -38,7 +40,17 @@ void TimeSync::RecalibrateServer() {
      for (int i = 0; i < 15; ++i) {
          LARGE_INTEGER qpc1, qpc2;
          QueryPerformanceCounter(&qpc1);
 -        uint64_t linux_ns = ignition_bridge_get_linux_ticks();
 +        uint64_t linux_ns;
 +#ifdef IGNITION_QUEST_FILE_BRIDGE
-+        linux_ns=RpcSystem::CallWithTimeout(RPCFunction_SyncTime,std::chrono::seconds(5)).asUint64();
++        try {
++            linux_ns = RpcSystem::CallWithTimeout(RPCFunction_SyncTime, std::chrono::seconds(5)).asUint64();
++        } catch (const std::exception& error) {
++            std::cerr << "Clock calibration deferred: " << error.what() << std::endl;
++            return;
++        }
 +#else
 +        linux_ns=ignition_bridge_get_linux_ticks();
 +#endif
          QueryPerformanceCounter(&qpc2);
  
          uint64_t diff = static_cast<uint64_t>(qpc2.QuadPart - qpc1.QuadPart);
-@@ -50,15 +57,19 @@ void TimeSync::RecalibrateServer() {
+@@ -50,15 +62,19 @@ void TimeSync::RecalibrateServer() {
      }
  
      if (best_linux > 0 && best_qpc > 0) {
@@ -847,7 +865,7 @@ index 9ebb835..9649942 100644
          if (!args.empty() && args[0].isByteArray()) {
              auto data = args[0].asByteArray();
              if (data.size() >= sizeof(uint64_t) * 3) {
-@@ -74,13 +85,8 @@ void TimeSync::InitializeDriver() {
+@@ -74,13 +90,8 @@ void TimeSync::InitializeDriver() {
  }
  
  void TimeSync::SendSync() {
@@ -863,7 +881,7 @@ index 9ebb835..9649942 100644
  
      try {
          std::vector<char> sync_buf(sizeof(uint64_t) * 3);
-@@ -96,21 +102,30 @@ void TimeSync::SendSync() {
+@@ -96,21 +107,30 @@ void TimeSync::SendSync() {
  
  void TimeSync::SetCalibration(uint64_t qpc_base, uint64_t linux_base_ns, uint64_t qpc_freq) {
      if (qpc_freq == 0) qpc_freq = 10000000ULL;
@@ -938,441 +956,67 @@ index a6f83d2..49115c2 100644
 + target_link_options(driver_ignition PRIVATE "-Wl,-Bsymbolic")
 +endif()
 diff --git a/projects/driver_ignition/driver.cpp b/projects/driver_ignition/driver.cpp
-index b80a42a..52cec1f 100644
+index b80a42a..bbbd2c0 100644
 --- a/projects/driver_ignition/driver.cpp
 +++ b/projects/driver_ignition/driver.cpp
-@@ -1,211 +1,220 @@
--#include "config.h"
--#include "driver.h"
--#include "rpc_interfaces.h"
--#include "time_sync.h"
--
--#include <json.hpp>
--
--#ifdef _WIN32
--#include <windows.h>
--#include <shlwapi.h>
--#pragma comment(lib, "shlwapi.lib")
--#else
--#include <sys/types.h>
--#include <dlfcn.h>
--#include <unistd.h>
--#include <vector>
--#include <signal.h>
--#endif
--
--#ifdef __linux__
--#include <sys/prctl.h>
--#include <linux/limits.h>
--#endif
--
--static RpcServerTrackedDeviceProvider* g_pProviderProxy = nullptr;
--
--void RegisterRPCClasses() {
--    RpcSystem::RegisterRPCClass<RpcServerTrackedDeviceProvider>();
--    RpcSystem::RegisterRPCClass<ClientContextManager>();
--    RpcSystem::RegisterRPCClass<RpcDriverHost>();
--    RpcSystem::RegisterRPCClass<RpcDriverLog>();
--    RpcSystem::RegisterRPCClass<RpcSettings>();
--    RpcSystem::RegisterRPCClass<RpcTrackedDeviceServerDriver>();
--    RpcSystem::RegisterRPCClass<RpcDriverInput>();
--    RpcSystem::RegisterRPCClass<RpcDriverManager>();
--    RpcSystem::RegisterRPCClass<RpcProperties>();
--    RpcSystem::RegisterRPCClass<RpcResources>();
--    RpcSystem::RegisterRPCClass<RpcDisplayComponent>();
--    RpcSystem::RegisterRPCClass<RpcCameraComponent>();
--    RpcSystem::RegisterRPCClass<RpcPaths>();
--    RpcSystem::RegisterRPCClass<RpcBlockQueue>();
--}
--
--std::string GetProcessId()
--{
--#ifdef _WIN32
--    return std::to_string(GetCurrentProcessId());
--#else
--    return std::to_string(getpid());
--#endif
--}
--
--std::string GetConnectionString(const std::string& driver_dll) {
--    std::string pid = GetProcessId();
--    std::string to_hash = driver_dll + "_" + pid;
--    size_t hash = std::hash<std::string>{}(to_hash);
--    
--    std::stringstream ss;
--    ss << std::hex << std::setw(16) << std::setfill('0') << hash;
--    return ss.str();
--}
--
--std::string GetDriverDirectory() {
--#ifdef _WIN32
--    HMODULE hModule = NULL;
--    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
--        (LPCSTR)&HmdDriverFactory,
--        &hModule);
--
--    char path[MAX_PATH];
--    GetModuleFileNameA(hModule, path, sizeof(path));
--    PathRemoveFileSpecA(path);
--    return std::string(path);
--#else
--    Dl_info info;
--    if (dladdr((void*)HmdDriverFactory, &info) != 0)
--    {
--        std::string path = info.dli_fname;
--        return path.substr(0, path.find_last_of("/\\"));
--    }
--
--    // Fallback in case dladdr fails
--    return ".";
--#endif
--}
--
--void LaunchServer(const IgnitionConfig& config, const std::string& config_path, const std::string& connection_str) {
--    std::string driver_dir = GetDriverDirectory();
--
--#ifdef _WIN32
--    STARTUPINFOA si;
--    PROCESS_INFORMATION pi;
--
--    ZeroMemory(&si, sizeof(si));
--    si.cb = sizeof(si);
--    ZeroMemory(&pi, sizeof(pi));
--
--    // Build path with driver_dir and config.server_exe
--    char full_path[MAX_PATH];
--    PathCombineA(full_path, driver_dir.c_str(), config.server_exe.c_str());
--
--    std::string command_line = "\"" + std::string(full_path) + "\" " + connection_str + " \"" + config_path + "\"";
--    std::vector<char> command_line_vec(command_line.begin(), command_line.end());
--    command_line_vec.push_back('\0');
--
--    // Start the child process.
--    if (!CreateProcessA(NULL,  // No module name (use command line)
--        command_line_vec.data(),   // Command line
--        NULL,                // Process handle not inheritable
--        NULL,                 // Thread handle not inheritable
--        FALSE,                   // Set handle inheritance to FALSE
--        CREATE_NO_WINDOW,        // Creation flags
--        NULL,                      // Use parent's environment block
--        driver_dir.c_str(),   // Use driver binary directory
--        &si,                       // Pointer to STARTUPINFO structure
--        &pi)                // Pointer to PROCESS_INFORMATION structure
--        )
--    {
--        std::cerr << "CreateProcess failed (" << GetLastError() << ")" << std::endl;
--        return;
--    }
--
--    // Close process and thread handles.
--    CloseHandle(pi.hProcess);
--    CloseHandle(pi.hThread);
--#else
--    std::string wine_path = config.wine_cmd[0];
--
--    pid_t pid = fork();
--    if (pid == 0) {
--        // We are in the child. Execute the server.
--
--        // First, change working directory to where the target driver is located
--        if (chdir(driver_dir.c_str()) == -1) {
--            std::cerr << "Failed to change working directory" << std::endl;
--            exit(1);
--        }
--        
--        // Execute
--        std::vector<const char*> args;
--        for (const auto& arg : config.wine_cmd) {
--            args.push_back(arg.c_str());
--        }
--        args.push_back(config.server_exe.c_str());
--        args.push_back(connection_str.c_str());
--        args.push_back(config_path.c_str());
--
--        args.push_back(NULL); // Null-terminate the argument list
--
--        int r = execvp(wine_path.c_str(), const_cast<char* const*>(args.data()));
--
--        // If execvp returns, it must have failed.
--        perror("execvp");
--        exit(1);
--    }    
--#endif
--}
--
--HMD_DLL_EXPORT
--void *HmdDriverFactory(const char *pInterfaceName, int *pReturnCode) {
--    // Initialize on first call
--    static bool s_initialized = false;
--
--    if (!s_initialized) {
--        s_initialized = true;
--
--        std::string driver_dir = GetDriverDirectory();
--        std::string config_path = driver_dir + "/ignition.json";
--        IgnitionConfig config;
--        if (!ParseConfig(config_path, config)) {
--            // Error already printed in ParseConfig
--            return nullptr;
--        }
--
--        std::string connection_str = GetConnectionString(config.driver_dll);
--        std::string pipe_name = "ignition_ipc_" + connection_str;
--        RpcSystem::Initialize(pipe_name);
--        RegisterRPCClasses();
--        TimeSync::InitializeDriver();
--
--        // Create IPC, and then launch server (which will connect to the IPC we created)
--        RpcSystem::CreateIPC();
--        LaunchServer(config, config_path, connection_str);
--    }
--
--    if (strcmp(pInterfaceName, vr::IServerTrackedDeviceProvider_Version) == 0) {
--        if (g_pProviderProxy) {
--            if (pReturnCode) *pReturnCode = vr::VRInitError_None;
--            return g_pProviderProxy;
--        }
--
--        try {
--            RpcValue provider_val = RpcSystem::Call(RPCFunction_Get_ServerTrackedDeviceProvider, RpcValue());
--            if (provider_val.isObject()) {
--                 if (pReturnCode) *pReturnCode = vr::VRInitError_None;
--                 g_pProviderProxy = static_cast<RpcServerTrackedDeviceProvider*>(provider_val.asObject());
--                 return g_pProviderProxy;
--            }
--        } catch (const std::exception& e) {
--            // Log this error
--            if (pReturnCode) *pReturnCode = vr::VRInitError_IPC_Failed;
--            return nullptr;
--        }
--    }
--
--    if (pReturnCode) {
--        *pReturnCode = vr::VRInitError_Init_InterfaceNotFound;
--    }
--
--    return nullptr;
--}
-+#include "config.h"
-+#include "driver.h"
-+#include "rpc_interfaces.h"
-+#include "time_sync.h"
-+
-+#include <json.hpp>
-+
-+#ifdef _WIN32
-+#include <windows.h>
-+#include <shlwapi.h>
-+#pragma comment(lib, "shlwapi.lib")
-+#else
-+#include <sys/types.h>
-+#include <dlfcn.h>
-+#include <unistd.h>
-+#include <vector>
-+#include <signal.h>
+@@ -15,6 +15,9 @@
+ #include <unistd.h>
+ #include <vector>
+ #include <signal.h>
++#if defined(IGNITION_QUEST_FILE_BRIDGE)
++extern char** environ;
 +#endif
-+
-+#ifdef __linux__
-+#include <sys/prctl.h>
-+#include <linux/limits.h>
-+#endif
-+
-+static RpcServerTrackedDeviceProvider* g_pProviderProxy = nullptr;
-+
-+void RegisterRPCClasses() {
-+    RpcSystem::RegisterRPCClass<RpcServerTrackedDeviceProvider>();
-+    RpcSystem::RegisterRPCClass<ClientContextManager>();
-+    RpcSystem::RegisterRPCClass<RpcDriverHost>();
-+    RpcSystem::RegisterRPCClass<RpcDriverLog>();
-+    RpcSystem::RegisterRPCClass<RpcSettings>();
-+    RpcSystem::RegisterRPCClass<RpcTrackedDeviceServerDriver>();
-+    RpcSystem::RegisterRPCClass<RpcDriverInput>();
-+    RpcSystem::RegisterRPCClass<RpcDriverManager>();
-+    RpcSystem::RegisterRPCClass<RpcProperties>();
-+    RpcSystem::RegisterRPCClass<RpcResources>();
-+    RpcSystem::RegisterRPCClass<RpcDisplayComponent>();
-+    RpcSystem::RegisterRPCClass<RpcCameraComponent>();
-+    RpcSystem::RegisterRPCClass<RpcPaths>();
-+    RpcSystem::RegisterRPCClass<RpcBlockQueue>();
-+}
-+
-+std::string GetProcessId()
-+{
-+#ifdef _WIN32
-+    return std::to_string(GetCurrentProcessId());
-+#else
-+    return std::to_string(getpid());
-+#endif
-+}
-+
-+std::string GetConnectionString(const std::string& driver_dll) {
-+    std::string pid = GetProcessId();
-+    std::string to_hash = driver_dll + "_" + pid;
-+    size_t hash = std::hash<std::string>{}(to_hash);
-+    
-+    std::stringstream ss;
-+    ss << std::hex << std::setw(16) << std::setfill('0') << hash;
-+    return ss.str();
-+}
-+
-+std::string GetDriverDirectory() {
-+#ifdef _WIN32
-+    HMODULE hModule = NULL;
-+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-+        (LPCSTR)&HmdDriverFactory,
-+        &hModule);
-+
-+    char path[MAX_PATH];
-+    GetModuleFileNameA(hModule, path, sizeof(path));
-+    PathRemoveFileSpecA(path);
-+    return std::string(path);
-+#else
-+    Dl_info info;
-+    if (dladdr((void*)HmdDriverFactory, &info) != 0)
-+    {
-+        std::string path = info.dli_fname;
-+        return path.substr(0, path.find_last_of("/\\"));
-+    }
-+
-+    // Fallback in case dladdr fails
-+    return ".";
-+#endif
-+}
-+
-+void LaunchServer(const IgnitionConfig& config, const std::string& config_path, const std::string& connection_str) {
-+    std::string driver_dir = GetDriverDirectory();
-+
-+#ifdef _WIN32
-+    STARTUPINFOA si;
-+    PROCESS_INFORMATION pi;
-+
-+    ZeroMemory(&si, sizeof(si));
-+    si.cb = sizeof(si);
-+    ZeroMemory(&pi, sizeof(pi));
-+
-+    // Build path with driver_dir and config.server_exe
-+    char full_path[MAX_PATH];
-+    PathCombineA(full_path, driver_dir.c_str(), config.server_exe.c_str());
-+
-+    std::string command_line = "\"" + std::string(full_path) + "\" " + connection_str + " \"" + config_path + "\"";
-+    std::vector<char> command_line_vec(command_line.begin(), command_line.end());
-+    command_line_vec.push_back('\0');
-+
-+    // Start the child process.
-+    if (!CreateProcessA(NULL,  // No module name (use command line)
-+        command_line_vec.data(),   // Command line
-+        NULL,                // Process handle not inheritable
-+        NULL,                 // Thread handle not inheritable
-+        FALSE,                   // Set handle inheritance to FALSE
-+        CREATE_NO_WINDOW,        // Creation flags
-+        NULL,                      // Use parent's environment block
-+        driver_dir.c_str(),   // Use driver binary directory
-+        &si,                       // Pointer to STARTUPINFO structure
-+        &pi)                // Pointer to PROCESS_INFORMATION structure
-+        )
-+    {
-+        std::cerr << "CreateProcess failed (" << GetLastError() << ")" << std::endl;
-+        return;
-+    }
-+
-+    // Close process and thread handles.
-+    CloseHandle(pi.hProcess);
-+    CloseHandle(pi.hThread);
-+#else
-+    std::string wine_path = config.wine_cmd[0];
-+
-+    pid_t pid = fork();
-+    if (pid == 0) {
+ #endif
+ 
+ #ifdef __linux__
+@@ -126,6 +129,31 @@ void LaunchServer(const IgnitionConfig& config, const std::string& config_path,
+ #else
+     std::string wine_path = config.wine_cmd[0];
+ 
 +#ifdef IGNITION_QUEST_FILE_BRIDGE
-+        // The server launcher is an Alpine executable; do not leak the
-+        // SteamVR glibc loader/preloads across that process boundary.
-+        unsetenv("LD_LIBRARY_PATH");unsetenv("LD_PRELOAD");
++    // Assemble the Alpine launch environment in the parent. The Quest launcher
++    // is an absolute path supplied by prepare-standable.py.
++    std::vector<const char*> args;
++    for (const auto& arg : config.wine_cmd) args.push_back(arg.c_str());
++    args.insert(args.end(), {config.server_exe.c_str(), connection_str.c_str(), config_path.c_str(), nullptr});
++    std::vector<std::string> environment;
++    for (char** entry = environ; *entry; ++entry) {
++        if (strncmp(*entry, "LD_LIBRARY_PATH=", 16) && strncmp(*entry, "LD_PRELOAD=", 11))
++            environment.emplace_back(*entry);
++    }
++    std::vector<char*> env;
++    for (auto& entry : environment) env.push_back(entry.data());
++    env.push_back(nullptr);
++    char* const* argv = const_cast<char* const*>(args.data());
++    char* const* envp = env.data();
++    const char* directory = driver_dir.c_str();
++    const char* executable = wine_path.c_str();
++    const pid_t pid = fork();
++    if (pid == 0) {
++        if (chdir(directory) == 0) execve(executable, argv, envp);
++        _exit(127);
++    }
++    if (pid < 0) perror("Could not fork Standable host");
++#else
+     pid_t pid = fork();
+     if (pid == 0) {
+         // We are in the child. Execute the server.
+@@ -154,10 +182,15 @@ void LaunchServer(const IgnitionConfig& config, const std::string& config_path,
+         exit(1);
+     }    
+ #endif
 +#endif
-+        // We are in the child. Execute the server.
-+
-+        // First, change working directory to where the target driver is located
-+        if (chdir(driver_dir.c_str()) == -1) {
-+            std::cerr << "Failed to change working directory" << std::endl;
-+            exit(1);
-+        }
-+        
-+        // Execute
-+        std::vector<const char*> args;
-+        for (const auto& arg : config.wine_cmd) {
-+            args.push_back(arg.c_str());
-+        }
-+        args.push_back(config.server_exe.c_str());
-+        args.push_back(connection_str.c_str());
-+        args.push_back(config_path.c_str());
-+
-+        args.push_back(NULL); // Null-terminate the argument list
-+
-+        int r = execvp(wine_path.c_str(), const_cast<char* const*>(args.data()));
-+
-+        // If execvp returns, it must have failed.
-+        perror("execvp");
-+        exit(1);
-+    }    
-+#endif
-+}
-+
+ }
+ 
 +#ifdef IGNITION_QUEST_LAZY_START
 +void *QuestCreateRemoteProvider(const char *pInterfaceName, int *pReturnCode) {
 +#else
-+HMD_DLL_EXPORT
-+void *HmdDriverFactory(const char *pInterfaceName, int *pReturnCode) {
+ HMD_DLL_EXPORT
+ void *HmdDriverFactory(const char *pInterfaceName, int *pReturnCode) {
 +#endif
-+    // Initialize on first call
-+    static bool s_initialized = false;
-+
-+    if (!s_initialized) {
-+        s_initialized = true;
-+
-+        std::string driver_dir = GetDriverDirectory();
-+        std::string config_path = driver_dir + "/ignition.json";
-+        IgnitionConfig config;
-+        if (!ParseConfig(config_path, config)) {
-+            // Error already printed in ParseConfig
-+            return nullptr;
-+        }
-+
-+        std::string connection_str = GetConnectionString(config.driver_dll);
-+        std::string pipe_name = "ignition_ipc_" + connection_str;
-+        RpcSystem::Initialize(pipe_name);
-+        RegisterRPCClasses();
-+        TimeSync::InitializeDriver();
-+
-+        // Create IPC, and then launch server (which will connect to the IPC we created)
-+        RpcSystem::CreateIPC();
-+        LaunchServer(config, config_path, connection_str);
-+    }
-+
-+    if (strcmp(pInterfaceName, vr::IServerTrackedDeviceProvider_Version) == 0) {
-+        if (g_pProviderProxy) {
-+            if (pReturnCode) *pReturnCode = vr::VRInitError_None;
-+            return g_pProviderProxy;
-+        }
-+
-+        try {
-+            RpcValue provider_val = RpcSystem::Call(RPCFunction_Get_ServerTrackedDeviceProvider, RpcValue());
-+            if (provider_val.isObject()) {
-+                 if (pReturnCode) *pReturnCode = vr::VRInitError_None;
-+                 g_pProviderProxy = static_cast<RpcServerTrackedDeviceProvider*>(provider_val.asObject());
-+                 return g_pProviderProxy;
-+            }
-+        } catch (const std::exception& e) {
-+            // Log this error
-+            if (pReturnCode) *pReturnCode = vr::VRInitError_IPC_Failed;
-+            return nullptr;
-+        }
-+    }
-+
-+    if (pReturnCode) {
-+        *pReturnCode = vr::VRInitError_Init_InterfaceNotFound;
-+    }
-+
-+    return nullptr;
-+}
+     // Initialize on first call
+     static bool s_initialized = false;
+ 
 diff --git a/projects/ignition_bridge/CMakeLists.txt b/projects/ignition_bridge/CMakeLists.txt
 index 3a503ed..a938bd1 100644
 --- a/projects/ignition_bridge/CMakeLists.txt
@@ -1636,14 +1280,20 @@ index 640dbee..aa980d9 100644
 \ No newline at end of file
 +}
 diff --git a/projects/ignition_server/main.cpp b/projects/ignition_server/main.cpp
-index ee6c9ca..8deb363 100644
+index ee6c9ca..532bff4 100644
 --- a/projects/ignition_server/main.cpp
 +++ b/projects/ignition_server/main.cpp
-@@ -17,2 +17,3 @@
+@@ -15,6 +15,7 @@
+ #include <combaseapi.h>
+ #include <shlwapi.h>
  #include <windows.h>
 +#include <tlhelp32.h>
  #else
-@@ -26,2 +27,27 @@ RpcServerTrackedDeviceProvider* g_pRpcProvider = nullptr;
+ #include <dlfcn.h>
+ #endif
+@@ -24,6 +25,31 @@ void *(*pfnHmdDriverFactory)(const char *pInterfaceName, int *pReturnCode) = nul
+ // Global pointer to the provider so we can register it.
+ RpcServerTrackedDeviceProvider* g_pRpcProvider = nullptr;
  
 +#if defined(_WIN32) && defined(IGNITION_QUEST_FILE_BRIDGE)
 +static void ReleaseIdleDeviceHosts() {
@@ -1671,7 +1321,11 @@ index ee6c9ca..8deb363 100644
 +#endif
 +
  void RegisterRPCClasses() {
-@@ -44,2 +70,8 @@ void RegisterRPCClasses() {
+     RpcSystem::RegisterRPCClass<RpcServerTrackedDeviceProvider>();
+     RpcSystem::RegisterRPCClass<ClientContextManager>();
+@@ -42,6 +68,12 @@ void RegisterRPCClasses() {
+ }
+ 
  int main(int argc, char *argv[]) {
 +#ifdef IGNITION_QUEST_FILE_BRIDGE
 +    if(const char *path=getenv("STEARLIGHT_IGNITION_LOG")) {
@@ -1680,7 +1334,11 @@ index ee6c9ca..8deb363 100644
 +    }
 +#endif
      std::cout << "Ignition server starting..." << std::endl;
-@@ -64,2 +96,17 @@ int main(int argc, char *argv[]) {
+ 
+     if (argc < 3) {
+@@ -62,6 +94,21 @@ int main(int argc, char *argv[]) {
+         // We are running in wine, so translate the unix path to a windows path.
+         config_path = WineGetDosFileName(config_path);
      }
 +#ifdef IGNITION_QUEST_FILE_BRIDGE
 +    // The normal Proton steam.exe wrapper initializes VR metadata. Quest
@@ -1698,14 +1356,74 @@ index ee6c9ca..8deb363 100644
 +    ReleaseIdleDeviceHosts();
 +#endif
  #endif
-@@ -177,2 +224,5 @@ int main(int argc, char *argv[]) {
+     
+     // Read config to find the driver DLL
+@@ -164,7 +211,19 @@ int main(int argc, char *argv[]) {
+     }
+ 
+     std::cout << "Client disconnected, shutting down." << std::endl;
++#ifdef IGNITION_QUEST_FILE_BRIDGE
++    RpcSystem::CancelPendingCalls();
++#endif
+     RpcSystem::Shutdown();
++#ifdef IGNITION_QUEST_FILE_BRIDGE
++    // The client can disappear while RunFrame is still in flight. Join the RPC
++    // workers before attempting the last cleanup, which is idempotent.
++    try {
++        g_pRpcProvider->Cleanup();
++    } catch (const std::exception& error) {
++        std::cerr << "Driver cleanup after disconnect failed: " << error.what() << std::endl;
++    }
++#endif
+ 
+     delete g_pRpcProvider;
+ 
+@@ -175,6 +234,9 @@ int main(int argc, char *argv[]) {
+ #endif
+ 
  #ifdef _WIN32
 +#ifdef IGNITION_QUEST_FILE_BRIDGE
 +    if (proton_client) FreeLibrary(proton_client);
 +#endif
      CoUninitialize();
-@@ -190,2 +240,2 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmd
+ #endif
+ 
+@@ -188,4 +250,4 @@ int main(int argc, char *argv[]) {
+ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hInstPrev, PSTR cmdline, int cmdshow) {
+     return main(__argc, __argv);
  }
 -#endif
 \ No newline at end of file
 +#endif
+diff --git a/projects/common/rpc_server_tracked_device_provider.cpp b/projects/common/rpc_server_tracked_device_provider.cpp
+index 63ec9b6..9db3ce6 100644
+--- a/projects/common/rpc_server_tracked_device_provider.cpp
++++ b/projects/common/rpc_server_tracked_device_provider.cpp
+@@ -75,15 +75,26 @@ vr::EVRInitError RpcServerTrackedDeviceProvider::Init(vr::IVRDriverContext *pDri
+         return (vr::EVRInitError)result.asInt();
+     }
+     else {
+-        return real_provider_->Init(pDriverContext);
++        auto result = real_provider_->Init(pDriverContext);
++#ifdef IGNITION_QUEST_FILE_BRIDGE
++        initialized_.store(result == vr::VRInitError_None);
++#endif
++        return result;
+     }
+ }
+ 
+ void RpcServerTrackedDeviceProvider::Cleanup() {
+     if (IsProxy()) {
++#ifdef IGNITION_QUEST_FILE_BRIDGE
++        RpcSystem::CallMethodWithTimeout(GetId(), RPCFunction_ServerTrackedDeviceProvider_Cleanup, std::chrono::seconds(2));
++#else
+         RpcSystem::CallMethod(GetId(), RPCFunction_ServerTrackedDeviceProvider_Cleanup);
++#endif
+     }
+     else {
++#ifdef IGNITION_QUEST_FILE_BRIDGE
++        if (!initialized_.exchange(false)) return;
++#endif
+         real_provider_->Cleanup();
+     }
+ }

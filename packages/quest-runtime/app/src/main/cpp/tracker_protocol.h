@@ -27,7 +27,8 @@ inline bool questReadTrackers(const QuestTrackers* shared,QuestTrackers& sample)
  for(int retry=0;retry<8;retry++){
   uint32_t before=__atomic_load_n(&shared->sequence,__ATOMIC_ACQUIRE);if(before&1)continue;
   memcpy(&sample,shared,sizeof(sample));
-  if(before==__atomic_load_n(&shared->sequence,__ATOMIC_ACQUIRE))return sample.magic==0x53515431&&sample.version==1;
+  __atomic_thread_fence(__ATOMIC_ACQUIRE);
+  if(before==__atomic_load_n(&shared->sequence,__ATOMIC_RELAXED))return sample.magic==0x53515431&&sample.version==1;
  }
  return false;
 }

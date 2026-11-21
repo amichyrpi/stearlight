@@ -51,7 +51,7 @@ def main():
         if "HmdDriverFactory" not in symbols or any(name in symbols for name in (
                 "VRDriverContext", "VRServerDriverHost", "OpenVRInternal_ModuleContext")):
             raise RuntimeError("Driver exports must isolate the OpenVR context")
-        shutil.copyfile(build / "Linux/bin/standable_ipc", output / "standable-ipc-arm64")
+        shutil.copy(build / "Linux/bin/standable_ipc", output / "standable-ipc-arm64")
         run("aarch64-linux-gnu-g++", "-O2", "-Wall", "-Wextra", "-Werror", "-isystem",
             source / "externals/openvr", tests / "standable-native-probe.cpp", "-ldl",
             "-o", output / "standable-native-probe")

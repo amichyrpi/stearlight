@@ -77,7 +77,8 @@ public:
   }
   d<PFN_vkDestroyBuffer>("vkDestroyBuffer")(device,buffer,nullptr);
   if(memory)d<PFN_vkFreeMemory>("vkFreeMemory")(device,memory,nullptr);
-  struct stat data{};if(fd>=0&&(fstat(fd,&data)||data.st_size<0||uint64_t(data.st_size)<bytes)){close(fd);fd=-1;}
+  const off_t size=fd>=0?lseek(fd,0,SEEK_END):-1;
+  if(fd>=0&&(size<0||uint64_t(size)<bytes||lseek(fd,0,SEEK_SET)<0)){close(fd);fd=-1;}
   return fd;
  }
 };

@@ -9,7 +9,8 @@ A short haptic pulse confirms a saved change. A longer, faint pulse means the
 runtime rejected the request or the setting could not be saved. The preference
 survives app and headset restarts; Stearlight reapplies it to each OpenXR session.
 
-The runtime must advertise and accept `XR_META_simultaneous_hands_and_controllers`.
+The runtime must advertise and accept `XR_META_simultaneous_hands_and_controllers`
+and provide `XR_KHR_convert_timespec_time` so the driver can check pose age.
 Unsupported runtimes retain their normal input behavior. While this mode is active,
 hands supply the controller inputs and physical controllers supply tracker poses.
 Touch buttons do not also operate the hand controllers. Pick up

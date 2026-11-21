@@ -39,12 +39,24 @@ def fetch(spec, downloads):
     target = downloads / (spec["sha256"][:16] + "-" + spec["url"].rsplit("/", 1)[1])
     if not target.exists():
         temporary = target.with_suffix(target.suffix + ".partial")
-        with urllib.request.urlopen(spec["url"], timeout=90) as source, temporary.open("wb") as out:
-            shutil.copyfileobj(source, out)
-        with temporary.open("rb") as stream:
-            if hashlib.file_digest(stream, "sha256").hexdigest() != spec["sha256"]:
-                raise RuntimeError(f"Checksum mismatch: {spec['url']}")
-        temporary.replace(target)
+        urls = [spec["url"], *spec.get("mirrors", [])]
+        try:
+            for index, url in enumerate(urls):
+                try:
+                    with urllib.request.urlopen(url, timeout=90) as source, temporary.open("wb") as out:
+                        shutil.copyfileobj(source, out)
+                except OSError as error:
+                    if index == len(urls) - 1:
+                        raise RuntimeError(f"Could not download {url}: {error}") from error
+                    print(f"Download failed for {url}: {error}; trying mirror", file=sys.stderr)
+                    continue
+                with temporary.open("rb") as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != spec["sha256"]:
+                        raise RuntimeError(f"Checksum mismatch: {url}")
+                temporary.replace(target)
+                break
+        finally:
+            temporary.unlink(missing_ok=True)
     with target.open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != spec["sha256"]:
             raise RuntimeError(f"Cached dependency checksum mismatch: {target}")
@@ -445,14 +457,20 @@ def main():
         shutil.copyfile(linux / name, quest / name)
     # Optional separately built bridge. Proprietary Standable assets remain
     # installed by Steam; a private SDK dependency can be supplied explicitly.
+    destination = quest / "standable"
+    names = ("driver_standable.so", "ignition_server.exe", "ignition_bridge.dll", "Ignition-LICENSE.txt")
     if os.environ.get("STEARLIGHT_STANDABLE_BRIDGE"):
         source = Path(os.environ["STEARLIGHT_STANDABLE_BRIDGE"])
-        destination = quest / "standable"
         destination.mkdir(parents=True, exist_ok=True)
-        for name in ("driver_standable.so", "ignition_server.exe", "ignition_bridge.dll", "Ignition-LICENSE.txt"):
+        for name in names:
             shutil.copyfile(source / name, destination / name)
         if os.environ.get("STEARLIGHT_STANDABLE_STEAM_API64"):
             shutil.copyfile(os.environ["STEARLIGHT_STANDABLE_STEAM_API64"], destination / "steam_api64.dll")
+        else:
+            (destination / "steam_api64.dll").unlink(missing_ok=True)
+    else:
+        for name in (*names, "steam_api64.dll"):
+            (destination / name).unlink(missing_ok=True)
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
