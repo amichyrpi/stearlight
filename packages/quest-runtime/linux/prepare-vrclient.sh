@@ -4,6 +4,22 @@ set -eu
 binary=${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}/bin/linuxarm64/vrclient.so
 current=$(sha256sum "$binary" | cut -d ' ' -f 1)
 case "$current" in
+    e25ae6c21d398a8f047439c98a756013f289f48f65199eaaf3b1f17b510e09e6) exit 0 ;;
+    17a39eb970487dcd26ca90ca06de54d8acf02213ed1ddf967e2cc37dc8bb5158)
+        temporary="$binary.quest-cleanup"
+        trap 'rm -f "$temporary"' EXIT
+        cp -p "$binary" "$temporary"
+        # Frame OS 0.5.10 retains both null dereferences. Skip to the
+        # existing iterator increment only when the shared entry is null.
+        printf %s f8gWFA== | base64 -d | dd of="$temporary" bs=1 seek=2136900 conv=notrunc 2>/dev/null
+        printf %s QgAAtaI36RdADEC5fzfpFw== | base64 -d | dd of="$temporary" bs=1 seek=8109376 conv=notrunc 2>/dev/null
+        printf %s IsgWFA== | base64 -d | dd of="$temporary" bs=1 seek=2137288 conv=notrunc 2>/dev/null
+        printf %s QgAAtf436RdADEC53DfpFw== | base64 -d | dd of="$temporary" bs=1 seek=8109392 conv=notrunc 2>/dev/null
+        printf %s YL17AAAAAABgvXsAAAAAAA== | base64 -d | dd of="$temporary" bs=1 seek=96 conv=notrunc 2>/dev/null
+        [ "$(sha256sum "$temporary" | cut -d ' ' -f 1)" = e25ae6c21d398a8f047439c98a756013f289f48f65199eaaf3b1f17b510e09e6 ] || exit 1
+        mv "$temporary" "$binary"
+        echo 'STEARLIGHT QUEST BROWSER TEXTURE CLEANUP GUARD READY'
+        exit 0 ;;
     4861da7be5595d15631d608d7db993b67601a0a85556d653e514a2e25fc06381) exit 0 ;;
     7d349879aca7d51d0c100d9e00d9a324cf840ce0228f21f5379545d660da353e)
         temporary="$binary.quest-cleanup"

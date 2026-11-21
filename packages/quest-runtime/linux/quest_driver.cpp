@@ -64,13 +64,19 @@ public:
  virtual void frame()=0;
 };
 class Headset final:public Device,public vr::IVRDisplayComponent {
+ // SteamVR 2.19's Frame settings use this HMD capability to expose the
+ // per-application haptics switch and strength slider. SteamVR owns the
+ // settings and supplies the resulting amplitude in its haptic events.
+ static constexpr auto supportsHapticsSettings = static_cast<vr::ETrackedDeviceProperty>(2136);
  vr::VRInputComponentHandle_t proximity=0;std::chrono::steady_clock::time_point lastBattery{};int lastBatteryPercent=-2;bool lastCharging=false;
  bool haveProximity=false,lastProximity=false,haveEyes=false,haveProjection=false,havePlaySpace=false;float lastRate=0,lastIpd=-1;vr::HmdMatrix34_t lastEyes[2]{};float lastFov[2][4]{};
 public:
  vr::EVRInitError Activate(uint32_t id)override{
   haveProximity=haveEyes=haveProjection=false;lastRate=0;lastIpd=-1;lastBattery={};lastBatteryPercent=-2;
   havePlaySpace=false;
-  base(id,hmdSerial.c_str(),quest::headsetName(headset));auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,(std::string("stearlight-quest/")+quest::headsetId(headset)).c_str());p->SetInt32Property(properties,vr::Prop_HmdTrackingStyle_Int32,vr::HmdTrackingStyle_InsideOutCameras);p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);frame();return vr::VRInitError_None;
+  base(id,hmdSerial.c_str(),quest::headsetName(headset));auto* p=vr::VRProperties();bool camera=access("/run/stearlight/quest/passthrough.supported",F_OK)==0;p->SetBoolProperty(properties,vr::Prop_Hmd_SupportsRoomViewDirect_Bool,camera);p->SetBoolProperty(properties,vr::Prop_HasCamera_Bool,camera);p->SetInt32Property(properties,vr::Prop_NumCameras_Int32,camera?1:0);p->SetStringProperty(properties,vr::Prop_RenderModelName_String,"generic_hmd");p->SetStringProperty(properties,vr::Prop_ResourceRoot_String,"stearlight-quest");p->SetStringProperty(properties,vr::Prop_AdditionalDeviceSettingsPath_String,"{stearlight-quest}/frame_hmd_additional.vrsettings");p->SetStringProperty(properties,vr::Prop_RegisteredDeviceType_String,(std::string("stearlight-quest/")+quest::headsetId(headset)).c_str());p->SetInt32Property(properties,vr::Prop_HmdTrackingStyle_Int32,vr::HmdTrackingStyle_InsideOutCameras);p->SetFloatProperty(properties,vr::Prop_DisplayFrequency_Float,state.refresh_hz);p->SetFloatProperty(properties,vr::Prop_SecondsFromVsyncToPhotons_Float,0);p->SetBoolProperty(properties,vr::Prop_IsOnDesktop_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDisplayComponent_Bool,true);p->SetBoolProperty(properties,vr::Prop_HasDriverDirectModeComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_HasVirtualDisplayComponent_Bool,false);p->SetBoolProperty(properties,vr::Prop_ContainsProximitySensor_Bool,true);p->SetInt32Property(properties,vr::Prop_ExpectedControllerCount_Int32,2);vr::VRDriverInput()->CreateBooleanComponent(properties,"/proximity",&proximity);
+  p->SetBoolProperty(properties,supportsHapticsSettings,true);
+  frame();return vr::VRInitError_None;
  }
  void* GetComponent(const char* version)override{return version&&!strcmp(version,vr::IVRDisplayComponent_Version)?static_cast<vr::IVRDisplayComponent*>(this):nullptr;}
  void GetWindowBounds(int32_t* x,int32_t* y,uint32_t* w,uint32_t* h)override{*x=*y=0;*w=state.width*2;*h=state.height;}
@@ -298,12 +304,32 @@ public:
    const auto& vibration=event.data.hapticVibration;
    int hand=left.acceptsHaptic(vibration)?0:right.acceptsHaptic(vibration)?1:-1;
    if(hand<0)continue;
-   if(hapticSocket<0)hapticSocket=socket(AF_UNIX,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);
-   if(hapticSocket<0)continue;
-   sockaddr_un address{};address.sun_family=AF_UNIX;
-   strcpy(address.sun_path,"/run/stearlight/quest/haptics.sock");
+   if(hapticSocket<0){
+    hapticSocket=socket(AF_UNIX,SOCK_DGRAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);
+    if(hapticSocket<0)continue;
+    // PRoot translates the guest socket path in connect(). A destination
+    // passed directly to sendto() never reaches Android's haptics bridge.
+    sockaddr_un address{};
+    address.sun_family=AF_UNIX;
+    strcpy(address.sun_path,"/run/stearlight/quest/haptics.sock");
+    if(connect(hapticSocket,reinterpret_cast<sockaddr*>(&address),sizeof(address))<0){
+     close(hapticSocket);
+     hapticSocket=-1;
+     continue;
+    }
+   }
    QuestHaptic packet{QUEST_BRIDGE_MAGIC,static_cast<uint32_t>(hand),vibration.fDurationSeconds,vibration.fFrequency,vibration.fAmplitude};
-   sendto(hapticSocket,&packet,sizeof(packet),MSG_NOSIGNAL,reinterpret_cast<sockaddr*>(&address),sizeof(address));
+   // SteamVR emits zero-duration overlay ticks with positive amplitude.
+   // Give those ticks a short Touch pulse at the runtime's default frequency.
+   // Zero-amplitude stops and timed haptics keep their original parameters.
+   if(packet.duration_seconds==0.f&&packet.amplitude>0.f){
+    packet.duration_seconds=.020f;
+    packet.frequency=0.f;
+   }
+   if(send(hapticSocket,&packet,sizeof(packet),MSG_NOSIGNAL)<0){
+    close(hapticSocket);
+    hapticSocket=-1;
+   }
   }
  }
  bool ShouldBlockStandbyMode()override{return false;}void EnterStandby()override{}void LeaveStandby()override{}

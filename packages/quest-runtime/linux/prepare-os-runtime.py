@@ -15,6 +15,10 @@ if patterns[0] not in data:
     patterns = [b'o&&ne.JJ.isTheaterMode&&r.createElement(s.B4o',
                 b'o&&c.H.m_bShowFloor&&(l||ne.JJ.isTheaterMode)&&r.createElement(s.B4o',
                 b'o&&c.H.m_bShowFloorFar&&!ne.JJ.isTheaterMode&&!l&&r.createElement(s.B4o']
+# Frame 0.5.10 no longer gates the near floor on theater mode.
+near_floor = b'r&&c.H.m_bShowFloor&&n.createElement(s.B4o'
+if near_floor in data and patterns[0].startswith(b'r&&'):
+    patterns[1] = near_floor
 for pattern in patterns:
     if data.count(pattern) != 1:
         raise ValueError('Quest room-view adapter does not match this SteamVR version')

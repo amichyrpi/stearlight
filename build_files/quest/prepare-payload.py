@@ -271,6 +271,9 @@ def roomview_system_ui(native):
         floors = [b'r&&de.JJ.isTheaterMode&&n.createElement(s.B4o',
                   b'r&&c.H.m_bShowFloor&&(l||de.JJ.isTheaterMode)&&n.createElement(s.B4o',
                   b'r&&c.H.m_bShowFloorFar&&!de.JJ.isTheaterMode&&!l&&n.createElement(s.B4o']
+    near_floor = b'r&&c.H.m_bShowFloor&&n.createElement(s.B4o'
+    if near_floor in native and floors[0].startswith(b'r&&'):
+        floors[1] = near_floor
     if any(native.count(condition) != 1 for condition in floors):
         raise RuntimeError("Quest room-view adapter does not match this SteamVR construct")
     for condition in floors:
