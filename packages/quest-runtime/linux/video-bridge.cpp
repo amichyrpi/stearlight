@@ -1,5 +1,6 @@
 #include "video_protocol.h"
 #include "video_sequence.h"
+#include "streaming_identity.h"
 #include <linux/videodev2.h>
 #include <linux/version.h>
 #include <linux/dma-buf.h>
@@ -33,7 +34,7 @@ namespace {
 template<class T>T next(const char* name){return reinterpret_cast<T>(dlsym(RTLD_NEXT,name));}
 int rawClose(int fd){static auto fn=next<int(*)(int)>("close");return fn(fd);}
 constexpr unsigned Slots=16,InputSize=QUEST_VIDEO_MAX_PACKET;
-struct Packet {unsigned index;timeval stamp;std::vector<unsigned char> data;};
+struct Packet {unsigned index;timeval stamp;std::vector<unsigned char> data;std::chrono::steady_clock::time_point queuedAt=std::chrono::steady_clock::now();};
 struct Capture {
  bool queued=false,ready=false;unsigned fd=0,length=0,offset=0,sequence=0;timeval stamp{};
  void* mapping=MAP_FAILED;unsigned mappedLength=0;dev_t device=0;ino_t inode=0;
@@ -42,13 +43,14 @@ struct Capture {
 };
 struct Device {
  int fd,socket=-1;unsigned width=1280,height=720,stride=1280,codec=4,count=Slots;
- bool stateful=false,sourceKnown=false,sourceChange=false;int signalFd=-1;
+ bool latestCapture=false,stateful=false,sourceKnown=false,sourceChange=false;int signalFd=-1;
  bool outputOn=false,captureOn=false,stopping=false,failed=false;unsigned sequence=0;
  std::mutex mutex;std::condition_variable wake;std::thread worker;
  std::deque<Packet> packets;std::deque<unsigned> completed;std::map<uint64_t,timeval> pending;
  Capture capture[Slots];
+ double queuedMs=0,serviceMs=0,copyMs=0;unsigned submissions=0,requests=0,copies=0;size_t peakPackets=0;
  int frameFd=-1;void* frameMemory=MAP_FAILED;bool sharedOutput=false;
- explicit Device(int f):fd(f){stateful=getenv("QUEST_VIDEO_STATEFUL")!=nullptr;if(stateful){width=height=stride=128;signalFd=eventfd(0,EFD_CLOEXEC|EFD_NONBLOCK);}}
+ explicit Device(int f):fd(f){stateful=getenv("QUEST_VIDEO_STATEFUL")!=nullptr;const char* latest=getenv("QUEST_VIDEO_LATEST_CAPTURE");latestCapture=latest?strcmp(latest,"0")!=0:stateful;if(stateful){width=height=stride=128;signalFd=eventfd(0,EFD_CLOEXEC|EFD_NONBLOCK);}}
  ~Device(){stop();if(signalFd>=0)rawClose(signalFd);if(frameMemory!=MAP_FAILED)munmap(frameMemory,QUEST_VIDEO_MAX_FRAME);if(frameFd>=0)rawClose(frameFd);}
  unsigned ready(){unsigned flags=failed?EPOLLERR:0;if(sourceChange)flags|=EPOLLPRI;if(!completed.empty())flags|=EPOLLOUT;for(auto& c:capture)if(c.ready){flags|=EPOLLIN;break;}return flags;}
  void signal(){if(signalFd<0)return;uint64_t value=1;if(ready()){ssize_t result;do result=write(signalFd,&value,sizeof(value));while(result<0&&errno==EINTR);if(result<0&&errno!=EAGAIN)fprintf(stderr,"Quest video: event notification: %s\n",strerror(errno));}else while(read(signalFd,&value,sizeof(value))>0){}}
@@ -111,9 +113,13 @@ void Device::run(){
  fprintf(stderr,"Quest video: decoder %ux%u codec=%u connected=%d\n",config.width,config.height,codec,ok);
  while(ok){
   Packet packet{};bool submit=false;
-  {std::unique_lock<std::mutex> guard(mutex);wake.wait_for(guard,std::chrono::milliseconds(5),[&]{return stopping||(!packets.empty()&&outputOn&&(captureOn||stateful));});
+  {std::unique_lock<std::mutex> guard(mutex);
+   // Once a VR picture is in flight, do not add another 5 ms sleep before
+   // checking hardware completion. Packet arrival still wakes this immediately.
+   auto wait=std::chrono::milliseconds(stateful&&!pending.empty()&&captureOn?1:5);
+   wake.wait_for(guard,wait,[&]{return stopping||(!packets.empty()&&outputOn&&(captureOn||stateful));});
    if(stopping)break;if(!outputOn||(!stateful&&!captureOn))continue;
-   if(!packets.empty()){packet=std::move(packets.front());packets.pop_front();submit=true;}else if(pending.empty()||(stateful&&!captureOn))continue;}
+   if(!packets.empty()){peakPackets=std::max(peakPackets,packets.size());packet=std::move(packets.front());packets.pop_front();submit=true;queuedMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-packet.queuedAt).count();++submissions;}else if(pending.empty()||(stateful&&!captureOn))continue;}
   uint64_t stamp=uint64_t(packet.stamp.tv_sec)*1000000+packet.stamp.tv_usec;
   if(submit){std::lock_guard<std::mutex> guard(mutex);pending[stamp]=packet.stamp;
    // Hardware may discard output during recovery; do not retain its stamps
@@ -121,7 +127,9 @@ void Device::run(){
    while(pending.size()>Slots*2)pending.erase(pending.begin());
   }
   QuestVideoRequest r{QUEST_VIDEO_MAGIC,submit?QUEST_VIDEO_PACKET:QUEST_VIDEO_POLL,unsigned(packet.data.size()),0,0,0,stamp};
+  auto serviceStart=std::chrono::steady_clock::now();
   ok=exchange(r,packet.data.data(),response,frame);
+  serviceMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-serviceStart).count();++requests;
   {std::unique_lock<std::mutex> guard(mutex);if(submit){completed.push_back(packet.index);signal();wake.notify_all();}
    if(!ok)break;
    bool formatChanged=response.status==QUEST_VIDEO_FORMAT_CHANGED;
@@ -152,6 +160,7 @@ void Device::run(){
    if(c.length<size+c.offset){fprintf(stderr,"Quest video: capture buffer too small: %u need=%zu\n",c.length,size+c.offset);ok=false;break;}
    if(c.mapping==MAP_FAILED){c.mapping=mmap(nullptr,c.length,PROT_READ|PROT_WRITE,MAP_SHARED,c.fd,0);c.mappedLength=c.length;}
    if(c.mapping==MAP_FAILED){fprintf(stderr,"Quest video: capture map fd=%u size=%u: %s\n",c.fd,c.length,strerror(errno));ok=false;break;}
+   auto copyStart=std::chrono::steady_clock::now();
    dma_buf_sync sync{DMA_BUF_SYNC_START|DMA_BUF_SYNC_WRITE};static auto ioctlReal=next<int(*)(int,unsigned long,...)>("ioctl");ioctlReal(c.fd,DMA_BUF_IOCTL_SYNC,&sync);
    auto pixels=sharedOutput?static_cast<const unsigned char*>(frameMemory):frame.data();
    auto dst=static_cast<unsigned char*>(c.mapping)+c.offset;
@@ -161,11 +170,17 @@ void Device::run(){
    for(unsigned y=0;y<response.height/2;y++)memcpy(dst+size_t(stride)*height+size_t(y)*stride,pixels+size_t(response.width)*response.height+size_t(y)*response.width,response.width);
    }
    sync.flags=DMA_BUF_SYNC_END|DMA_BUF_SYNC_WRITE;ioctlReal(c.fd,DMA_BUF_IOCTL_SYNC,&sync);
+   copyMs+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-copyStart).count();++copies;
    auto it=pending.find(response.timestamp);c.stamp=it==pending.end()?timeval{long(response.timestamp/1000000),long(response.timestamp%1000000)}:it->second;
    // The Android bridge can drain older output to relieve codec backpressure.
    // Retire those earlier timestamps along with the frame being returned.
-   pending.erase(pending.begin(),pending.upper_bound(response.timestamp));c.sequence=outputSequence;c.ready=true;signal();wake.notify_all();
-   if(sequence%300==1)fprintf(stderr,"Quest video: frames=%u %ux%u capture stride=%u\n",sequence,response.width,response.height,stride);
+   pending.erase(pending.begin(),pending.upper_bound(response.timestamp));
+   // VR presents the freshest completed picture, not a FIFO of old head poses.
+   // Recycle only driver-owned completions; consumer/GPU-owned buffers and
+   // encoded reference packets are untouched. Flat streaming retains FIFO.
+   if(latestCapture)for(unsigned i=0;i<count;i++)if(capture[i].queued)capture[i].ready=false;
+   c.sequence=outputSequence;c.ready=true;signal();wake.notify_all();
+   if(sequence%300==1){fprintf(stderr,"Quest video: frames=%u %ux%u capture stride=%u; encoded queue %.2f ms (peak %zu), codec RPC %.2f ms, capture copy %.2f ms\n",sequence,response.width,response.height,stride,queuedMs/std::max(1u,submissions),peakPackets,serviceMs/std::max(1u,requests),copyMs/std::max(1u,copies));queuedMs=serviceMs=copyMs=0;submissions=requests=copies=0;peakPackets=0;}
   }
  }
  {std::lock_guard<std::mutex> guard(mutex);failed=!stopping;signal();wake.notify_all();if(!ok&&!stopping)fprintf(stderr,"Quest video: decoder transport/output failed\n");}
@@ -267,6 +282,14 @@ extern "C" int ioctl(int fd,unsigned long request,...){
  case VIDIOC_S_CTRL:{auto c=static_cast<v4l2_control*>(arg);if(c->id==V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY||c->id==V4L2_CID_MPEG_VIDEO_DEC_DISPLAY_DELAY_ENABLE)return 0;return invalid();}
  default:fprintf(stderr,"Quest video: unsupported ioctl 0x%lx\n",request);return invalid(ENOTTY);
  }
+}
+extern "C" void* VR_GetGenericInterface(const char* version,vr::EVRInitError* error){
+ static auto fn=next<void*(*)(const char*,vr::EVRInitError*)>("VR_GetGenericInterface");
+ if(!fn)return 0;
+ auto object=fn(version,error);const char* enabled=getenv("STEARLIGHT_VRLINK_UNIFIED_DASHBOARD");
+ if(getenv("QUEST_VIDEO_STATEFUL")&&(!enabled||strcmp(enabled,"0")))
+  object=quest::StreamingIdentity::wrap(version,object);
+ return object;
 }
 extern "C" int epoll_ctl(int epoll,int op,int fd,epoll_event* event){
  static auto fn=next<int(*)(int,int,int,epoll_event*)>("epoll_ctl");auto d=device(fd);if(!d||d->signalFd<0)return fn(epoll,op,fd,event);

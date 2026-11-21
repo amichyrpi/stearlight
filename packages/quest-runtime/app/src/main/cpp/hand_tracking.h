@@ -46,9 +46,9 @@ public:
    __android_log_print(ANDROID_LOG_INFO,"StearlightXR","Hand tracker %d result=%d",i,result);
   }
  }
- void update(QuestTracking& sample,int hand,bool controller,XrSpace space,XrTime time){
+ void update(QuestTracking& sample,int hand,bool controller,XrSpace space,XrTime time,bool observe=false){
   auto& h=hands[hand];h.visible=false;
-  if(controller){input.reset(hand);return;}
+  if(controller&&!observe){input.reset(hand);return;}
   if(!h.tracker)return;
   h.aim={XR_TYPE_HAND_TRACKING_AIM_STATE_FB};
   XrHandTrackingScaleFB scale{XR_TYPE_HAND_TRACKING_SCALE_FB};scale.overrideHandScale=XR_FALSE;scale.overrideValueInput=1;
@@ -58,11 +58,12 @@ public:
   auto result=locate(h.tracker,&info,&locations);
   h.aim.next=nullptr;
   bool active=XR_SUCCEEDED(result)&&locations.isActive;
-  input.apply(sample,hand,active,h.aim);
+  if(controller)input.reset(hand);else input.apply(sample,hand,active,h.aim);
   h.visible=active&&sample.session_visible&&sample.session_focused;
   for(auto& joint:h.joints)h.visible=h.visible&&(joint.locationFlags&3)==3&&quest::validHandPose(joint.pose);
   h.scale=getMesh&&std::isfinite(scale.currentOutput)&&scale.currentOutput>.5f&&scale.currentOutput<2?scale.currentOutput:1;
  }
+ void resetInput(){input.reset(0);input.reset(1);}
  bool visible()const{return hands[0].visible||hands[1].visible;}
  void publish(const QuestTracking& tracking){
   if(!shared)return;

@@ -12,11 +12,13 @@ ADAPTER = ROOT / 'packages/quest-runtime/linux/prepare-frame-controls.sh'
 NODE = shutil.which('node') or shutil.which('node.exe')
 
 class FrameControlsTest(unittest.TestCase):
-    def source(self, lower, legacy=False, modern=False):
+    def source(self, lower, legacy=False, revision='legacy'):
         first, second = ('f', 'F') if lower else ('F', 'f')
         namespace, panel = 'h', 'y'
-        if modern:
+        if revision == 'modern':
             first, second, namespace, panel = 'k', 'O', 'm', 'C'
+        elif revision == '0.5.10':
+            first, second, namespace, panel = 'f', 'F', 'c', 'C'
         binding = f'const {first}=this.props.overlay_key,{second}=(0,{namespace}.w5)();'
         index = 'this.m_nEmbeddedIndex'
         if legacy:
@@ -33,12 +35,12 @@ class FrameControlsTest(unittest.TestCase):
                               capture_output=True, text=True)
 
     def test_stock_and_existing_install_keep_pixel_coordinates_and_external_bounds(self):
-        for lower, legacy, modern in product((False, True), repeat=3):
-            with self.subTest(lower=lower, legacy=legacy, modern=modern), tempfile.TemporaryDirectory() as folder:
+        for lower, legacy, revision in product((False, True), (False, True), ('legacy', 'modern', '0.5.10')):
+            with self.subTest(lower=lower, legacy=legacy, revision=revision), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 panel = root / 'resources/webinterface/dashboard/chunk~1a88854fa.js'
                 panel.parent.mkdir(parents=True)
-                panel.write_text(self.source(lower, legacy, modern))
+                panel.write_text(self.source(lower, legacy, revision))
                 panel.chmod(0o640)
                 result = self.prepare(root)
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -50,7 +52,7 @@ class FrameControlsTest(unittest.TestCase):
                 self.assertEqual(panel.stat().st_ino, stat.st_ino)
                 self.assertEqual(panel.stat().st_mtime_ns, stat.st_mtime_ns)
                 if NODE:
-                    code = 'const assert=require("assert");let document={title:"systemui"},h={w5:()=>"native-page"},m=h;' + first.decode() + '''
+                    code = 'const assert=require("assert");let document={title:"systemui"},h={w5:()=>"native-page"},m=h,c=h;' + first.decode() + '''
 const min={u:.2,v:.3},max={u:.8,v:.9};
 const internal=build.call({props:{uv_min:min,uv_max:max},m_nEmbeddedIndex:7});
 assert.equal(internal.key,"system.systemui");assert.equal(internal["embedded-uv-index"],7);

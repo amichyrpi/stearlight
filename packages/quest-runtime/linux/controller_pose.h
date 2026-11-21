@@ -1,8 +1,20 @@
 #pragma once
 #include "quest_bridge.h"
+#include "quest_motion.h"
 #include <cmath>
 
 namespace quest {
+inline bool controllerUsesAim(const QuestPose& grip,const QuestPose& aim){
+ return !(grip.flags&QUEST_POSE_HAND)&&(grip.flags&QUEST_POSE_TOUCH_PLUS)&&(grip.flags&3)==3&&(aim.flags&3)==3;
+}
+inline void controllerModelVelocity(const QuestMotion* motion,uint64_t time,const QuestPose& origin,const QuestPose& model,bool visible,double* linear,double* angular){
+ questMotionVelocity(motion,time,visible&&(model.flags&3)==3&&!(model.flags&QUEST_POSE_HAND),linear,angular);
+ // Move the velocity from OpenXR's grip/aim component to the model origin.
+ double d[3];for(int i=0;i<3;i++){d[i]=model.position[i]-origin.position[i];if(!std::isfinite(d[i]))return;}
+ linear[0]+=angular[1]*d[2]-angular[2]*d[1];
+ linear[1]+=angular[2]*d[0]-angular[0]*d[2];
+ linear[2]+=angular[0]*d[1]-angular[1]*d[0];
+}
 // Valve's Quest 2 and Touch Plus models share this openxr_grip component:
 // origin (+/-0.007, -0.00182941, 0.1019482), rotate_xyz (20.6, 0, 0).
 // OpenXR locates this component, while OpenVR locates the model's origin.
@@ -37,8 +49,7 @@ inline QuestPose controllerModelPose(const QuestPose& grip,const QuestPose& aim,
  // openxr_aim component to the runtime's actual pointing space, instead of
  // assuming the newer profile's grip origin matches legacy Touch. These
  // constants come from Valve's Touch Plus render-model component definition.
- if(!(grip.flags&QUEST_POSE_HAND)&&(grip.flags&QUEST_POSE_TOUCH_PLUS)&&
-    (grip.flags&3)==3&&(aim.flags&3)==3){
+ if(controllerUsesAim(grip,aim)){
   const float t[3]={hand?-.007f:.007f,-.03894766f,.00949694f};
   auto model=controllerComponentPose(aim,-39.4f,t);model.flags=grip.flags;return model;
  }

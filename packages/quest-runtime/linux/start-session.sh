@@ -132,6 +132,9 @@ cp /usr/local/bin/stearlight-frame-vrwebhelper /opt/steamvr/bin/vrwebhelper/linu
 chmod 755 /opt/steamvr/bin/vrwebhelper/linuxarm64/vrwebhelper.sh
 /opt/steamvr/bin/linuxarm64/vrpathreg removedriver /opt/steamvr/drivers/stearlight-fake || true
 /opt/steamvr/bin/linuxarm64/vrpathreg adddriver /opt/quest/stearlight-quest
+if [ -f /opt/quest/prepare-standable.py ];then
+ /usr/bin/python3 /opt/quest/prepare-standable.py || echo 'Standable adapter preparation failed; continuing normal startup.' >&2
+fi
 if [ ! -f "$VR_CONFIG_PATH/quest-prepared" ];then
  cat > "$VR_CONFIG_PATH/steamvr.vrsettings" <<'SETTINGS'
 {"steamvr":{"requireHmd":true,"activateMultipleDrivers":true,"allowDisplayLockedMode":true,"allowFallbackMirrorWindowLinux":true,"disableAsync":false,"enableLinuxVulkanAsync":true,"useFacetRenderer":true,"renderSystemLayerInDistortPass":true,"mirrorViewGeometry":"0 0 3664 1920","showMirrorView":false,"showLegacyMirrorView":false},"direct_mode":{"enable":false},"driver_stearlight-fake":{"enable":false},"driver_stearlight-quest":{"enable":true,"blocked_by_safe_mode":false}}

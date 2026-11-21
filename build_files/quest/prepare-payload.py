@@ -123,7 +123,7 @@ def build_streaming_allocator(linux, quest, work):
         shutil.copyfile(Path("/usr/include") / name, headers / name)
     run("aarch64-linux-gnu-g++", "-O2", "-shared", "-fPIC", "-std=c++17",
         f"-I{headers}", "-I/usr/include/libdrm", linux / "streaming-drm.cpp",
-        "-pthread", "-o", quest / "libquest_streaming_drm.so")
+        "-pthread", "-ldl", "-o", quest / "libquest_streaming_drm.so")
 
 
 def build_mesa(root, work, downloads):
@@ -271,6 +271,9 @@ def roomview_system_ui(native):
         floors = [b'r&&de.JJ.isTheaterMode&&n.createElement(s.B4o',
                   b'r&&c.H.m_bShowFloor&&(l||de.JJ.isTheaterMode)&&n.createElement(s.B4o',
                   b'r&&c.H.m_bShowFloorFar&&!de.JJ.isTheaterMode&&!l&&n.createElement(s.B4o']
+    near_floor = b'r&&c.H.m_bShowFloor&&n.createElement(s.B4o'
+    if near_floor in native and floors[0].startswith(b'r&&'):
+        floors[1] = near_floor
     if any(native.count(condition) != 1 for condition in floors):
         raise RuntimeError("Quest room-view adapter does not match this SteamVR construct")
     for condition in floors:
@@ -437,8 +440,19 @@ def main():
     shutil.copyfile(linux / "prepare-fex.py", quest / "prepare-fex.py")
     shutil.copyfile(linux / "fex-game-launcher.py", quest / "fex-game-launcher.py")
     shutil.copyfile(linux / "prepare-gamepad-ui.py", quest / "prepare-gamepad-ui.py")
-    for name in ("proton-game-launcher.py", "proton-runtime-entry.sh", "audio-namespace-launcher.sh"):
+    for name in ("proton-game-launcher.py", "proton-runtime-entry.sh", "audio-namespace-launcher.sh",
+                 "standable-host.py", "prepare-standable.py"):
         shutil.copyfile(linux / name, quest / name)
+    # Optional separately built bridge. Proprietary Standable assets remain
+    # installed by Steam; a private SDK dependency can be supplied explicitly.
+    if os.environ.get("STEARLIGHT_STANDABLE_BRIDGE"):
+        source = Path(os.environ["STEARLIGHT_STANDABLE_BRIDGE"])
+        destination = quest / "standable"
+        destination.mkdir(parents=True, exist_ok=True)
+        for name in ("driver_standable.so", "ignition_server.exe", "ignition_bridge.dll", "Ignition-LICENSE.txt"):
+            shutil.copyfile(source / name, destination / name)
+        if os.environ.get("STEARLIGHT_STANDABLE_STEAM_API64"):
+            shutil.copyfile(os.environ["STEARLIGHT_STANDABLE_STEAM_API64"], destination / "steam_api64.dll")
     launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
     launcher.parent.mkdir(parents=True, exist_ok=True)
     run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
@@ -449,7 +463,7 @@ def main():
         f"-L{root / 'usr/lib/aarch64-linux-gnu'}",
         f"-Wl,-rpath-link,{root / 'usr/lib/aarch64-linux-gnu'}",
         f"-Wl,-rpath-link,{root / 'lib/aarch64-linux-gnu'}",
-        "-l:libdbus-1.so.3", "-Wl,--allow-shlib-undefined",
+        "-l:libdbus-1.so.3", "-l:libX11.so.6", "-Wl,--allow-shlib-undefined",
         "-Wl,-rpath,/opt/steamvr/bin/linuxarm64", "-o", quest / "runtime-monitor")
     (quest / "bluetooth-bridge").unlink(missing_ok=True)
     (driver / "driver.vrdrivermanifest").write_text(json.dumps(

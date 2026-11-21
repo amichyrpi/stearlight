@@ -51,5 +51,21 @@ int main() {
   for(int i=0;i<3;i++)near(trackedHand.position[i],grip.position[i]);
   for(int i=0;i<4;i++)near(trackedHand.orientation[i],grip.orientation[i]);
  }
+ QuestMotion shared{};shared.magic=QUEST_MOTION_MAGIC;shared.version=QUEST_MOTION_VERSION;
+ QuestMotion velocity{};velocity.predicted_time_ns=42;velocity.flags=3;velocity.linear[0]=1;velocity.angular[2]=2;
+ questPublishMotion(&shared,velocity);
+ QuestPose origin{{0,0,0},{0,0,0,1},3},model{{0,1,0},{0,0,0,1},3};
+ double linear[3]{},angular[3]{};
+ quest::controllerModelVelocity(&shared,42,origin,model,true,linear,angular);
+ near(linear[0],-1);near(linear[1],0);near(angular[2],2); // v + omega cross offset
+ quest::controllerModelVelocity(&shared,43,origin,model,true,linear,angular);
+ for(int i=0;i<3;i++)assert(linear[i]==0&&angular[i]==0);
+ model.flags|=QUEST_POSE_HAND;
+ quest::controllerModelVelocity(&shared,42,origin,model,true,linear,angular);
+ for(int i=0;i<3;i++)assert(linear[i]==0&&angular[i]==0);
+ model.flags=3;quest::controllerModelVelocity(&shared,42,origin,model,false,linear,angular);
+ for(int i=0;i<3;i++)assert(linear[i]==0&&angular[i]==0);
+ quest::controllerModelVelocity(nullptr,42,origin,model,true,linear,angular);
+ for(int i=0;i<3;i++)assert(linear[i]==0&&angular[i]==0);
  std::puts("Quest 2 grip, Touch Plus aim, fallback and hand alignment passed for both hands");
 }
