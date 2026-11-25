@@ -33,12 +33,12 @@
   },
   "linux": {
     "xvfb": {
-      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/xvfb-21.1.25-r0.apk",
-      "sha256": "331d5b08ef3e7c1b9574e04ecb2e61aa4834b401e30f98ecb1b292e7c52ba488"
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/xvfb-21.1.26-r0.apk",
+      "sha256": "deca95de0e4adcf3a9fbb5049e0b0994ed63d6f8198ab4ea17c6ebfba7462dcf"
     },
     "xfont": {
-      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/community/aarch64/libxfont2-2.0.8-r0.apk",
-      "sha256": "66dcaeabea44f3762374c3727a9981b21a56848933c237ccaddf477daa7ccfb8"
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/community/aarch64/libxfont2-2.0.10-r0.apk",
+      "sha256": "cd05e6378e0a529fa0126b5910c5000fc6b61e53080792a13b74fd331616560b"
     },
     "xkbfile": {
       "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/libxkbfile-1.2.0-r0.apk",
@@ -242,16 +242,16 @@
       "sha256": "31834a23bc6ca602b55a3be3070e228a13ab66a99c45d61bd8a22697b9f19503"
     },
     "git": {
-      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/git-2.56.0-r0.apk",
-      "sha256": "3ff37ddcc6eaf5aa12f52eff83c453fcc99d87ac018564b3b7b6e1f64753f994"
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/git-2.54.1-r0.apk",
+      "sha256": "6a9dc5e00013a8daecedd1c2951ec16fc69f0e5ade6847db81e86a9e658323b7"
     },
     "git-init-template": {
-      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/git-init-template-2.56.0-r0.apk",
-      "sha256": "65e6bedb3545497060cb2faa5e36c64f7984f7c9e2b77804fb0c5ddac9bd1be2"
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/git-init-template-2.54.1-r0.apk",
+      "sha256": "9b32dbf05e14b1603b6a4206021dfc9c156382d73e3c3e1a27439e39eef3d116"
     },
     "nano": {
-      "url": "https://dl-cdn.alpinelinux.org/alpine/edge/main/aarch64/nano-9.2-r0.apk",
-      "sha256": "8d2a6b84af47d93638466245829561b3500ed7a98864a193c560eb8f159aa4cf"
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/nano-9.3-r0.apk",
+      "sha256": "ce4c7b3e014780850b9920fd91a65e6bebf063a644ef3a9369e8a676c4d8726c"
     }
   },
   "renpy": {
