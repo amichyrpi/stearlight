@@ -9,6 +9,7 @@ export VR_PATHREG_OVERRIDE="$HOME/.config/openvr/openvrpaths.vrpath"
 export VR_CONFIG_PATH="$HOME/.steam/steam/config"
 export QUEST_SOCKET_REGISTRY=/run/stearlight/quest/socket-registry.sock
 export STEARLIGHT_DESKTOP_GAMESCOPE=1
+export WLR_XWAYLAND=/opt/quest/desktop-xwayland.sh
 exec /opt/frame-gamescope/lib/ld-linux-aarch64.so.1 \
  --preload /opt/quest/libquest_socket.so:/usr/lib/aarch64-linux-gnu/libpipewire-0.3.so.0 \
  --library-path /opt/frame-gamescope/lib:/usr/lib/aarch64-linux-gnu \

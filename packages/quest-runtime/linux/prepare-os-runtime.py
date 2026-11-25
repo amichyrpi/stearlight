@@ -27,7 +27,7 @@ ui.write_bytes((quest / 'systemui-overlay-bridge.js').read_bytes() + b'\n' +
                (quest / 'roomview-bridge.js').read_bytes() + b'\n' + data)
 binary = runtime / 'bin/linuxarm64/vrcompositor'
 binary.rename(binary.with_suffix('.bin'))
-shutil.copy2('/opt/steamvr/bin/linuxarm64/vrcompositor', binary)
+shutil.copy2(quest / 'vrcompositor-launcher', binary)
 shutil.copy2('/usr/local/bin/stearlight-frame-vrwebhelper', runtime / 'bin/vrwebhelper/linuxarm64/vrwebhelper.sh')
 for component in ('drivers/stearlight-fake', 'resources/stearlight-session'):
     source = Path('/opt/steamvr') / component

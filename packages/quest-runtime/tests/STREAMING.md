@@ -1,3 +1,14 @@
+# Quest streaming compositor checks - 2026-11-25
+
+The Quest compositor uses Mesa's automatic submit-thread selection. Startup
+refreshes the launcher after SteamOS activation and applies the tested SPIR-V
+edits only to shaders with the matching original hashes. The Quest 2 headset
+check passed in the virtual room and with passthrough enabled.
+
+The test PC's SteamVR Video setting was 34.2%, which reported 1228×1288 per
+eye on that PC and matched the Quest's local SteamVR render target. This
+percentage is specific to that host's recommended resolution.
+
 # Streaming compatibility and latency checks - 2026-11-16
 
 The native VR player now advertises the Frame protocol through its HMD model
