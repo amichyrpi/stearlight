@@ -21,7 +21,7 @@ inline bool pcvrSceneShader(const uint32_t* words,size_t count) {
 // Identify the shipped SE2 shader exactly: other shaders and packed depth,
 // motion, alpha and tracking data must retain Valve's native interpretation.
 inline std::vector<uint32_t> pcvrColorShader(const uint32_t* words,size_t count) {
- if(!words||(count!=1655&&count!=1133&&count!=7158&&count!=6535&&count!=4883)||words[0]!=0x07230203)return {};
+ if(!words||(count!=1655&&count!=1133&&count!=7158&&count!=6535&&count!=4883&&count!=5015&&count!=11002)||words[0]!=0x07230203)return {};
  uint64_t hash=14695981039346656037ull;
  for(size_t i=0;i<count;i++)for(unsigned b=0;b<4;b++) {
   hash^=(words[i]>>(b*8))&255;hash*=1099511628211ull;
@@ -39,6 +39,8 @@ inline std::vector<uint32_t> pcvrColorShader(const uint32_t* words,size_t count)
   // SGSR blends its own NV12-to-RGB output over the corrected base scene.
   // Convert that RGB too, leaving its region mask and blend alpha intact.
   case 0x17e581b63603b494ull: target={8,35,138,3510,133,1334,1333,1331};break;
+  case 0xd7a6c76a70f7a5a0ull: target={8,35,143,3663,133,1343,1342,1340};break;
+  case 0xa35477bfe51ef9caull: target={8,35,77,6145,133,1520,1519,1517};break;
   default:return {};
  }
  const auto [scalar,vector,boolean,zero,multiply,result,rgb,gain]=target;

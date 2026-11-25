@@ -4,6 +4,26 @@ set -eu
 binary=${STEARLIGHT_STEAMVR_ROOT:-/opt/steamvr}/bin/linuxarm64/vrclient.so
 current=$(sha256sum "$binary" | cut -d ' ' -f 1)
 case "$current" in
+    044680fbaafdcd5bd4c528ba908db6282ba5addaf542393637e2929c886940f8) exit 0 ;;
+    3708feebba34ff0d4ddda5c7cf1144c700608de52da13e3e73945db88f459bbf)
+        temporary="$binary.quest-cleanup"
+        trap 'rm -f "$temporary"' EXIT
+        cp -p "$binary" "$temporary"
+        # Frame OS 0.5.11 moves both cleanup loops and the RX padding.
+        # Keep the same null-entry paths as 0.5.10.
+        printf %s c8MWFA== | base64 -d | dd of="$temporary" bs=1 seek=2142004 conv=notrunc 2>/dev/null
+        printf %s QgAAtY486RdADEC5izzpFw== | base64 -d | dd of="$temporary" bs=1 seek=8109312 conv=notrunc 2>/dev/null
+        printf %s FsMWFA== | base64 -d | dd of="$temporary" bs=1 seek=2142392 conv=notrunc 2>/dev/null
+        printf %s QgAAtQo96RdADEC56DzpFw== | base64 -d | dd of="$temporary" bs=1 seek=8109328 conv=notrunc 2>/dev/null
+        printf %s IL17AAAAAAAgvXsAAAAAAA== | base64 -d | dd of="$temporary" bs=1 seek=96 conv=notrunc 2>/dev/null
+        # Use the normal filter for dashboard events 502/503 on Quest.
+        # The new F1 25 special case enters the application state while the
+        # event state is locked, tripping Valve's lock-order assertion.
+        printf %s 3///Fw== | base64 -d | dd of="$temporary" bs=1 seek=1183484 conv=notrunc 2>/dev/null
+        [ "$(sha256sum "$temporary" | cut -d ' ' -f 1)" = 044680fbaafdcd5bd4c528ba908db6282ba5addaf542393637e2929c886940f8 ] || exit 1
+        mv "$temporary" "$binary"
+        echo 'STEARLIGHT QUEST BROWSER TEXTURE CLEANUP GUARD READY'
+        exit 0 ;;
     e25ae6c21d398a8f047439c98a756013f289f48f65199eaaf3b1f17b510e09e6) exit 0 ;;
     17a39eb970487dcd26ca90ca06de54d8acf02213ed1ddf967e2cc37dc8bb5158)
         temporary="$binary.quest-cleanup"

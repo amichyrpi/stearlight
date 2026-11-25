@@ -16,6 +16,11 @@ FRAME_2194 = (
     'cf1c2cd1b34279228c973cd097c68e98f2edf642efae228ee1cdcc4d20eec3a8',
     ((0x5ad8c, 34, 35), (0x5ade0, 35, 34), (0x5b4d4, 35, 36), (0x5b534, 36, 35)),
 )
+FRAME_0511 = (
+    '97817b325b7c8e2ded04753bb73f6d295d8c5c77790606db0df910c07cee9095',
+    'd64da87e72064815777ff956148ba548e445392d21ac4122b4a4c24b0e6370ae',
+    ((0x5afbc, 34, 35), (0x5b010, 35, 34), (0x5b704, 35, 36), (0x5b764, 36, 35)),
+)
 EMULATION = {'simulated_controller_type': 'oculus_touch', 'simulate_rendermodel': True, 'simulate_hmd': False}
 OLD_TYPE, NEW_TYPE = b'frame_controller\0', b'oculus_touch\0\0\0\0\0'
 
@@ -63,7 +68,7 @@ def prepare(binary, bindings, restore=False):
     data = binary.read_bytes()
     current = hashlib.sha256(data).hexdigest()
     original, patched, lengths = next(
-        (build for build in ((ORIGINAL, PATCHED, LENGTHS), FRAME_2194) if current in build[:2]),
+        (build for build in ((ORIGINAL, PATCHED, LENGTHS), FRAME_2194, FRAME_0511) if current in build[:2]),
         (None, None, ()),
     )
     known = original is not None
