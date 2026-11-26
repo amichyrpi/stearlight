@@ -18,6 +18,12 @@
     "notes": "Launches at 10â€“15 FPS."
   },
   {
+    "appid": 698780,
+    "name": "Doki Doki Literature Club!",
+    "status": "verified",
+    "notes": "Story, laser controls and music work on Quest 2 with the Linux build through FEX and software rendering."
+  },
+  {
     "appid": 753640,
     "name": "Outer Wilds",
     "status": "unsupported",

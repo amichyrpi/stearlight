@@ -60,15 +60,22 @@ def enable_window_icons(source):
 
 def enable_playspace_icon(source):
     # Quest owns boundary setup, so the native action remains Recenter. Frame
-    # uses the Playspace artwork for this dock control; both icons are shipped
-    # by Valve. Change only the dashboard's enum renderer, not the action.
-    pattern = re.compile(r'(case [\w$]+\.[\w$]+\.[\w$]+:return\(0,[\w$]+\.jsx\)\([\w$]+\.)'
-                         r'Recenter(,\{\}\);case [\w$]+\.[\w$]+\.[\w$]+:return\(0,[\w$]+\.jsx\)\([\w$]+\.Playspace,\{\}\))')
-    matches = list(pattern.finditer(source))
-    if len(matches) != 1:
-        return source
-    match = matches[0]
-    return source[:match.start()] + match[1] + 'Playspace' + match[2] + source[match.end():]
+    # ships both icons. New clients inline the dock's enum values (3 and 12).
+    numeric = re.compile(
+        r'switch\([\w$]+\.eIcon\)\{'
+        r'(?:case [0-9]+:(?:return\(0,[\w$]+\.jsx\)\([\w$]+,\{\}\);)?)*?'
+        r'case 3:return(?P<jsx>\(0,[\w$]+\.jsx\))\((?P<recenter>[\w$]+),\{\}\);'
+        r'case 12:return(?P=jsx)\((?P<playspace>[\w$]+),\{\}\);')
+    named = re.compile(
+        r'case [\w$]+\.[\w$]+\.[\w$]+:return\(0,[\w$]+\.jsx\)\([\w$]+\.(?P<recenter>Recenter)'
+        r',\{\}\);case [\w$]+\.[\w$]+\.[\w$]+:return\(0,[\w$]+\.jsx\)\([\w$]+\.(?P<playspace>Playspace),\{\}\)')
+    matches = list(named.finditer(source))
+    matches.extend(match for match in numeric.finditer(source)
+                   if 'Missing SteamUI implementation for EVRGamepadUIIcon' in source[match.end():match.end() + 1200])
+    if len(matches) == 1:
+        match = matches[0]
+        return source[:match.start('recenter')] + match['playspace'] + source[match.end('recenter'):]
+    return source
 
 
 def applications():

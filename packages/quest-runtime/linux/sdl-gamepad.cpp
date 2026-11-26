@@ -143,6 +143,24 @@ void SDL_GL_SwapWindow(void* window){
  previousFrame=ns;
 }
 int SDL_Init(uint32_t flags){if(const char* mode=getenv("STEARLIGHT_WINE_GAMEPAD");mode&&!strcmp(mode,"1"))flags&=~0x1000u;if(!api.init)load(RTLD_NEXT);int result=api.init?api.init(flags):-1;if(result==0&&(flags&0x2200))feed();return result;}
+void* SDL_CreateWindow(const char* title,int x,int y,int width,int height,uint32_t flags){
+ using Create=void*(*)(const char*,int,int,int,int,uint32_t);
+ auto fn=lookup();if(!fn)return nullptr;
+ auto create=reinterpret_cast<Create>(fn(RTLD_NEXT,"SDL_CreateWindow"));
+ // Legacy pygame asks for an OpenGL window even for its software renderer.
+ // SDL can be loaded locally by the Python extension instead of globally.
+ void* local=nullptr;
+ if(!create){
+  local=dlopen("libSDL2-2.0.so.0",RTLD_NOW|RTLD_NOLOAD);
+  if(local)create=reinterpret_cast<Create>(fn(local,"SDL_CreateWindow"));
+ }
+ constexpr uint32_t sdlWindowOpenGL=0x2;
+ const char* software=getenv("STEARLIGHT_RENPY_SOFTWARE");
+ if(software&&!strcmp(software,"1"))flags&=~sdlWindowOpenGL;
+ auto* window=create?create(title,x,y,width,height,flags):nullptr;
+ if(local)dlclose(local);
+ return window;
+}
 int SDL_InitSubSystem(uint32_t flags){if(const char* mode=getenv("STEARLIGHT_WINE_GAMEPAD");mode&&!strcmp(mode,"1"))flags&=~0x1000u;if(!api.subsystem)load(RTLD_NEXT);int result=api.subsystem?api.subsystem(flags):-1;if(result==0&&(flags&0x2200))feed();return result;}
 void SDL_PumpEvents(){feed();if(api.pump)api.pump();}
 int SDL_PollEvent(void* event){feed();return api.poll?api.poll(event):0;}

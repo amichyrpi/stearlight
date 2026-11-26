@@ -265,6 +265,12 @@ def main():
     common = tool.parent
     command = unwrap(sys.argv[2:])
     native = native_renpy(command, os.environ)
+    app = os.environ.get("SteamAppId", "")
+    ddlc = ((app or os.environ.get("STEAM_COMPAT_APP_ID")) == "698780"
+            and os.environ.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0"
+            and Path(command[0]).name == "DDLC.sh")
+    if ddlc:
+        app = "698780"
     runtime = common / "SteamLinuxRuntime_soldier"
     for argument in sys.argv[2:]:
         path = Path(argument)
@@ -282,8 +288,8 @@ def main():
         data = Path(os.environ.get("STEAM_COMPAT_DATA_PATH", str(Path.home() / ".local/share/stearlight/fex")))
         rootfs = prepare_rootfs(candidates[-1].parent, data / "quest-rootfs")
         config = data / "quest-fex.json"
-        guest = guest_gamepad(rootfs) if os.environ.get("SteamAppId") and (renpy or os.environ.get("STEARLIGHT_STEAM_INPUT", "1") != "0") else []
-        config.write_text(json.dumps({"Config": {}, "ThunksDB": {"GL": 1, "Vulkan": 1}}))
+        guest = guest_gamepad(rootfs) if ddlc or (app and (renpy or os.environ.get("STEARLIGHT_STEAM_INPUT", "1") != "0")) else []
+        config.write_text(json.dumps({"Config": {}, "ThunksDB": {} if ddlc else {"GL": 1, "Vulkan": 1}}))
     environment = dict(os.environ)
     # Native glibc needs rseq disabled in PRoot, but soldier's older x86
     # glibc cannot parse that tunable while initializing its allocator.
@@ -291,6 +297,10 @@ def main():
         environment.pop(key, None)
     if guest:
         environment["FEX_ENV"] = guest[0]
+        if ddlc:
+            # The bundled SDL stalls opening PulseAudio. The Steam Linux
+            # Runtime ships an ABI-compatible SDL with a working audio path.
+            environment["FEX_ENV"] += ":/usr/lib/x86_64-linux-gnu/libSDL2-2.0.so.0"
     if not native:
         environment.update({
             "FEX_PORTABLE": "1", "FEX_ROOTFS": str(rootfs), "FEX_APP_CONFIG": str(config),
@@ -320,9 +330,14 @@ def main():
     if renpy:
         environment.setdefault("RENPY_RENDERER", "gl2")
         environment["STEARLIGHT_RENPY_SDL"] = "1"
-    if environment.get("STEARLIGHT_FEX_GAMESCOPE") != "1" and environment.get("SteamAppId"):
+    if ddlc:
+        environment.update({
+            "RENPY_RENDERER": "sw", "STEARLIGHT_RENPY_SOFTWARE": "1",
+            "SDL_FRAMEBUFFER_ACCELERATION": "0", "SDL_VIDEO_X11_XRANDR": "0",
+            "SDL_VIDEODRIVER": "x11", "WLR_XWAYLAND": "/opt/quest/desktop-xwayland.sh",
+        })
+    if environment.get("STEARLIGHT_FEX_GAMESCOPE") != "1" and app:
         release_streaming_audio()
-        app = environment["SteamAppId"]
         environment["STEARLIGHT_FEX_GAMESCOPE"] = "1"
         environment["GLIBC_TUNABLES"] = "glibc.pthread.rseq=0"
         environment["XKB_CONFIG_ROOT"] = "/opt/frame-gamescope/share/X11/xkb"
@@ -347,6 +362,12 @@ def main():
             os.setsid()
         os.execve(loader, compositor, environment)
         return
+    if ddlc:
+        # The distributed shell launcher relies on x86 shell utilities.
+        # Run its bundled interpreter directly with the original arguments.
+        game = Path(command[0]).resolve().parent
+        os.chdir(game)
+        command = [str(game / "lib/linux-x86_64/DDLC"), "-EO", str(game / "DDLC.py"), *command[1:]]
     if native:
         python, script, engine = native
         environment.pop("FEX_ENV", None)

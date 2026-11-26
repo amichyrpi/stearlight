@@ -2,6 +2,7 @@
 """Refresh Steam's desktop API adapter without replacing its interface."""
 import json
 from pathlib import Path
+import re
 import secrets
 import sys
 from frame_menus import enable_performance_tab, enable_window_icons, enable_playspace_icon
@@ -32,3 +33,20 @@ temporary = library.with_suffix('.desktop-next')
 temporary.write_bytes(begin + bridge + b'\n' + end + data)
 temporary.chmod(library.stat().st_mode & 0o777)
 temporary.replace(library)
+
+# The newer library entry imports the dashboard from a separate bundle.
+# Read its import instead of pinning the bundle name to a Steam update.
+entry = root / 'steamui/library.js'
+if entry.is_file() and entry != library:
+    imports = re.findall(rb'import\(`\./(chunk~[a-f0-9]+\.js)\?contenthash=[\w-]+`\)', entry.read_bytes())
+    for name in dict.fromkeys(imports):
+        dock = entry.with_name(name.decode())
+        if not dock.is_file():
+            continue
+        original = dock.read_bytes()
+        updated = enable_playspace_icon(original.decode()).encode()
+        if updated != original:
+            temporary = dock.with_suffix('.desktop-next')
+            temporary.write_bytes(updated)
+            temporary.chmod(dock.stat().st_mode & 0o777)
+            temporary.replace(dock)
