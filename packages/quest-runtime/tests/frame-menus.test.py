@@ -281,6 +281,16 @@ class FrameMenusTests(unittest.TestCase):
         self.assertEqual(menus.enable_playspace_icon(actual), actual)
         self.assertEqual(menus.enable_playspace_icon('unknown UI'), 'unknown UI')
 
+    def test_frame_playspace_artwork_in_vite_bundle(self):
+        mapping = ('switch(e.eIcon){case 0:return(0,Y.jsx)(Default,{});'
+                   'case 11:case 37:return(0,Y.jsx)(Other,{});case 3:return(0,Y.jsx)(Recenter,{});'
+                   'case 12:return(0,Y.jsx)(Playspace,{});'
+                   'default:return log(`Missing SteamUI implementation for EVRGamepadUIIcon: `)}')
+        source = 'registerRecenterAction(3);' + mapping
+        actual = menus.enable_playspace_icon(source)
+        self.assertEqual(actual, source.replace('(Recenter,{})', '(Playspace,{})'))
+        self.assertEqual(menus.enable_playspace_icon(actual), actual)
+
 
 if __name__ == '__main__':
     unittest.main()

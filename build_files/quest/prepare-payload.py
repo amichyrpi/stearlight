@@ -260,7 +260,7 @@ def stage_update_helpers(overlay, downloads):
         shutil.copy2(overlay / "usr/bin" / name, tools / name)
         # Only our loader boundary should run these glibc tools.
         (overlay / "usr/bin" / name).unlink()
-    for name in ("steam-os-update.py", "prepare-os-runtime.py", "activate-os-update.py",
+    for name in ("steam-os-update.py", "prepare-os-runtime.py", "activate-os-update.py", "optimize-streaming-shaders.py",
                  "steamdeck-images.pem", "steamos-dev-images.pem",
                  "systemui-overlay-bridge.js", "roomview-bridge.js"):
         shutil.copy2(REPO / "packages/quest-runtime/linux" / name, quest / name)
@@ -364,7 +364,7 @@ def main():
         shutil.copytree(browser, overlay / "opt/stearlight-browser", dirs_exist_ok=True)
     else:
         parser.error("Provide --frame-desktop-root to stage Chromium and its ARM64 dependencies")
-    for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-launcher.sh", "desktop-manager.py", "steam_channels.py", "chromium-launcher.sh",
+    for name in ("desktop-session.sh", "desktop-headset.sh", "desktop-xwayland.sh", "desktop-launcher.sh", "desktop-manager.py", "steam_channels.py", "chromium-launcher.sh",
                  "desktop-ui-bridge.js", "frame-menu-bridge.js", "frame_menus.py", "gamescope-perf.py", "desktop-windows.js", "desktop-run-app.sh",
                  "plasma-core-session.sh", "prepare-desktop.sh", "desktop-app-session.sh",
                  "prepare-desktop-ui.py", "prepare-desktop-kio.py", "desktop-shell.sh", "adb-command.py", "desktop-remote.sh", "desktop-fonts.conf",
@@ -471,9 +471,8 @@ def main():
     else:
         for name in (*names, "steam_api64.dll"):
             (destination / name).unlink(missing_ok=True)
-    launcher = overlay / "opt/steamvr/bin/linuxarm64/vrcompositor"
-    launcher.parent.mkdir(parents=True, exist_ok=True)
-    run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", launcher)
+    (overlay / "opt/steamvr/bin/linuxarm64/vrcompositor").unlink(missing_ok=True)
+    run("aarch64-linux-gnu-gcc", "-O2", linux / "compositor-launcher.c", "-o", quest / "vrcompositor-launcher")
     dbus_flags = subprocess.check_output(["pkg-config", "--cflags", "dbus-1"], text=True).split()
     run("aarch64-linux-gnu-g++", "-O2", "-std=c++17", "-pthread", "-DQUEST_SERVICES_EMBEDDED", *dbus_flags,
         f"-I{REPO / 'packages/openvr/headers'}", linux / "runtime-monitor.cpp",

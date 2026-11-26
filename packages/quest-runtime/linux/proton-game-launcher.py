@@ -493,6 +493,15 @@ def main():
     os.dup2(fd, 2)
     if fd > 2:
         os.close(fd)
+    # Steam can select Windows for the original DDLC even when its Linux
+    # payload is installed. Keep Steam's supervision and launch that payload.
+    if (appid == "698780" and os.environ.get("STEARLIGHT_QUEST_GAME_PROFILE", "1") != "0"
+            and len(args) >= 3 and Path(args[0]).name == "proton" and Path(args[2]).name == "DDLC.exe"):
+        game = Path(args[2]).parent
+        tool = game.parent / "FEX-Emu/fex-compat-tool"
+        launcher = game / "DDLC.sh"
+        if all(path.is_file() for path in (tool, launcher, game / "DDLC.py", game / "lib/linux-x86_64/DDLC")):
+            os.execv(sys.executable, [sys.executable, str(tool), "run", str(launcher), *args[3:]])
     files = prepare_platform(platforms[-1].parent)
     source = dict(os.environ)
     if appid == "2370570":

@@ -122,6 +122,13 @@ export VR_PATHREG_OVERRIDE="$HOME/.config/openvr/openvrpaths.vrpath"
 export VR_CONFIG_PATH="$HOME/.steam/steam/config"
 mkdir -p "$HOME/.config/openvr" "$VR_CONFIG_PATH"
 /usr/bin/python3 /opt/quest/activate-os-update.py
+/usr/bin/python3 /opt/quest/optimize-streaming-shaders.py /opt/steamvr
+# The APK preserves an installed SteamOS runtime, including its old launcher.
+compositor=/opt/steamvr/bin/linuxarm64/vrcompositor
+if ! cmp -s /opt/quest/vrcompositor-launcher "$compositor";then
+ install -m 755 /opt/quest/vrcompositor-launcher "$compositor.stearlight-new"
+ mv -f "$compositor.stearlight-new" "$compositor"
+fi
 /bin/sh /opt/quest/prepare-vrclient.sh || true
 /usr/local/bin/stearlight-steamvr-native prepare
 /bin/sh /opt/quest/prepare-frame-controls.sh || true

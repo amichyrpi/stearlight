@@ -99,6 +99,27 @@ class StreamingInputTest(unittest.TestCase):
             self.assertEqual(fields, ['trigger/value', 'thumbstick/x', 'thumbstick/y'])
         self.assertEqual(adapter.transform(self.modified, restore=True), self.original)
 
+    def test_updated_player_uses_its_own_constructor_offsets(self):
+        lengths = adapter.FRAME_2194[2]
+        table_start = max(offset for offset, _, _ in adapter.LENGTHS) + 4
+        code = bytearray(self.original[:table_start])
+        code.extend(bytes(max(offset for offset, _, _ in lengths) + 4 - len(code)))
+        for offset, before, _ in lengths:
+            struct.pack_into('<I', code, offset, 0xd2800004 | (before << 5))
+        original = bytes(code) + self.original[table_start:]
+        converted = adapter.transform(original, lengths=lengths)
+        self.binary.write_bytes(original)
+        with patch.object(adapter, 'FRAME_2194', (
+            hashlib.sha256(original).hexdigest(), hashlib.sha256(converted).hexdigest(), lengths
+        )):
+            self.assertTrue(adapter.prepare(self.binary, self.bindings))
+            patched = self.binary.read_bytes()
+            self.assertEqual(patched[:table_start], original[:table_start])
+            for offset, _, after in lengths:
+                self.assertEqual(struct.unpack_from('<I', patched, offset)[0], 0xd2800004 | (after << 5))
+            self.assertTrue(adapter.prepare(self.binary, self.bindings, restore=True))
+            self.assertEqual(self.binary.read_bytes(), original)
+
     def test_updated_player_restores_only_our_emulation(self):
         adapter.prepare(self.binary, self.bindings)
         unknown = b'new Valve runtime'

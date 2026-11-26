@@ -1,34 +1,58 @@
 #include "pcvr_color_shader.h"
 #include <cassert>
+#include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 
-// Supply the runtime's distort_ps_achromatic_se2.spv fixture. Verify the
-// conversion does not alter any original depth, motion, alpha or gain code.
+// Supply a known SE2 fragment fixture. Verify that the correction changes
+// only the RGB input to the display gain or spatial fade.
 int main(int argc,char** argv) {
  assert(argc>=2);
  std::ifstream file(argv[1],std::ios::binary|std::ios::ate);
- assert(file&&(file.tellg()==1655*4||file.tellg()==1133*4));
- const bool legacy=file.tellg()==1655*4;
+ assert(file&&file.tellg()>=5*4&&file.tellg()%4==0);
  std::vector<uint32_t> original(static_cast<size_t>(file.tellg())/4);file.seekg(0);
  file.read(reinterpret_cast<char*>(original.data()),original.size()*4);
  auto corrected=quest::pcvrColorShader(original.data(),original.size());
  assert(!corrected.empty());
- assert(quest::pcvrSceneShader(original.data(),original.size()));
+ const bool legacy=original.size()==1655;
+ const bool keyed=original.size()==7158||original.size()==6535;
+ const bool spatial=original.size()==1133&&original[3]==686;
+ const bool sharpenedCurrent=original.size()==5015;
+ const bool sharpenedKeyed=original.size()==11002;
+ const bool sharpened=original.size()==4883||sharpenedCurrent||sharpenedKeyed;
+ assert(quest::pcvrSceneShader(original.data(),original.size())==!(keyed||spatial||sharpened));
+ const uint32_t first=original[3],multiply=keyed||spatial?142:133;
+ const uint32_t vector=sharpened?35:legacy?30:7;
+ const uint32_t result=sharpenedKeyed?1520:sharpenedCurrent?1343:sharpened?1334:keyed?1199:spatial?460:legacy?911:578;
+ const uint32_t rgb=sharpenedKeyed?1519:sharpenedCurrent?1342:sharpened?1333:keyed?1198:spatial?459:legacy?910:577;
+ const uint32_t gain=sharpenedKeyed?1517:sharpenedCurrent?1340:sharpened?1331:keyed?1270:spatial?531:legacy?907:574;
  std::vector<uint32_t> restored(corrected.begin(),corrected.begin()+5);
  restored[3]=original[3];unsigned conversions=0;
+ float constants[8]{};
  for(size_t i=5;i<corrected.size();) {
   auto size=corrected[i]>>16,op=corrected[i]&65535;
   assert(size&&size<=corrected.size()-i);
-  bool declaration=(op==23||op==43||op==44)&&corrected[i+(op==23?1:2)]>=1010;
-  bool conversion=(op==12||op==136||op==129||op==188||op==169)&&corrected[i+2]>=1021;
-  if(op==133&&corrected[i+2]==(legacy?911u:578u)) {
-   assert(corrected[i+3]==1027&&corrected[i+4]==(legacy?907u:574u));
-   restored.insert(restored.end(),{(5u<<16)|133,legacy?30u:7u,legacy?911u:578u,legacy?910u:577u,legacy?907u:574u});conversions++;
+  bool declaration=(op==23||op==43||op==44)&&corrected[i+(op==23?1:2)]>=first;
+  if(op==43&&corrected[i+2]>first&&corrected[i+2]<=first+8)
+   std::memcpy(&constants[corrected[i+2]-first-1],&corrected[i+3],sizeof(float));
+  bool conversion=(op==12||op==133||op==188||op==169)&&corrected[i+2]>=first+17&&corrected[i+2]<=first+25;
+  if(op==multiply&&corrected[i+2]==result) {
+   assert(corrected[i+3]==first+25&&corrected[i+4]==gain);
+   restored.insert(restored.end(),{(5u<<16)|multiply,vector,result,rgb,gain});conversions++;
   }else if(!declaration&&!conversion)restored.insert(restored.end(),corrected.begin()+i,corrected.begin()+i+size);
   i+=size;
  }
  assert(conversions==1&&restored==original);
+ for(int i=0;i<=15000;i++){
+  float x=i/10000.f,linear=x*constants[1];
+  if(x>constants[0]){
+   linear=constants[7];
+   for(int j=6;j>=2;j--)linear=std::fma(linear,x,constants[j]);
+  }
+  float encoded=linear<=.0031308f?12.92f*linear:1.055f*std::pow(linear,1.f/2.4f)-.055f;
+  assert(std::abs(encoded-x)*255<.13f);
+ }
  original.back()^=1;
  assert(quest::pcvrColorShader(original.data(),original.size()).empty());
  assert(!quest::pcvrSceneShader(original.data(),original.size()));
