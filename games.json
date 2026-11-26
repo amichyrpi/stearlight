@@ -12,10 +12,16 @@
     "notes": "Runs at a stable 60 FPS."
   },
   {
+    "appid": 620980,
+    "name": "Beat Saber",
+    "status": "unsupported",
+    "notes": "Standalone play is unsupported on Stearlight OS."
+  },
+  {
     "appid": 667970,
     "name": "VTOL VR",
     "status": "playable",
-    "notes": "Launches at 10â€“15 FPS."
+    "notes": "Launches at 10 to 15 FPS."
   },
   {
     "appid": 698780,
